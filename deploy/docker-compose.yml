@@ -11,9 +11,6 @@ services:
       MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
     volumes:
       - ${DATA_ROOT}/minio:/data
-    ports:
-      - "${HOST_BIND_IP}:${MINIO_API_PORT}:9000"
-      - "${HOST_BIND_IP}:${MINIO_CONSOLE_PORT}:9001"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
       interval: 10s
@@ -54,8 +51,6 @@ services:
     volumes:
       - ${DATA_ROOT}/mysql:/var/lib/mysql
       - ../database/mysql:/docker-entrypoint-initdb.d:ro
-    ports:
-      - "${HOST_BIND_IP}:${MYSQL_PORT}:3306"
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
       interval: 10s
@@ -69,8 +64,6 @@ services:
     command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
     volumes:
       - ${DATA_ROOT}/redis:/data
-    ports:
-      - "${HOST_BIND_IP}:${REDIS_PORT}:6379"
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -89,8 +82,6 @@ services:
       DEPLOY_MODE: STANDALONE
     volumes:
       - ${DATA_ROOT}/milvus:/var/lib/milvus
-    ports:
-      - "${HOST_BIND_IP}:${MILVUS_PORT}:19530"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
       interval: 15s
@@ -116,8 +107,6 @@ services:
         hard: 65536
     volumes:
       - ${DATA_ROOT}/opensearch:/usr/share/opensearch/data
-    ports:
-      - "${HOST_BIND_IP}:${OPENSEARCH_PORT}:9200"
     healthcheck:
       test: ["CMD-SHELL", "curl -ksf -u admin:$$OPENSEARCH_INITIAL_ADMIN_PASSWORD https://localhost:9200/_cluster/health"]
       interval: 20s
