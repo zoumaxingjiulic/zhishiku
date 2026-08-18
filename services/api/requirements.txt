@@ -1,6 +1,7 @@
 fastapi==0.115.12
 uvicorn[standard]==0.34.2
 pymysql==1.1.1
+cryptography==45.0.2
 minio==7.2.15
 python-multipart==0.0.20
 httpx==0.28.1
