@@ -47,3 +47,21 @@ docker compose --env-file .env -f deploy/docker-compose.yml ps
 
 详细说明见 [deploy/README.md](deploy/README.md)。
 
+## 模型配置与 MVP 验证
+
+上传和 OCR/切片不依赖模型。若要完成向量检索和问答，在服务器的 `.env` 中填写 OpenAI 兼容的模型接口：
+
+```dotenv
+EMBEDDING_BASE_URL=https://your-model-gateway/v1
+EMBEDDING_API_KEY=...
+EMBEDDING_MODEL=your-embedding-model
+LLM_BASE_URL=https://your-model-gateway/v1
+LLM_API_KEY=...
+LLM_MODEL=your-chat-model
+# 可选；未配置时以 RRF 融合结果作为最终排序
+RERANK_BASE_URL=https://your-rerank-gateway/v1
+RERANK_API_KEY=...
+RERANK_MODEL=your-rerank-model
+```
+
+管理与问答页面通过 `FRONTEND_PORT`（默认 18080）在服务器本机提供；它仅代理到 API。首次升级已有环境时，先按 [database/mysql/README.md](database/mysql/README.md) 执行 `002_agent_platform.sql`。

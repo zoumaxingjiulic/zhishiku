@@ -1,2 +1,11 @@
-# Parser, OCR, queue and vector/index clients will be added in the next implementation step.
+pymysql==1.1.1
+minio==7.2.15
+pypdf==5.5.0
+python-docx==1.1.2
+openpyxl==3.1.5
+httpx==0.28.1
+pymilvus==2.5.10
+pytesseract==0.3.13
+pdf2image==1.17.0
+Pillow==11.2.1
 

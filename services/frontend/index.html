@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>企业智能体平台</title>
+<style>
+body{margin:0;font:14px system-ui,sans-serif;background:#f5f7fb;color:#172033}header{padding:16px 5%;background:#172a46;color:#fff}main{max-width:1180px;margin:24px auto;display:grid;grid-template-columns:2fr 1fr;gap:20px;padding:0 16px}.card{background:#fff;border-radius:10px;padding:18px;box-shadow:0 1px 4px #dce1ea}h2{margin-top:0;font-size:18px}select,input,textarea,button{box-sizing:border-box;padding:9px;border:1px solid #c8d0dc;border-radius:6px;font:inherit}select,input,textarea{width:100%;margin:5px 0 12px}button{background:#2563eb;color:white;border:0;cursor:pointer}button:hover{background:#1d4ed8}#chat{height:430px;overflow:auto;border:1px solid #e1e5eb;border-radius:6px;padding:10px;background:#fbfcfe}.message{padding:10px;margin:8px 0;border-radius:6px;white-space:pre-wrap}.user{background:#dbeafe}.assistant{background:#f1f5f9}.cite{font-size:12px;color:#556;margin-top:6px}.row{display:flex;gap:8px}.row textarea{flex:1;margin:0}table{width:100%;border-collapse:collapse}td,th{padding:8px;border-bottom:1px solid #e5e7eb;text-align:left}small{color:#637083}.status{margin:8px 0;color:#335}
+</style>
+</head>
+<body>
+<header><strong>企业智能体平台</strong>　<small>人资知识库 MVP</small></header>
+<main>
+<section class="card">
+<h2>智能体问答</h2>
+<label>选择智能体</label><select id="agent"></select>
+<div id="chat"></div>
+<div class="row"><textarea id="question" rows="3" placeholder="例如：年假申请有哪些规定？"></textarea><button onclick="ask()">发送</button></div>
+</section>
+<aside>
+<div class="card">
+<h2>知识库资料</h2><select id="kb" onchange="loadDocs()"></select>
+<div id="status" class="status"></div>
+<table><thead><tr><th>文件</th><th>状态</th></tr></thead><tbody id="docs"></tbody></table>
+</div>
+<div class="card" style="margin-top:20px">
+<h2>上传资料</h2>
+<input id="file" type="file"><input id="title" placeholder="标题（可选）">
+<label>可访问部门 ID</label><input id="dept" value="1">
+<button onclick="upload()">上传并入库</button>
+</div>
+</aside>
+</main>
+<script>
+const api='/api/v1'; let sessionId=null;
+const escape=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+async function init(){const [kbs,agents]=await Promise.all([fetch(api+'/knowledge-bases').then(r=>r.json()),fetch(api+'/agents').then(r=>r.json())]);kb.innerHTML=kbs.map(x=>'<option value="'+x.id+'">'+escape(x.name)+'</option>').join('');agent.innerHTML=agents.map(x=>'<option value="'+x.id+'">'+escape(x.name)+'</option>').join('');loadDocs();}
+async function loadDocs(){const list=await fetch(api+'/documents?knowledge_base_id='+kb.value).then(r=>r.json());docs.innerHTML=list.map(x=>'<tr><td>'+escape(x.title)+'<br><small>'+escape(x.original_filename||'')+'</small></td><td>'+escape(x.extraction_status||'等待上传')+'</td></tr>').join('');}
+function add(role,text,citations=[]){chat.innerHTML+='<div class="message '+role+'">'+escape(text)+citations.map(c=>'<div class="cite">来源：'+escape(c.title)+' · 第 '+escape(c.page||'未知')+' 页</div>').join('')+'</div>';chat.scrollTop=chat.scrollHeight;}
+async function ask(){const q=question.value.trim();if(!q)return;question.value='';add('user',q);const r=await fetch(api+'/agents/'+agent.value+'/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({question:q,department_ids:[1],session_id:sessionId})});const data=await r.json();if(!r.ok){add('assistant',data.detail||'请求失败');return}sessionId=data.session_id;add('assistant',data.answer,data.citations||[]);}
+async function upload(){if(!file.files[0])return alert('请选择文件');const data=new FormData();data.append('file',file.files[0]);data.append('knowledge_base_id',kb.value);data.append('owner_department_id','1');data.append('department_ids',dept.value);data.append('title',title.value);status.textContent='正在上传…';const r=await fetch(api+'/documents',{method:'POST',body:data});const result=await r.json();status.textContent=r.ok?'已提交解析任务：'+result.ingestion_job_id:(result.detail||'上传失败');if(r.ok){file.value='';title.value='';loadDocs();}}
+init().catch(e=>status.textContent='初始化失败：'+e);
+</script>
+</body></html>
+

@@ -1,4 +1,7 @@
 fastapi==0.115.12
 uvicorn[standard]==0.34.2
-pydantic-settings==2.8.1
-
+pymysql==1.1.1
+minio==7.2.15
+python-multipart==0.0.20
+httpx==0.28.1
+pymilvus==2.5.10
