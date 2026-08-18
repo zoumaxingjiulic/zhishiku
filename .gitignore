@@ -1,0 +1,25 @@
+# Secrets and local deployment state
+.env
+.env.*
+!.env.example
+
+# Runtime data (must live outside the repository in production)
+data/
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+
+# Node
+node_modules/
+dist/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+

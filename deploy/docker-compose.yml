@@ -1,0 +1,187 @@
+name: ${COMPOSE_PROJECT_NAME:-enterprise-kb}
+
+services:
+  minio:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      TZ: ${TZ}
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+    volumes:
+      - ${DATA_ROOT}/minio:/data
+    ports:
+      - "${HOST_BIND_IP}:${MINIO_API_PORT}:9000"
+      - "${HOST_BIND_IP}:${MINIO_CONSOLE_PORT}:9001"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [kb-internal]
+
+  minio-init:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    entrypoint: ["/bin/sh", "-ec"]
+    command: >-
+      mc alias set local http://minio:9000 "$$MINIO_ROOT_USER" "$$MINIO_ROOT_PASSWORD";
+      mc mb --ignore-existing "local/$$MINIO_BUCKET";
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+    networks: [kb-internal]
+
+  mysql:
+    image: mysql:8.4.11
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_0900_ai_ci
+      - --default-time-zone=+08:00
+      - --max-connections=300
+    volumes:
+      - ${DATA_ROOT}/mysql:/var/lib/mysql
+      - ../database/mysql:/docker-entrypoint-initdb.d:ro
+    ports:
+      - "${HOST_BIND_IP}:${MYSQL_PORT}:3306"
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -p\"$$MYSQL_ROOT_PASSWORD\" --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 18
+    networks: [kb-internal]
+
+  redis:
+    image: redis:7.4.2-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
+    volumes:
+      - ${DATA_ROOT}/redis:/data
+    ports:
+      - "${HOST_BIND_IP}:${REDIS_PORT}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+    networks: [kb-internal]
+
+  milvus:
+    image: milvusdb/milvus:v2.6.11
+    restart: unless-stopped
+    command: ["milvus", "run", "standalone"]
+    environment:
+      ETCD_USE_EMBED: "true"
+      ETCD_DATA_DIR: /var/lib/milvus/etcd
+      COMMON_STORAGETYPE: local
+      DEPLOY_MODE: STANDALONE
+    volumes:
+      - ${DATA_ROOT}/milvus:/var/lib/milvus
+    ports:
+      - "${HOST_BIND_IP}:${MILVUS_PORT}:19530"
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9091/healthz"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+    networks: [kb-internal]
+
+  opensearch:
+    image: opensearchproject/opensearch:3.0.0
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+      discovery.type: single-node
+      bootstrap.memory_lock: "true"
+      OPENSEARCH_JAVA_OPTS: -Xms${OPENSEARCH_HEAP_SIZE} -Xmx${OPENSEARCH_HEAP_SIZE}
+      OPENSEARCH_INITIAL_ADMIN_PASSWORD: ${OPENSEARCH_INITIAL_ADMIN_PASSWORD}
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - ${DATA_ROOT}/opensearch:/usr/share/opensearch/data
+    ports:
+      - "${HOST_BIND_IP}:${OPENSEARCH_PORT}:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -ksf -u admin:$$OPENSEARCH_INITIAL_ADMIN_PASSWORD https://localhost:9200/_cluster/health"]
+      interval: 20s
+      timeout: 10s
+      retries: 20
+    networks: [kb-internal]
+
+  api:
+    build:
+      context: ../services/api
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+      APP_ENV: ${APP_ENV}
+      LOG_LEVEL: ${LOG_LEVEL}
+      CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS}
+      MYSQL_DSN: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_BUCKET: ${MINIO_BUCKET}
+      MILVUS_URI: http://milvus:19530
+      OPENSEARCH_URL: https://opensearch:9200
+      LLM_BASE_URL: ${LLM_BASE_URL}
+      LLM_API_KEY: ${LLM_API_KEY}
+      LLM_MODEL: ${LLM_MODEL}
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+    depends_on:
+      mysql: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      milvus: {condition: service_healthy}
+      opensearch: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+    ports:
+      - "${HOST_BIND_IP}:${API_PORT}:8000"
+    networks: [kb-internal]
+
+  worker:
+    build:
+      context: ../services/worker
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ}
+      APP_ENV: ${APP_ENV}
+      LOG_LEVEL: ${LOG_LEVEL}
+      MYSQL_DSN: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      REDIS_URL: redis://redis:6379/0
+      MINIO_ENDPOINT: minio:9000
+      MINIO_BUCKET: ${MINIO_BUCKET}
+      MILVUS_URI: http://milvus:19530
+      OPENSEARCH_URL: https://opensearch:9200
+      EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL}
+      EMBEDDING_API_KEY: ${EMBEDDING_API_KEY}
+      EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+    depends_on:
+      mysql: {condition: service_healthy}
+      redis: {condition: service_healthy}
+      milvus: {condition: service_healthy}
+      opensearch: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
+    networks: [kb-internal]
+
+networks:
+  kb-internal:
+    name: ${COMPOSE_PROJECT_NAME:-enterprise-kb}-internal
+    driver: bridge
