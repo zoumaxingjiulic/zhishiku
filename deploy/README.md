@@ -25,7 +25,7 @@ curl http://127.0.0.1:8000/healthz
 curl -k -u "admin:${OPENSEARCH_INITIAL_ADMIN_PASSWORD}" https://127.0.0.1:9200/_cluster/health
 ```
 
-MinIO 首启会由 `minio-init` 创建 `MINIO_BUCKET`。若初始化容器已退出且状态为 `0`，表示初始化完成。
+MinIO 桶在基础设施启动后由管理员执行初始化命令创建；后续 API 也会在启动检查中确保该桶存在。
 
 ## 网络与备份边界
 
@@ -33,4 +33,3 @@ MinIO 首启会由 `minio-init` 创建 `MINIO_BUCKET`。若初始化容器已退
 - 员工访问应经过后续的 HTTPS 反向代理、统一认证和应用层权限校验。
 - 备份至少应覆盖 MySQL 逻辑备份、MinIO 对象、Milvus 数据目录和 OpenSearch 快照；恢复演练与备份同等重要。
 - 此 MVP 中 Milvus 使用单机内嵌 etcd 与本地持久化卷。原始文件仍只存 MinIO；后续扩容到集群时，再迁移 Milvus 的底层对象存储与协调组件。
-
