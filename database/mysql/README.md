@@ -19,3 +19,4 @@ docker compose --env-file .env -f deploy/docker-compose.yml exec mysql \
 
 Do not edit a migration that has been applied to any environment. Add a new numbered file for every schema change.
 
+If `002_agent_platform.sql` was manually applied in a non-UTF-8 terminal and its seeded Chinese labels display as mojibake, apply `003_fix_platform_seed_encoding.sql` once using the same command pattern.
