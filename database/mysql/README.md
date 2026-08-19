@@ -28,3 +28,5 @@ If `002_agent_platform.sql` was manually applied in a non-UTF-8 terminal and its
 Apply a single migration from the project root with `bash deploy/apply-mysql-migration.sh database/mysql/<migration>.sql`.
 
 `007_department_based_permissions.sql` adds the platform-administrator department, migrates the default administrator, and adds soft deletion for accounts. Runtime authorization no longer depends on role assignments after this migration.
+
+`008_cleanup_legacy_e2e_accounts.sql` soft-deletes legacy automated test accounts that predate automatic smoke-test cleanup.
