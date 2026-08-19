@@ -7,6 +7,7 @@ import tempfile
 import time
 import uuid
 from pathlib import Path
+from urllib.parse import quote
 
 import pymysql
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
@@ -728,7 +729,7 @@ def download_document(document_id: int, user: dict = Depends(current_user)):
     return StreamingResponse(
         stream(),
         media_type=document["mime_type"],
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{document['original_filename']}"},
+        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(document['original_filename'])}"},
     )
 
 

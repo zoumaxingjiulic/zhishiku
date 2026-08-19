@@ -46,9 +46,10 @@ curl -fsS -c "$TEST_DIR/hr.cookie" -H 'Content-Type: application/json' \
 curl -fsS -c "$TEST_DIR/other.cookie" -H 'Content-Type: application/json' \
   -d "$(json_login "$OTHER_USER" "$TEST_PASSWORD")" "$BASE_URL/api/v1/auth/login" > /dev/null
 
-printf '人力资源部休假制度\n员工连续工作满一年后享有带薪年休假。申请年休假须提前三个工作日在系统提交，由直属主管审批。紧急情况应联系人力资源部补充备案。\n' > "$TEST_DIR/hr-policy.txt"
+TEST_FILE="$TEST_DIR/人资休假制度.txt"
+printf '人力资源部休假制度\n员工连续工作满一年后享有带薪年休假。申请年休假须提前三个工作日在系统提交，由直属主管审批。紧急情况应联系人力资源部补充备案。\n' > "$TEST_FILE"
 curl -fsS -b "$TEST_DIR/admin.cookie" -F knowledge_base_id=1 -F title="E2E休假制度${STAMP}" \
-  -F security_level=internal -F "file=@$TEST_DIR/hr-policy.txt;type=text/plain" \
+  -F security_level=internal -F "file=@$TEST_FILE;type=text/plain" \
   "$BASE_URL/api/v1/documents" > "$TEST_DIR/upload.json"
 DOCUMENT_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["document_id"])' "$TEST_DIR/upload.json")"
 
@@ -65,6 +66,10 @@ EMPLOYEE_MANAGE_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -b "$TEST_DIR/
 curl -fsS -b "$TEST_DIR/hr.cookie" -H 'Content-Type: application/json' \
   -d '{"question":"年休假需要提前几个工作日申请？"}' "$BASE_URL/api/v1/agents/1/chat" > "$TEST_DIR/chat.json"
 python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["citations"], d; assert d["candidate_counts"]["vector"]>0, d; assert d["candidate_counts"]["keyword"]>0, d; assert "三个工作日" in d["answer"], d' "$TEST_DIR/chat.json"
+
+curl -fsS -b "$TEST_DIR/admin.cookie" -D "$TEST_DIR/download.headers" -o "$TEST_DIR/downloaded.txt" \
+  "$BASE_URL/api/v1/documents/$DOCUMENT_ID/download"
+grep -qi "filename\*=UTF-8''%" "$TEST_DIR/download.headers"
 
 curl -fsS -b "$TEST_DIR/other.cookie" "$BASE_URL/api/v1/knowledge-bases" > "$TEST_DIR/other-kbs.json"
 python3 -c 'import json,sys; assert json.load(open(sys.argv[1])) == []' "$TEST_DIR/other-kbs.json"

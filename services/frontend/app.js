@@ -17,7 +17,10 @@ async function api(path, options={}) {
   if (response.status === 401 && !path.includes("/auth/login")) { showLogin(); throw new Error("登录已失效，请重新登录"); }
   const type = response.headers.get("content-type") || "";
   const data = type.includes("json") ? await response.json() : await response.text();
-  if (!response.ok) throw new Error(data?.detail || data || `请求失败 (${response.status})`);
+  if (!response.ok) {
+    if (response.status >= 500) throw new Error("平台服务暂时不可用，请稍后重试");
+    throw new Error(data?.detail || data || `请求失败 (${response.status})`);
+  }
   return data;
 }
 function toast(message, bad=false) { const el=$("#toast"); el.textContent=message; el.className=`toast show${bad?" bad":""}`; clearTimeout(toast.timer); toast.timer=setTimeout(()=>el.className="toast",3000); }
