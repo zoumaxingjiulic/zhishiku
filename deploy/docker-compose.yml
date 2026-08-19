@@ -189,7 +189,7 @@ services:
       api:
         condition: service_started
     ports:
-      - "${HOST_BIND_IP}:${FRONTEND_PORT:-18080}:80"
+      - "${FRONTEND_BIND_IP:-127.0.0.1}:${FRONTEND_PORT:-18080}:80"
     networks: [kb-internal]
 
 networks:
