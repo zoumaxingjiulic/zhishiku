@@ -40,7 +40,14 @@ def embedding(text: str) -> list[float] | None:
     return response.json()["data"][0]["embedding"]
 
 
-def vector_candidates(question: str, knowledge_base_ids: list[int], limit: int = 40) -> list[int]:
+def vector_candidates(
+    question: str,
+    knowledge_base_ids: list[int],
+    document_ids: list[int] | None = None,
+    limit: int = 40,
+) -> list[int]:
+    if document_ids == []:
+        return []
     vector = embedding(question)
     if vector is None:
         return []
@@ -51,6 +58,8 @@ def vector_candidates(question: str, knowledge_base_ids: list[int], limit: int =
         collection = Collection(settings.milvus_collection, using="api")
         collection.load()
         expression = "knowledge_base_id in [" + ",".join(str(item) for item in knowledge_base_ids) + "]"
+        if document_ids is not None:
+            expression += " and document_id in [" + ",".join(str(item) for item in document_ids) + "]"
         hits = collection.search(
             [vector],
             "vector",
@@ -64,7 +73,15 @@ def vector_candidates(question: str, knowledge_base_ids: list[int], limit: int =
         return []
 
 
-def keyword_candidates(question: str, knowledge_base_ids: list[int], department_ids: list[int], limit: int = 40) -> list[int]:
+def keyword_candidates(
+    question: str,
+    knowledge_base_ids: list[int],
+    department_ids: list[int],
+    document_ids: list[int] | None = None,
+    limit: int = 40,
+) -> list[int]:
+    if document_ids == []:
+        return []
     body = {
         "size": limit,
         "query": {
@@ -77,6 +94,8 @@ def keyword_candidates(question: str, knowledge_base_ids: list[int], department_
             }
         },
     }
+    if document_ids is not None:
+        body["query"]["bool"]["filter"].append({"terms": {"document_id": document_ids}})
     try:
         response = httpx.post(
             f"{settings.opensearch_url.rstrip('/')}/{settings.opensearch_index}/_search",
@@ -170,4 +189,3 @@ def generate_answer(system_prompt: str, question: str, units: list[dict], model_
         excerpt = units[0]["content_text"][:800]
         return f"【本地验收模式】根据《{units[0]['title']}》：\n{excerpt}", "extractive_test"
     return "已检索到相关资料，但尚未配置问答模型。", "model_not_configured"
-

@@ -72,9 +72,29 @@ curl -fsS -c "$TEST_DIR/hr.cookie" -H 'Content-Type: application/json' \
 curl -fsS -c "$TEST_DIR/tech.cookie" -H 'Content-Type: application/json' \
   -d "$(json_login "$TECH_USER" "$TECH_TEMP_PASSWORD")" "$BASE_URL/api/v1/auth/login" > /dev/null
 
+printf '{"knowledge_base_id":1,"name":"E2E制度目录%s","sort_order":10}' "$STAMP" > "$TEST_DIR/folder-parent.json"
+curl -fsS -b "$TEST_DIR/admin.cookie" -H 'Content-Type: application/json' \
+  -d @"$TEST_DIR/folder-parent.json" "$BASE_URL/api/v1/folders" > "$TEST_DIR/folder-parent-result.json"
+PARENT_FOLDER_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$TEST_DIR/folder-parent-result.json")"
+printf '{"knowledge_base_id":1,"parent_id":%s,"name":"E2E休假资料%s","sort_order":20}' "$PARENT_FOLDER_ID" "$STAMP" > "$TEST_DIR/folder-child.json"
+curl -fsS -b "$TEST_DIR/admin.cookie" -H 'Content-Type: application/json' \
+  -d @"$TEST_DIR/folder-child.json" "$BASE_URL/api/v1/folders" > "$TEST_DIR/folder-child-result.json"
+CHILD_FOLDER_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$TEST_DIR/folder-child-result.json")"
+
+printf '{"name":"E2E休假资料已编辑%s","sort_order":21,"row_version":1}' "$STAMP" > "$TEST_DIR/folder-child-update.json"
+curl -fsS -b "$TEST_DIR/admin.cookie" -H 'Content-Type: application/json' -X PUT \
+  -d @"$TEST_DIR/folder-child-update.json" "$BASE_URL/api/v1/folders/$CHILD_FOLDER_ID" > "$TEST_DIR/folder-child-updated.json"
+CHILD_FOLDER_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["row_version"])' "$TEST_DIR/folder-child-updated.json")"
+printf '{"parent_id":%s,"name":"E2E休假资料已编辑%s","sort_order":21,"row_version":%s}' "$PARENT_FOLDER_ID" "$STAMP" "$CHILD_FOLDER_VERSION" > "$TEST_DIR/folder-child-move.json"
+curl -fsS -b "$TEST_DIR/admin.cookie" -H 'Content-Type: application/json' -X PUT \
+  -d @"$TEST_DIR/folder-child-move.json" "$BASE_URL/api/v1/folders/$CHILD_FOLDER_ID" > "$TEST_DIR/folder-child-moved.json"
+CHILD_FOLDER_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["row_version"])' "$TEST_DIR/folder-child-moved.json")"
+curl -fsS -b "$TEST_DIR/admin.cookie" "$BASE_URL/api/v1/folders?knowledge_base_id=1" > "$TEST_DIR/folders.json"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); f=next(x for x in d if x["id"]==int(sys.argv[2])); assert f["parent_id"]==int(sys.argv[3]) and f["depth"]==1 and "已编辑" in f["name"], f' "$TEST_DIR/folders.json" "$CHILD_FOLDER_ID" "$PARENT_FOLDER_ID"
+
 TEST_FILE="$TEST_DIR/人资休假制度.txt"
 printf '人力资源部休假制度\n员工连续工作满一年后享有带薪年休假。申请年休假须提前三个工作日在系统提交，由直属主管审批。紧急情况应联系人力资源部补充备案。\n' > "$TEST_FILE"
-curl -fsS -b "$TEST_DIR/admin.cookie" -F knowledge_base_id=1 -F title="E2E休假制度${STAMP}" \
+curl -fsS -b "$TEST_DIR/admin.cookie" -F knowledge_base_id=1 -F folder_id="$CHILD_FOLDER_ID" -F title="E2E休假制度${STAMP}" \
   -F security_level=internal -F "file=@$TEST_FILE;type=text/plain" \
   "$BASE_URL/api/v1/documents" > "$TEST_DIR/upload.json"
 DOCUMENT_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["document_id"])' "$TEST_DIR/upload.json")"
@@ -86,11 +106,16 @@ for _ in $(seq 1 60); do
 done
 python3 -c 'import json,sys; d=next(x for x in json.load(open(sys.argv[1])) if x["id"]==int(sys.argv[2])); assert d["job_status"]=="succeeded", d; assert d["chunk_count"]>0 and d["vector_count"]==d["chunk_count"] and d["fulltext_count"]==d["chunk_count"], d' "$TEST_DIR/documents.json" "$DOCUMENT_ID"
 
+curl -fsS -b "$TEST_DIR/admin.cookie" "$BASE_URL/api/v1/documents?knowledge_base_id=1&folder_id=$PARENT_FOLDER_ID&include_subfolders=true" > "$TEST_DIR/parent-documents.json"
+python3 -c 'import json,sys; assert any(x["id"]==int(sys.argv[2]) for x in json.load(open(sys.argv[1])))' "$TEST_DIR/parent-documents.json" "$DOCUMENT_ID"
+NONEMPTY_FOLDER_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -b "$TEST_DIR/admin.cookie" -X DELETE "$BASE_URL/api/v1/folders/$CHILD_FOLDER_ID?row_version=$CHILD_FOLDER_VERSION")"
+[[ "$NONEMPTY_FOLDER_STATUS" == "422" ]]
+
 DEPARTMENT_MANAGE_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -b "$TEST_DIR/hr.cookie" -X POST "$BASE_URL/api/v1/documents/$DOCUMENT_ID/reindex")"
 [[ "$DEPARTMENT_MANAGE_STATUS" == "200" ]]
 
 curl -fsS -b "$TEST_DIR/hr.cookie" -H 'Content-Type: application/json' \
-  -d '{"question":"年休假需要提前几个工作日申请？"}' "$BASE_URL/api/v1/agents/1/chat" > "$TEST_DIR/chat.json"
+  -d "{\"question\":\"年休假需要提前几个工作日申请？\",\"knowledge_base_id\":1,\"folder_id\":$PARENT_FOLDER_ID,\"include_subfolders\":true}" "$BASE_URL/api/v1/agents/1/chat" > "$TEST_DIR/chat.json"
 python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); assert d["citations"], d; assert d["candidate_counts"]["vector"]>0, d; assert d["candidate_counts"]["keyword"]>0, d; assert "三个工作日" in d["answer"], d' "$TEST_DIR/chat.json"
 
 curl -fsS -b "$TEST_DIR/admin.cookie" -D "$TEST_DIR/download.headers" -o "$TEST_DIR/downloaded.txt" \
@@ -108,6 +133,16 @@ python3 -c 'import json,sys; assert json.load(open(sys.argv[1])) == []' "$TEST_D
 FORBIDDEN_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -b "$TEST_DIR/tech.cookie" "$BASE_URL/api/v1/documents?knowledge_base_id=1")"
 [[ "$FORBIDDEN_STATUS" == "403" ]]
 
+curl -fsS -b "$TEST_DIR/admin.cookie" "$BASE_URL/api/v1/documents?knowledge_base_id=1&folder_id=$CHILD_FOLDER_ID" > "$TEST_DIR/child-documents.json"
+DOCUMENT_VERSION="$(python3 -c 'import json,sys; print(next(x for x in json.load(open(sys.argv[1])) if x["id"]==int(sys.argv[2]))["row_version"])' "$TEST_DIR/child-documents.json" "$DOCUMENT_ID")"
+printf '{"folder_id":null,"row_version":%s}' "$DOCUMENT_VERSION" > "$TEST_DIR/document-move-root.json"
+curl -fsS -b "$TEST_DIR/admin.cookie" -H 'Content-Type: application/json' -X PUT \
+  -d @"$TEST_DIR/document-move-root.json" "$BASE_URL/api/v1/documents/$DOCUMENT_ID/folder" > "$TEST_DIR/document-moved-root.json"
+DOCUMENT_VERSION="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["row_version"])' "$TEST_DIR/document-moved-root.json")"
+printf '{"folder_id":%s,"row_version":%s}' "$CHILD_FOLDER_ID" "$DOCUMENT_VERSION" > "$TEST_DIR/document-move-back.json"
+curl -fsS -b "$TEST_DIR/admin.cookie" -H 'Content-Type: application/json' -X PUT \
+  -d @"$TEST_DIR/document-move-back.json" "$BASE_URL/api/v1/documents/$DOCUMENT_ID/folder" > /dev/null
+
 printf '{"username":"%s","display_name":"E2E 技术部已编辑","department_id":%s}' "$TECH_USER" "$TECH_ID" > "$TEST_DIR/edit-user.json"
 curl -fsS -b "$TEST_DIR/admin.cookie" -H 'Content-Type: application/json' -X PUT \
   -d @"$TEST_DIR/edit-user.json" "$BASE_URL/api/v1/users/$TECH_USER_ID" > /dev/null
@@ -123,6 +158,8 @@ curl -fsS -H 'Content-Type: application/json' -d "$(json_login "$TECH_USER" "$TE
   "$BASE_URL/api/v1/auth/login" > /dev/null
 
 curl -fsS -b "$TEST_DIR/admin.cookie" -X DELETE "$BASE_URL/api/v1/documents/$DOCUMENT_ID" > /dev/null
+curl -fsS -b "$TEST_DIR/admin.cookie" -X DELETE "$BASE_URL/api/v1/folders/$CHILD_FOLDER_ID?row_version=$CHILD_FOLDER_VERSION" > /dev/null
+curl -fsS -b "$TEST_DIR/admin.cookie" -X DELETE "$BASE_URL/api/v1/folders/$PARENT_FOLDER_ID?row_version=1" > /dev/null
 curl -fsS -b "$TEST_DIR/admin.cookie" -X DELETE "$BASE_URL/api/v1/users/$HR_USER_ID" > /dev/null
 curl -fsS -b "$TEST_DIR/admin.cookie" -X DELETE "$BASE_URL/api/v1/users/$TECH_USER_ID" > /dev/null
 DELETED_LOGIN_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
@@ -131,4 +168,4 @@ DELETED_LOGIN_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type
 curl -fsS -b "$TEST_DIR/admin.cookie" "$BASE_URL/api/v1/users" > "$TEST_DIR/users-after-delete.json"
 python3 -c 'import json,sys; ids={x["id"] for x in json.load(open(sys.argv[1]))}; assert int(sys.argv[2]) not in ids and int(sys.argv[3]) not in ids, ids' "$TEST_DIR/users-after-delete.json" "$HR_USER_ID" "$TECH_USER_ID"
 
-python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("E2E PASS | department_admin=ok | roles_removed=ok | temporary_password=ok | password_change=ok | user_edit=ok | password_reset=ok | soft_delete=ok | department_manage=ok | department_isolation=ok | agent_visibility=ok | vector=%s keyword=%s final=%s | rerank=%s | cross_department=403" % (d["candidate_counts"]["vector"], d["candidate_counts"]["keyword"], d["candidate_counts"]["final"], d["retrieval_method"]["rerank"]))' "$TEST_DIR/chat.json"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("E2E PASS | folders=ok | folder_edit_move=ok | nonempty_guard=ok | multi_scope_retrieval=ok | document_move_no_reindex=ok | department_admin=ok | temporary_password=ok | soft_delete=ok | department_isolation=ok | vector=%s keyword=%s final=%s | rerank=%s | cross_department=403" % (d["candidate_counts"]["vector"], d["candidate_counts"]["keyword"], d["candidate_counts"]["final"], d["retrieval_method"]["rerank"]))' "$TEST_DIR/chat.json"
