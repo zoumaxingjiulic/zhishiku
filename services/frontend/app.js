@@ -29,6 +29,10 @@ function badge(status){ const map={succeeded:["已完成","success"],active:["�
 
 $("#login-form").addEventListener("submit", async event => { event.preventDefault(); const form=new FormData(event.target); $("#login-error").textContent=""; try { const result=await api("/api/v1/auth/login",{method:"POST",body:JSON.stringify(Object.fromEntries(form))}); state.user=result.user; showApp(); } catch(error){ $("#login-error").textContent=error.message; }});
 $("#logout").addEventListener("click", async()=>{ try{await api("/api/v1/auth/logout",{method:"POST"});}finally{showLogin();} });
+$("#change-password").addEventListener("click", ()=>{
+  modal("修改登录密码",`<form id="change-password-form" class="form-stack"><label>当前密码<input name="current_password" type="password" required></label><label>新密码<input name="new_password" type="password" minlength="10" required></label><p class="muted">至少 10 位，且包含大写、小写、数字和特殊字符。修改后需要重新登录。</p><button class="primary">确认修改</button></form>`);
+  $("#change-password-form").onsubmit=async event=>{event.preventDefault();try{await api("/api/v1/auth/change-password",{method:"POST",body:JSON.stringify(Object.fromEntries(new FormData(event.target)))});closeModal();toast("密码已修改，请重新登录");setTimeout(showLogin,800);}catch(error){toast(error.message,true);}};
+});
 $("#nav").addEventListener("click", event => { const button=event.target.closest("button[data-page]"); if(button) navigate(button.dataset.page); });
 
 async function navigate(page){
