@@ -2,6 +2,7 @@
 .env
 .env.*
 !.env.example
+.initial-admin-password
 
 # Runtime data (must live outside the repository in production)
 data/
@@ -22,4 +23,3 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
-

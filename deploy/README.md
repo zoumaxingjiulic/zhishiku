@@ -5,12 +5,12 @@
 ## 启动前检查
 
 ```bash
-cd /opt/enterprise-kb
+cd /home/ai/zhishiku
 cp .env.example .env
 chmod 600 .env
 nano .env
 sudo sysctl -w vm.max_map_count=262144
-sudo mkdir -p /data/enterprise-kb
+mkdir -p /home/ai/zhishiku/data
 docker compose --env-file .env -f deploy/docker-compose.yml config
 docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
 ```
@@ -24,6 +24,15 @@ docker compose --env-file .env -f deploy/docker-compose.yml ps
 curl http://127.0.0.1:8000/healthz
 curl -k -u "admin:${OPENSEARCH_INITIAL_ADMIN_PASSWORD}" https://127.0.0.1:9200/_cluster/health
 ```
+
+已有环境升级到认证与权限版本：
+
+```bash
+bash deploy/upgrade-v05.sh
+bash deploy/smoke-test.sh
+```
+
+初始管理员密码只写入 `.initial-admin-password`（权限 600）。首次登录后修改密码，并删除该临时文件。办公网正式开放前应增加 HTTPS 反向代理，将 `AUTH_COOKIE_SECURE` 改为 `true`，并配置备份与监控。
 
 MinIO 桶在基础设施启动后由管理员执行初始化命令创建；后续 API 也会在启动检查中确保该桶存在。
 

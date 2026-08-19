@@ -6,3 +6,5 @@ minio==7.2.15
 python-multipart==0.0.20
 httpx==0.28.1
 pymilvus==2.5.10
+bcrypt==4.3.0
+PyJWT==2.10.1

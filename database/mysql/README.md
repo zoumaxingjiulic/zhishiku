@@ -20,3 +20,5 @@ docker compose --env-file .env -f deploy/docker-compose.yml exec mysql \
 Do not edit a migration that has been applied to any environment. Add a new numbered file for every schema change.
 
 If `002_agent_platform.sql` was manually applied in a non-UTF-8 terminal and its seeded Chinese labels display as mojibake, apply `003_fix_platform_seed_encoding.sql` once using the same command pattern.
+
+`005_auth_rbac_audit_connectors.sql` adds local authentication, audit logs and connector metadata. On the current server, use `bash deploy/upgrade-v05.sh`; it checks the schema before applying this migration and is safe to rerun.
