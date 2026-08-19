@@ -13,6 +13,11 @@ set_env() {
   fi
 }
 
+ensure_env() {
+  local key="$1" value="$2"
+  grep -q "^${key}=" .env || printf '%s=%s\n' "$key" "$value" >> .env
+}
+
 if ! grep -q '^JWT_SECRET=.' .env; then
   set_env JWT_SECRET "$(openssl rand -hex 32)"
 fi
@@ -23,16 +28,16 @@ if ! grep -q '^ADMIN_PASSWORD=.' .env; then
   chmod 600 .initial-admin-password
 fi
 
-set_env JWT_EXPIRE_MINUTES 480
-set_env AUTH_COOKIE_SECURE false
-set_env ADMIN_USERNAME admin
-set_env ADMIN_DISPLAY_NAME 平台管理员
-set_env EMBEDDING_PROVIDER local_hash
-set_env LOCAL_EMBEDDING_DIM 384
-set_env LOCAL_TEST_MODE true
-set_env MILVUS_COLLECTION kb_content_units_v1
-set_env OPENSEARCH_INDEX kb-content-units-v1
-set_env MAX_UPLOAD_BYTES 209715200
+ensure_env JWT_EXPIRE_MINUTES 480
+ensure_env AUTH_COOKIE_SECURE false
+ensure_env ADMIN_USERNAME admin
+ensure_env ADMIN_DISPLAY_NAME 平台管理员
+ensure_env EMBEDDING_PROVIDER local_hash
+ensure_env LOCAL_EMBEDDING_DIM 384
+ensure_env LOCAL_TEST_MODE true
+ensure_env MILVUS_COLLECTION kb_content_units_v1
+ensure_env OPENSEARCH_INDEX kb-content-units-v1
+ensure_env MAX_UPLOAD_BYTES 209715200
 chmod 600 .env
 
 column_exists="$(docker compose --env-file .env -f deploy/docker-compose.yml exec -T mysql \

@@ -67,3 +67,5 @@ RERANK_MODEL=your-rerank-model
 管理与问答页面通过 `FRONTEND_PORT`（当前 18080）提供，浏览器只访问前端和同源 API。升级当前服务器执行 `bash deploy/upgrade-v05.sh`；初始管理员密码保存在仅部署用户可读的 `.initial-admin-password`，首次登录后应修改并删除该文件。
 
 完整验收可执行 `bash deploy/smoke-test.sh`。脚本验证上传、解析、切片、Milvus、OpenSearch、混合检索、重排序、引用回答、普通员工禁止管理以及跨部门 403，并清理测试资料、停用临时账号。
+
+切换 Embedding 模型后，应使用 `deploy/queue-reindex.py` 为所有有效文档排队重建索引；`deploy/verify-models.py` 和 `deploy/verify-indexes.py` 分别用于验证模型接口与索引维度/完成度。脚本不读取或输出 API Key。
