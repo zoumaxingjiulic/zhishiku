@@ -1,6 +1,6 @@
 const $ = (selector, root=document) => root.querySelector(selector);
 const $$ = (selector, root=document) => [...root.querySelectorAll(selector)];
-const state = {user:null, departments:[], knowledgeBases:[], agents:[], selectedKb:null, sessionId:null};
+const state = {user:null, departments:[], knowledgeBases:[], agents:[], selectedKb:null, selectedAgent:null, sessionId:null};
 const pages = {
   home:["工作台","企业知识与智能体统一入口"], knowledge:["知识库","资料上传、解析、切片与检索索引管理"],
   agents:["智能体","在授权知识范围内获得有出处的回答"], connections:["系统连接","连接 ERP、PLM 与 MOM 等企业业务系统"],
@@ -32,6 +32,7 @@ function badge(status){ const map={succeeded:["已完成","success"],active:["�
 
 $("#login-form").addEventListener("submit", async event => { event.preventDefault(); const form=new FormData(event.target); $("#login-error").textContent=""; try { const result=await api("/api/v1/auth/login",{method:"POST",body:JSON.stringify(Object.fromEntries(form))}); state.user=result.user; showApp(); } catch(error){ $("#login-error").textContent=error.message; }});
 $("#logout").addEventListener("click", async()=>{ try{await api("/api/v1/auth/logout",{method:"POST"});}finally{showLogin();} });
+$("#modal-close").addEventListener("click", closeModal);
 $("#change-password").addEventListener("click", ()=>{
   modal("修改登录密码",`<form id="change-password-form" class="form-stack"><label>当前密码<input name="current_password" type="password" required></label><label>新密码<input name="new_password" type="password" minlength="10" required></label><p class="muted">至少 10 位，且包含大写、小写、数字和特殊字符。修改后需要重新登录。</p><button class="primary">确认修改</button></form>`);
   $("#change-password-form").onsubmit=async event=>{event.preventDefault();try{await api("/api/v1/auth/change-password",{method:"POST",body:JSON.stringify(Object.fromEntries(new FormData(event.target)))});closeModal();toast("密码已修改，请重新登录");setTimeout(showLogin,800);}catch(error){toast(error.message,true);}};
@@ -66,7 +67,7 @@ async function renderKnowledge(selectedId=null){
 async function renderKbDetail(manage){
   const kb=state.selectedKb, docs=await api(`/api/v1/documents?knowledge_base_id=${kb.id}`);
   $("#kb-detail").innerHTML=`<div class="card"><div class="card-header"><div><h2>${esc(kb.name)}</h2><p class="muted">${esc(kb.description||"暂无描述")} · ${esc(kb.code)}</p></div>${manage?`<button class="danger" id="archive-kb">归档知识库</button>`:''}</div>
-  ${manage?`<form id="upload-form" class="upload-zone"><input type="file" name="file" required><input type="hidden" name="knowledge_base_id" value="${kb.id}"><input name="title" placeholder="资料标题（可选）"><button class="primary">上传并入库</button></form>`:''}
+  ${manage?`<form id="upload-form" class="upload-zone"><label class="upload-field file-field"><span>选择资料文件</span><input type="file" name="file" required></label><input type="hidden" name="knowledge_base_id" value="${kb.id}"><label class="upload-field"><span>资料标题（可选）</span><input name="title" placeholder="不填写则使用文件名"></label><button class="primary upload-button">上传并入库</button></form>`:''}
   <div class="table-wrap"><table><thead><tr><th>资料</th><th>大小</th><th>处理状态</th><th>切片</th><th>向量</th><th>全文</th><th>更新时间</th><th>操作</th></tr></thead><tbody>${docs.map(d=>`<tr><td><strong>${esc(d.title)}</strong><br><small class="muted">${esc(d.original_filename)}</small></td><td>${size(d.file_size_bytes)}</td><td>${badge(d.job_status||d.extraction_status)}${d.job_error?`<br><small class="error" title="${esc(d.job_error)}">处理失败</small>`:''}</td><td>${d.chunk_count}</td><td>${d.vector_count}/${d.chunk_count}</td><td>${d.fulltext_count}/${d.chunk_count}</td><td>${fmt(d.updated_at)}</td><td><div class="actions"><button class="secondary chunks" data-id="${d.id}">切片</button><button class="ghost download" data-id="${d.id}">下载</button>${manage?`<button class="ghost reindex" data-id="${d.id}">重建</button><button class="danger del-doc" data-id="${d.id}">删除</button>`:''}</div></td></tr>`).join("")||'<tr><td colspan="8"><div class="empty">尚未上传资料</div></td></tr>'}</tbody></table></div></div>`;
   if(manage){ $("#upload-form").onsubmit=upload; $("#archive-kb").onclick=archiveKb; }
   $$(".chunks").forEach(x=>x.onclick=()=>showChunks(x.dataset.id)); $$(".download").forEach(x=>x.onclick=()=>location.href=`/api/v1/documents/${x.dataset.id}/download`);
@@ -78,10 +79,22 @@ async function showChunks(id){ try{const chunks=await api(`/api/v1/documents/${i
 async function archiveKb(){if(!confirm("确定归档整个知识库？其中资料会进入后台删除队列。"))return;try{await api(`/api/v1/knowledge-bases/${state.selectedKb.id}`,{method:"DELETE"});toast("知识库已归档");state.selectedKb=null;await renderKnowledge();}catch(e){toast(e.message,true);} }
 async function openCreateKb(){ state.departments=await api("/api/v1/departments"); modal("新建知识库",`<form id="create-kb" class="form-stack"><label>知识库名称<input name="name" required></label><label>唯一编码<input name="code" pattern="[A-Z][A-Z0-9_]+" placeholder="例如 QUALITY_POLICY" required></label><label>所属部门<select name="owner_department_id">${state.departments.map(d=>`<option value="${d.id}">${esc(d.name)}</option>`).join("")}</select></label><label>密级<select name="security_level"><option value="internal">内部</option><option value="confidential">机密</option><option value="secret">秘密</option><option value="public">公开</option></select></label><label>说明<textarea name="description"></textarea></label><button class="primary">创建知识库</button></form>`); $("#create-kb").onsubmit=async e=>{e.preventDefault();const data=Object.fromEntries(new FormData(e.target));data.owner_department_id=Number(data.owner_department_id);try{await api("/api/v1/knowledge-bases",{method:"POST",body:JSON.stringify(data)});closeModal();toast("知识库已创建");await renderKnowledge();}catch(err){toast(err.message,true);}}; }
 
-async function renderAgents(){
-  state.agents=await api("/api/v1/agents"); const agent=state.agents[0];
-  $("#content").innerHTML=agent?`<div class="chat-layout"><div class="agent-card"><span class="eyebrow">RAG AGENT</span><h2>${esc(agent.name)}</h2><p>${esc(agent.description)}</p><small>知识范围</small><p>${esc(agent.knowledge_bases)}</p><span class="badge success">已启用</span></div><div class="card chat-box"><div id="messages" class="messages"><div class="message assistant">您好，我是人资制度问答助手。我的回答只使用您当前部门有权访问的资料，并提供引用来源。</div></div><form id="chat-form" class="chat-input"><textarea name="question" placeholder="例如：公司的年休假如何申请？" required></textarea><button class="primary">发送</button></form></div></div>`:`<div class="card empty"><strong>暂无可用智能体</strong>您的部门尚未被授权访问智能体关联的知识库。</div>`;
-  if(agent) $("#chat-form").onsubmit=async e=>{e.preventDefault();const input=e.target.question,q=input.value.trim();if(!q)return;appendMessage(q,"user");input.value="";const button=e.submitter;button.disabled=true;try{const result=await api(`/api/v1/agents/${agent.id}/chat`,{method:"POST",body:JSON.stringify({question:q,session_id:state.sessionId})});state.sessionId=result.session_id;appendMessage(result.answer,"assistant",result.citations,result.retrieval_method);}catch(err){appendMessage(`请求失败：${err.message}`,"assistant");}finally{button.disabled=false;}};
+async function renderAgents(selectedId=null){
+  state.agents=await api("/api/v1/agents");
+  if(selectedId){
+    const agent=state.agents.find(item=>item.id===Number(selectedId));
+    if(!agent){toast("该智能体不存在或无权访问",true);return renderAgents();}
+    return renderAgentChat(agent);
+  }
+  state.selectedAgent=null;state.sessionId=null;
+  $("#content").innerHTML=`<div class="section-head"><div><h2>可用智能体</h2><p>只展示当前账号有权限使用的智能体，选择后进入独立对话空间</p></div><span class="badge success">${state.agents.length} 个可用</span></div>${state.agents.length?`<div class="agents-grid">${state.agents.map(agent=>`<article class="card agent-list-card"><div class="agent-symbol">✦</div><div class="agent-list-content"><div class="card-header"><div><span class="eyebrow">RAG AGENT</span><h2>${esc(agent.name)}</h2></div>${badge(agent.status)}</div><p>${esc(agent.description||"企业知识问答智能体")}</p><div class="agent-scope"><small>授权知识范围</small><strong>${esc(agent.knowledge_bases||"暂无关联知识库")}</strong></div><button class="primary open-agent" data-id="${agent.id}">进入智能体 <span>→</span></button></div></article>`).join("")}</div>`:`<div class="card empty"><strong>暂无可用智能体</strong>您的部门尚未被授权访问智能体关联的知识库。</div>`}`;
+  $$(".open-agent").forEach(button=>button.onclick=()=>renderAgents(Number(button.dataset.id)));
+}
+function renderAgentChat(agent){
+  state.selectedAgent=agent;state.sessionId=null;
+  $("#content").innerHTML=`<div class="agent-chat-head"><button id="back-agents" class="secondary">← 返回智能体列表</button><div><h2>${esc(agent.name)}</h2><p>${esc(agent.knowledge_bases)}</p></div></div><div class="chat-layout"><div class="agent-card"><div class="agent-symbol light">✦</div><span class="eyebrow">RAG AGENT</span><h2>${esc(agent.name)}</h2><p>${esc(agent.description)}</p><div class="agent-scope dark"><small>授权知识范围</small><strong>${esc(agent.knowledge_bases)}</strong></div><span class="badge success">已启用</span></div><div class="card chat-box"><div id="messages" class="messages"><div class="message assistant">您好，我会仅根据您有权访问的企业资料回答，并提供引用来源。</div></div><form id="chat-form" class="chat-input"><textarea name="question" placeholder="请输入您想查询的问题…" required></textarea><button class="primary">发送</button></form></div></div>`;
+  $("#back-agents").onclick=()=>renderAgents();
+  $("#chat-form").onsubmit=async e=>{e.preventDefault();const input=e.target.question,q=input.value.trim();if(!q)return;appendMessage(q,"user");input.value="";const button=e.submitter;button.disabled=true;try{const result=await api(`/api/v1/agents/${agent.id}/chat`,{method:"POST",body:JSON.stringify({question:q,session_id:state.sessionId})});state.sessionId=result.session_id;appendMessage(result.answer,"assistant",result.citations,result.retrieval_method);}catch(err){appendMessage(`请求失败：${err.message}`,"assistant");}finally{button.disabled=false;}};
 }
 function appendMessage(text,role,citations=[],method=null){const box=$("#messages"),el=document.createElement("div");el.className=`message ${role}`;el.textContent=text;if(citations.length){const c=document.createElement("div");c.className="citation";c.innerHTML=`引用：${citations.map(x=>`《${esc(x.title)}》${x.page?`第 ${x.page} 页`:''}`).join("；")}<br>检索：向量 + 关键词 / RRF 融合 / ${method?.rerank==="model"?"模型":"本地"}重排序`;el.append(c);}box.append(el);box.scrollTop=box.scrollHeight;}
 
