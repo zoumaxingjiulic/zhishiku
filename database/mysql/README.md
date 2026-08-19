@@ -26,3 +26,5 @@ If `002_agent_platform.sql` was manually applied in a non-UTF-8 terminal and its
 `006_fix_company_seed_tech_department.sql` repairs the company-name seed encoding and creates the technical department and its isolated knowledge base. It is idempotent.
 
 Apply a single migration from the project root with `bash deploy/apply-mysql-migration.sh database/mysql/<migration>.sql`.
+
+`007_department_based_permissions.sql` adds the platform-administrator department, migrates the default administrator, and adds soft deletion for accounts. Runtime authorization no longer depends on role assignments after this migration.

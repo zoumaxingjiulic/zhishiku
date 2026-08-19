@@ -20,22 +20,22 @@ ADMIN_PASSWORD="$(<.initial-admin-password)"
 STAMP="$(date +%s)"
 HR_USER="e2e_hr_${STAMP}"
 TECH_USER="e2e_tech_${STAMP}"
-TEST_PASSWORD="Test!Aa${STAMP}"
 CHANGED_PASSWORD="Changed!Aa${STAMP}"
 
 json_login() { printf '{"username":"%s","password":"%s"}' "$1" "$2"; }
 curl -fsS -c "$TEST_DIR/admin.cookie" -H 'Content-Type: application/json' \
   -d "$(json_login admin "$ADMIN_PASSWORD")" "$BASE_URL/api/v1/auth/login" > "$TEST_DIR/admin.json"
+python3 -c 'import json,sys; u=json.load(open(sys.argv[1]))["user"]; assert u["is_platform_admin"] is True, u; assert [x["code"] for x in u["departments"]]==["PLATFORM_ADMIN"], u; assert "roles" not in u, u' "$TEST_DIR/admin.json"
 
 curl -fsS -b "$TEST_DIR/admin.cookie" "$BASE_URL/api/v1/departments" > "$TEST_DIR/departments.json"
-python3 -c 'import json,sys; d={x["code"]:x["name"] for x in json.load(open(sys.argv[1]))}; assert d["COMPANY"]=="公司", d; assert d["HR"]=="人力资源部", d; assert d["TECH"]=="技术部", d' "$TEST_DIR/departments.json"
+python3 -c 'import json,sys; d={x["code"]:x["name"] for x in json.load(open(sys.argv[1]))}; assert d["COMPANY"]=="公司", d; assert d["PLATFORM_ADMIN"]=="平台管理员", d; assert d["HR"]=="人力资源部", d; assert d["TECH"]=="技术部", d' "$TEST_DIR/departments.json"
 HR_ID="$(python3 -c 'import json,sys; print(next(x["id"] for x in json.load(open(sys.argv[1])) if x["code"]=="HR"))' "$TEST_DIR/departments.json")"
 TECH_ID="$(python3 -c 'import json,sys; print(next(x["id"] for x in json.load(open(sys.argv[1])) if x["code"]=="TECH"))' "$TEST_DIR/departments.json")"
 
 create_user() {
   local username="$1" department_id="$2" output="$3"
-  printf '{"username":"%s","display_name":"E2E %s","password":"%s","department_ids":[%s],"roles":["employee"]}' \
-    "$username" "$username" "$TEST_PASSWORD" "$department_id" > "$TEST_DIR/user-payload.json"
+  printf '{"username":"%s","display_name":"E2E %s","department_id":%s}' \
+    "$username" "$username" "$department_id" > "$TEST_DIR/user-payload.json"
   curl -fsS -b "$TEST_DIR/admin.cookie" -H 'Content-Type: application/json' \
     -d @"$TEST_DIR/user-payload.json" "$BASE_URL/api/v1/users" > "$output"
 }
@@ -43,19 +43,21 @@ create_user "$HR_USER" "$HR_ID" "$TEST_DIR/hr-user.json"
 create_user "$TECH_USER" "$TECH_ID" "$TEST_DIR/tech-user.json"
 HR_USER_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$TEST_DIR/hr-user.json")"
 TECH_USER_ID="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["id"])' "$TEST_DIR/tech-user.json")"
+HR_TEMP_PASSWORD="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["temporary_password"])' "$TEST_DIR/hr-user.json")"
+TECH_TEMP_PASSWORD="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["temporary_password"])' "$TEST_DIR/tech-user.json")"
 
 curl -fsS -c "$TEST_DIR/hr.cookie" -H 'Content-Type: application/json' \
-  -d "$(json_login "$HR_USER" "$TEST_PASSWORD")" "$BASE_URL/api/v1/auth/login" > /dev/null
-printf '{"current_password":"%s","new_password":"%s"}' "$TEST_PASSWORD" "$CHANGED_PASSWORD" > "$TEST_DIR/change-password.json"
+  -d "$(json_login "$HR_USER" "$HR_TEMP_PASSWORD")" "$BASE_URL/api/v1/auth/login" > /dev/null
+printf '{"current_password":"%s","new_password":"%s"}' "$HR_TEMP_PASSWORD" "$CHANGED_PASSWORD" > "$TEST_DIR/change-password.json"
 curl -fsS -b "$TEST_DIR/hr.cookie" -H 'Content-Type: application/json' \
   -d @"$TEST_DIR/change-password.json" "$BASE_URL/api/v1/auth/change-password" > /dev/null
 OLD_PASSWORD_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
-  -d "$(json_login "$HR_USER" "$TEST_PASSWORD")" "$BASE_URL/api/v1/auth/login")"
+  -d "$(json_login "$HR_USER" "$HR_TEMP_PASSWORD")" "$BASE_URL/api/v1/auth/login")"
 [[ "$OLD_PASSWORD_STATUS" == "401" ]]
 curl -fsS -c "$TEST_DIR/hr.cookie" -H 'Content-Type: application/json' \
   -d "$(json_login "$HR_USER" "$CHANGED_PASSWORD")" "$BASE_URL/api/v1/auth/login" > /dev/null
 curl -fsS -c "$TEST_DIR/tech.cookie" -H 'Content-Type: application/json' \
-  -d "$(json_login "$TECH_USER" "$TEST_PASSWORD")" "$BASE_URL/api/v1/auth/login" > /dev/null
+  -d "$(json_login "$TECH_USER" "$TECH_TEMP_PASSWORD")" "$BASE_URL/api/v1/auth/login" > /dev/null
 
 TEST_FILE="$TEST_DIR/人资休假制度.txt"
 printf '人力资源部休假制度\n员工连续工作满一年后享有带薪年休假。申请年休假须提前三个工作日在系统提交，由直属主管审批。紧急情况应联系人力资源部补充备案。\n' > "$TEST_FILE"
@@ -71,8 +73,8 @@ for _ in $(seq 1 60); do
 done
 python3 -c 'import json,sys; d=next(x for x in json.load(open(sys.argv[1])) if x["id"]==int(sys.argv[2])); assert d["job_status"]=="succeeded", d; assert d["chunk_count"]>0 and d["vector_count"]==d["chunk_count"] and d["fulltext_count"]==d["chunk_count"], d' "$TEST_DIR/documents.json" "$DOCUMENT_ID"
 
-EMPLOYEE_MANAGE_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -b "$TEST_DIR/hr.cookie" -X POST "$BASE_URL/api/v1/documents/$DOCUMENT_ID/reindex")"
-[[ "$EMPLOYEE_MANAGE_STATUS" == "403" ]]
+DEPARTMENT_MANAGE_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -b "$TEST_DIR/hr.cookie" -X POST "$BASE_URL/api/v1/documents/$DOCUMENT_ID/reindex")"
+[[ "$DEPARTMENT_MANAGE_STATUS" == "200" ]]
 
 curl -fsS -b "$TEST_DIR/hr.cookie" -H 'Content-Type: application/json' \
   -d '{"question":"年休假需要提前几个工作日申请？"}' "$BASE_URL/api/v1/agents/1/chat" > "$TEST_DIR/chat.json"
@@ -93,8 +95,27 @@ python3 -c 'import json,sys; assert json.load(open(sys.argv[1])) == []' "$TEST_D
 FORBIDDEN_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -b "$TEST_DIR/tech.cookie" "$BASE_URL/api/v1/documents?knowledge_base_id=1")"
 [[ "$FORBIDDEN_STATUS" == "403" ]]
 
-curl -fsS -b "$TEST_DIR/admin.cookie" -X DELETE "$BASE_URL/api/v1/documents/$DOCUMENT_ID" > /dev/null
-curl -fsS -b "$TEST_DIR/admin.cookie" -H 'Content-Type: application/json' -X PATCH -d '{"status":0}' "$BASE_URL/api/v1/users/$HR_USER_ID/status" > /dev/null
-curl -fsS -b "$TEST_DIR/admin.cookie" -H 'Content-Type: application/json' -X PATCH -d '{"status":0}' "$BASE_URL/api/v1/users/$TECH_USER_ID/status" > /dev/null
+printf '{"username":"%s","display_name":"E2E 技术部已编辑","department_id":%s}' "$TECH_USER" "$TECH_ID" > "$TEST_DIR/edit-user.json"
+curl -fsS -b "$TEST_DIR/admin.cookie" -H 'Content-Type: application/json' -X PUT \
+  -d @"$TEST_DIR/edit-user.json" "$BASE_URL/api/v1/users/$TECH_USER_ID" > /dev/null
+curl -fsS -b "$TEST_DIR/admin.cookie" "$BASE_URL/api/v1/users" > "$TEST_DIR/users.json"
+python3 -c 'import json,sys; u=next(x for x in json.load(open(sys.argv[1])) if x["id"]==int(sys.argv[2])); assert u["display_name"]=="E2E 技术部已编辑", u; assert u["department_code"]=="TECH", u; assert "roles" not in u, u' "$TEST_DIR/users.json" "$TECH_USER_ID"
 
-python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("E2E PASS | seed_encoding=ok | password_change=ok | department_isolation=ok | agent_visibility=ok | vector=%s keyword=%s final=%s | rerank=%s | employee_manage=403 | cross_department=403" % (d["candidate_counts"]["vector"], d["candidate_counts"]["keyword"], d["candidate_counts"]["final"], d["retrieval_method"]["rerank"]))' "$TEST_DIR/chat.json"
+curl -fsS -b "$TEST_DIR/admin.cookie" -X POST "$BASE_URL/api/v1/users/$TECH_USER_ID/reset-password" > "$TEST_DIR/reset-password.json"
+TECH_RESET_PASSWORD="$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["temporary_password"])' "$TEST_DIR/reset-password.json")"
+TECH_OLD_PASSWORD_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+  -d "$(json_login "$TECH_USER" "$TECH_TEMP_PASSWORD")" "$BASE_URL/api/v1/auth/login")"
+[[ "$TECH_OLD_PASSWORD_STATUS" == "401" ]]
+curl -fsS -H 'Content-Type: application/json' -d "$(json_login "$TECH_USER" "$TECH_RESET_PASSWORD")" \
+  "$BASE_URL/api/v1/auth/login" > /dev/null
+
+curl -fsS -b "$TEST_DIR/admin.cookie" -X DELETE "$BASE_URL/api/v1/documents/$DOCUMENT_ID" > /dev/null
+curl -fsS -b "$TEST_DIR/admin.cookie" -X DELETE "$BASE_URL/api/v1/users/$HR_USER_ID" > /dev/null
+curl -fsS -b "$TEST_DIR/admin.cookie" -X DELETE "$BASE_URL/api/v1/users/$TECH_USER_ID" > /dev/null
+DELETED_LOGIN_STATUS="$(curl -sS -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' \
+  -d "$(json_login "$TECH_USER" "$TECH_RESET_PASSWORD")" "$BASE_URL/api/v1/auth/login")"
+[[ "$DELETED_LOGIN_STATUS" == "401" ]]
+curl -fsS -b "$TEST_DIR/admin.cookie" "$BASE_URL/api/v1/users" > "$TEST_DIR/users-after-delete.json"
+python3 -c 'import json,sys; ids={x["id"] for x in json.load(open(sys.argv[1]))}; assert int(sys.argv[2]) not in ids and int(sys.argv[3]) not in ids, ids' "$TEST_DIR/users-after-delete.json" "$HR_USER_ID" "$TECH_USER_ID"
+
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("E2E PASS | department_admin=ok | roles_removed=ok | temporary_password=ok | password_change=ok | user_edit=ok | password_reset=ok | soft_delete=ok | department_manage=ok | department_isolation=ok | agent_visibility=ok | vector=%s keyword=%s final=%s | rerank=%s | cross_department=403" % (d["candidate_counts"]["vector"], d["candidate_counts"]["keyword"], d["candidate_counts"]["final"], d["retrieval_method"]["rerank"]))' "$TEST_DIR/chat.json"

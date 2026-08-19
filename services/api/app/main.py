@@ -3,6 +3,8 @@ import json
 import logging
 import mimetypes
 import os
+import secrets
+import string
 import tempfile
 import time
 import uuid
@@ -27,7 +29,7 @@ from .retrieval import (
 from .security import create_token, decode_token, hash_password, validate_password, verify_password
 
 log = logging.getLogger("kb-api")
-app = FastAPI(title="企业智能体平台 API", version="0.5.0", docs_url="/docs", redoc_url=None)
+app = FastAPI(title="企业智能体平台 API", version="0.6.0", docs_url="/docs", redoc_url=None)
 COOKIE_NAME = "kb_session"
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 
@@ -51,18 +53,19 @@ class DepartmentCreate(BaseModel):
 class UserCreate(BaseModel):
     username: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_.-]{2,63}$")
     display_name: str = Field(min_length=2, max_length=128)
-    password: str
     email: str | None = None
-    department_ids: list[int] = Field(min_length=1)
-    roles: list[str] = Field(default_factory=lambda: ["employee"])
+    department_id: int
+
+
+class UserUpdate(BaseModel):
+    username: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_.-]{2,63}$")
+    display_name: str = Field(min_length=2, max_length=128)
+    email: str | None = None
+    department_id: int
 
 
 class UserStatusUpdate(BaseModel):
     status: int = Field(ge=0, le=1)
-
-
-class PasswordReset(BaseModel):
-    new_password: str
 
 
 class KnowledgeBaseCreate(BaseModel):
@@ -112,19 +115,13 @@ def audit(
 def load_user(user_id: int) -> dict:
     with connect() as conn, conn.cursor() as cursor:
         cursor.execute(
-            "SELECT id,username,display_name,email,status,last_login_at,password_changed_at "
+            "SELECT id,username,display_name,email,status,last_login_at,password_changed_at,deleted_at "
             "FROM app_user WHERE id=%s",
             (user_id,),
         )
         user = cursor.fetchone()
-        if not user or user["status"] != 1:
+        if not user or user["status"] != 1 or user["deleted_at"] is not None:
             raise HTTPException(401, "账号不存在或已停用")
-        cursor.execute(
-            "SELECT r.code FROM app_role r JOIN user_role ur ON ur.role_id=r.id "
-            "WHERE ur.user_id=%s ORDER BY r.id",
-            (user_id,),
-        )
-        user["roles"] = [row["code"] for row in cursor.fetchall()]
         cursor.execute(
             "SELECT d.id,d.code,d.name,ud.is_primary FROM department d "
             "JOIN user_department ud ON ud.department_id=d.id "
@@ -133,6 +130,8 @@ def load_user(user_id: int) -> dict:
         )
         user["departments"] = list(cursor.fetchall())
         user["department_ids"] = [row["id"] for row in user["departments"]]
+        user["is_platform_admin"] = any(row["code"] == "PLATFORM_ADMIN" for row in user["departments"])
+        user.pop("deleted_at", None)
         return user
 
 
@@ -147,13 +146,44 @@ def current_user(request: Request) -> dict:
 
 
 def platform_admin(user: dict = Depends(current_user)) -> dict:
-    if "platform_admin" not in user["roles"]:
+    if not is_admin(user):
         raise HTTPException(403, "仅平台管理员可以执行此操作")
     return user
 
 
 def is_admin(user: dict) -> bool:
-    return "platform_admin" in user["roles"]
+    return bool(user.get("is_platform_admin"))
+
+
+def generate_temporary_password() -> str:
+    alphabet = string.ascii_letters + string.digits + "!@#$%&*"
+    required = [
+        secrets.choice(string.ascii_uppercase),
+        secrets.choice(string.ascii_lowercase),
+        secrets.choice(string.digits),
+        secrets.choice("!@#$%&*"),
+    ]
+    characters = required + [secrets.choice(alphabet) for _ in range(12)]
+    secrets.SystemRandom().shuffle(characters)
+    return "".join(characters)
+
+
+def is_platform_admin_user(cursor: pymysql.cursors.Cursor, user_id: int) -> bool:
+    cursor.execute(
+        "SELECT 1 FROM user_department ud JOIN department d ON d.id=ud.department_id "
+        "WHERE ud.user_id=%s AND d.code='PLATFORM_ADMIN' LIMIT 1",
+        (user_id,),
+    )
+    return cursor.fetchone() is not None
+
+
+def active_platform_admin_count(cursor: pymysql.cursors.Cursor) -> int:
+    cursor.execute(
+        "SELECT COUNT(DISTINCT u.id) total FROM app_user u "
+        "JOIN user_department ud ON ud.user_id=u.id JOIN department d ON d.id=ud.department_id "
+        "WHERE d.code='PLATFORM_ADMIN' AND u.status=1 AND u.deleted_at IS NULL"
+    )
+    return int(cursor.fetchone()["total"])
 
 
 def effective_departments(user: dict) -> list[int]:
@@ -176,8 +206,6 @@ def kb_permission(user: dict, knowledge_base_id: int, manage: bool = False) -> d
             raise HTTPException(404, "知识库不存在或已归档")
         if is_admin(user):
             return kb
-        if manage and "knowledge_base_admin" not in user["roles"]:
-            raise HTTPException(403, "仅知识库管理员可以管理资料")
         if not user["department_ids"]:
             raise HTTPException(403, "账号未分配部门")
         placeholders = ",".join(["%s"] * len(user["department_ids"]))
@@ -237,14 +265,15 @@ def bootstrap_admin() -> None:
                 ),
             )
             admin_id = cursor.lastrowid
+        cursor.execute("SELECT id FROM department WHERE code='PLATFORM_ADMIN' AND status=1")
+        department = cursor.fetchone()
+        if not department:
+            raise RuntimeError("PLATFORM_ADMIN department is missing; apply migration 007")
+        cursor.execute("DELETE FROM user_department WHERE user_id=%s", (admin_id,))
         cursor.execute(
-            "INSERT IGNORE INTO user_department (user_id,department_id,is_primary) VALUES (%s,1,1)",
-            (admin_id,),
+            "INSERT INTO user_department (user_id,department_id,is_primary) VALUES (%s,%s,1)",
+            (admin_id, department["id"]),
         )
-        cursor.execute("SELECT id FROM app_role WHERE code='platform_admin'")
-        role = cursor.fetchone()
-        if role:
-            cursor.execute("INSERT IGNORE INTO user_role (user_id,role_id) VALUES (%s,%s)", (admin_id, role["id"]))
         conn.commit()
 
 
@@ -255,7 +284,7 @@ def startup() -> None:
 
 @app.get("/healthz", tags=["system"])
 def healthz() -> dict:
-    return {"status": "ok", "service": "knowledge-base-api", "version": "0.5.0"}
+    return {"status": "ok", "service": "knowledge-base-api", "version": "0.6.0"}
 
 
 @app.get("/readyz", tags=["system"])
@@ -283,11 +312,11 @@ def login(payload: LoginRequest, response: Response, request: Request) -> dict:
         raise HTTPException(429, "登录尝试过多，请 5 分钟后再试")
     with connect() as conn, conn.cursor() as cursor:
         cursor.execute(
-            "SELECT id,password_hash,status FROM app_user WHERE username=%s",
+            "SELECT id,password_hash,status,deleted_at FROM app_user WHERE username=%s",
             (payload.username,),
         )
         row = cursor.fetchone()
-        if not row or row["status"] != 1 or not verify_password(payload.password, row["password_hash"]):
+        if not row or row["status"] != 1 or row["deleted_at"] is not None or not verify_password(payload.password, row["password_hash"]):
             attempts.append(now)
             LOGIN_ATTEMPTS[ip] = attempts
             raise HTTPException(401, "用户名或密码错误")
@@ -365,35 +394,25 @@ def list_users(user: dict = Depends(platform_admin)) -> list[dict]:
     with connect() as conn, conn.cursor() as cursor:
         cursor.execute(
             "SELECT u.id,u.username,u.display_name,u.email,u.status,u.last_login_at,u.created_at,"
-            "GROUP_CONCAT(DISTINCT d.name ORDER BY d.id SEPARATOR ', ') departments,"
-            "GROUP_CONCAT(DISTINCT r.code ORDER BY r.id SEPARATOR ',') roles "
+            "d.id department_id,d.code department_code,d.name department_name "
             "FROM app_user u "
-            "LEFT JOIN user_department ud ON ud.user_id=u.id LEFT JOIN department d ON d.id=ud.department_id "
-            "LEFT JOIN user_role ur ON ur.user_id=u.id LEFT JOIN app_role r ON r.id=ur.role_id "
-            "GROUP BY u.id ORDER BY u.id"
+            "LEFT JOIN user_department ud ON ud.user_id=u.id AND ud.is_primary=1 "
+            "LEFT JOIN department d ON d.id=ud.department_id "
+            "WHERE u.deleted_at IS NULL ORDER BY u.id"
         )
         return list(cursor.fetchall())
 
 
 @app.post("/api/v1/users", tags=["administration"])
 def create_user(payload: UserCreate, request: Request, user: dict = Depends(platform_admin)) -> dict:
-    validate_password(payload.password)
-    allowed_roles = {"platform_admin", "knowledge_base_admin", "employee"}
-    if not set(payload.roles) <= allowed_roles:
-        raise HTTPException(422, "包含不支持的角色")
+    temporary_password = generate_temporary_password()
     with connect() as conn, conn.cursor() as cursor:
-        department_placeholders = ",".join(["%s"] * len(payload.department_ids))
         cursor.execute(
-            f"SELECT id FROM department WHERE status=1 AND id IN ({department_placeholders})",
-            payload.department_ids,
+            "SELECT id FROM department WHERE status=1 AND id=%s",
+            (payload.department_id,),
         )
-        if len(cursor.fetchall()) != len(set(payload.department_ids)):
-            raise HTTPException(422, "包含不存在或停用的部门")
-        role_placeholders = ",".join(["%s"] * len(payload.roles))
-        cursor.execute(f"SELECT id,code FROM app_role WHERE code IN ({role_placeholders})", payload.roles)
-        roles = list(cursor.fetchall())
-        if len(roles) != len(set(payload.roles)):
-            raise HTTPException(422, "角色配置不完整")
+        if not cursor.fetchone():
+            raise HTTPException(422, "部门不存在或已停用")
         try:
             cursor.execute(
                 "INSERT INTO app_user (external_id,username,display_name,email,password_hash,password_changed_at,status,created_by) "
@@ -403,24 +422,51 @@ def create_user(payload: UserCreate, request: Request, user: dict = Depends(plat
                     payload.username,
                     payload.display_name,
                     payload.email,
-                    hash_password(payload.password),
+                    hash_password(temporary_password),
                     user["id"],
                 ),
             )
             new_id = cursor.lastrowid
-            for index, department_id in enumerate(payload.department_ids):
-                cursor.execute(
-                    "INSERT INTO user_department (user_id,department_id,is_primary) VALUES (%s,%s,%s)",
-                    (new_id, department_id, 1 if index == 0 else 0),
-                )
-            for role in roles:
-                cursor.execute("INSERT INTO user_role (user_id,role_id) VALUES (%s,%s)", (new_id, role["id"]))
-            audit(cursor, user["id"], "user.create", "user", new_id, {"username": payload.username, "roles": payload.roles}, request.client.host)
+            cursor.execute(
+                "INSERT INTO user_department (user_id,department_id,is_primary) VALUES (%s,%s,1)",
+                (new_id, payload.department_id),
+            )
+            audit(cursor, user["id"], "user.create", "user", new_id, {"username": payload.username, "department_id": payload.department_id}, request.client.host)
             conn.commit()
         except pymysql.err.IntegrityError as exc:
             conn.rollback()
             raise HTTPException(409, "用户名或外部标识已存在") from exc
-    return {"id": new_id, "username": payload.username, "display_name": payload.display_name, "status": 1}
+    return {"id": new_id, "username": payload.username, "display_name": payload.display_name, "status": 1, "temporary_password": temporary_password}
+
+
+@app.put("/api/v1/users/{user_id}", tags=["administration"])
+def update_user(user_id: int, payload: UserUpdate, request: Request, user: dict = Depends(platform_admin)) -> dict:
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute("SELECT id FROM app_user WHERE id=%s AND deleted_at IS NULL", (user_id,))
+        if not cursor.fetchone():
+            raise HTTPException(404, "用户不存在")
+        cursor.execute("SELECT id,code FROM department WHERE id=%s AND status=1", (payload.department_id,))
+        department = cursor.fetchone()
+        if not department:
+            raise HTTPException(422, "部门不存在或已停用")
+        if is_platform_admin_user(cursor, user_id) and department["code"] != "PLATFORM_ADMIN" and active_platform_admin_count(cursor) <= 1:
+            raise HTTPException(422, "至少需要保留一个启用的平台管理员账号")
+        try:
+            cursor.execute(
+                "UPDATE app_user SET username=%s,display_name=%s,email=%s WHERE id=%s",
+                (payload.username, payload.display_name, payload.email, user_id),
+            )
+            cursor.execute("DELETE FROM user_department WHERE user_id=%s", (user_id,))
+            cursor.execute(
+                "INSERT INTO user_department (user_id,department_id,is_primary) VALUES (%s,%s,1)",
+                (user_id, payload.department_id),
+            )
+            audit(cursor, user["id"], "user.update", "user", user_id, payload.model_dump(), request.client.host)
+            conn.commit()
+        except pymysql.err.IntegrityError as exc:
+            conn.rollback()
+            raise HTTPException(409, "用户名已存在") from exc
+    return {"status": "ok"}
 
 
 @app.patch("/api/v1/users/{user_id}/status", tags=["administration"])
@@ -428,7 +474,9 @@ def update_user_status(user_id: int, payload: UserStatusUpdate, user: dict = Dep
     if user_id == user["id"] and payload.status == 0:
         raise HTTPException(422, "不能停用当前登录账号")
     with connect() as conn, conn.cursor() as cursor:
-        cursor.execute("UPDATE app_user SET status=%s WHERE id=%s", (payload.status, user_id))
+        if payload.status == 0 and is_platform_admin_user(cursor, user_id) and active_platform_admin_count(cursor) <= 1:
+            raise HTTPException(422, "至少需要保留一个启用的平台管理员账号")
+        cursor.execute("UPDATE app_user SET status=%s WHERE id=%s AND deleted_at IS NULL", (payload.status, user_id))
         if cursor.rowcount == 0:
             raise HTTPException(404, "用户不存在")
         audit(cursor, user["id"], "user.status_update", "user", user_id, {"status": payload.status})
@@ -437,16 +485,32 @@ def update_user_status(user_id: int, payload: UserStatusUpdate, user: dict = Dep
 
 
 @app.post("/api/v1/users/{user_id}/reset-password", tags=["administration"])
-def reset_password(user_id: int, payload: PasswordReset, user: dict = Depends(platform_admin)) -> dict:
-    validate_password(payload.new_password)
+def reset_password(user_id: int, user: dict = Depends(platform_admin)) -> dict:
+    temporary_password = generate_temporary_password()
     with connect() as conn, conn.cursor() as cursor:
         cursor.execute(
-            "UPDATE app_user SET password_hash=%s,password_changed_at=NOW(3) WHERE id=%s",
-            (hash_password(payload.new_password), user_id),
+            "UPDATE app_user SET password_hash=%s,password_changed_at=NOW(3) WHERE id=%s AND deleted_at IS NULL",
+            (hash_password(temporary_password), user_id),
         )
         if cursor.rowcount == 0:
             raise HTTPException(404, "用户不存在")
         audit(cursor, user["id"], "user.password_reset", "user", user_id)
+        conn.commit()
+    return {"status": "ok", "temporary_password": temporary_password}
+
+
+@app.delete("/api/v1/users/{user_id}", tags=["administration"])
+def delete_user(user_id: int, user: dict = Depends(platform_admin)) -> dict:
+    if user_id == user["id"]:
+        raise HTTPException(422, "不能删除当前登录账号")
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute("SELECT id FROM app_user WHERE id=%s AND deleted_at IS NULL", (user_id,))
+        if not cursor.fetchone():
+            raise HTTPException(404, "用户不存在")
+        if is_platform_admin_user(cursor, user_id) and active_platform_admin_count(cursor) <= 1:
+            raise HTTPException(422, "至少需要保留一个启用的平台管理员账号")
+        cursor.execute("UPDATE app_user SET status=0,deleted_at=NOW(3) WHERE id=%s", (user_id,))
+        audit(cursor, user["id"], "user.delete", "user", user_id)
         conn.commit()
     return {"status": "ok"}
 
@@ -457,7 +521,7 @@ def list_knowledge_bases(user: dict = Depends(current_user)) -> list[dict]:
         if is_admin(user):
             cursor.execute(
                 "SELECT k.id,k.code,k.name,k.description,k.owner_department_id,d.name owner_department_name,"
-                "k.security_level,k.status,k.created_at,"
+                "k.security_level,k.status,k.created_at,'manage' permission,"
                 "(SELECT COUNT(*) FROM document doc WHERE doc.knowledge_base_id=k.id AND doc.status!='deleted') document_count "
                 "FROM knowledge_base k JOIN department d ON d.id=k.owner_department_id "
                 "WHERE k.status='active' ORDER BY k.id"
@@ -466,7 +530,7 @@ def list_knowledge_bases(user: dict = Depends(current_user)) -> list[dict]:
             placeholders = ",".join(["%s"] * len(user["department_ids"]))
             cursor.execute(
                 f"SELECT DISTINCT k.id,k.code,k.name,k.description,k.owner_department_id,d.name owner_department_name,"
-                f"k.security_level,k.status,k.created_at,"
+                f"k.security_level,k.status,k.created_at,acl.permission,"
                 f"(SELECT COUNT(*) FROM document doc WHERE doc.knowledge_base_id=k.id AND doc.status!='deleted') document_count "
                 f"FROM knowledge_base k JOIN department d ON d.id=k.owner_department_id "
                 f"JOIN knowledge_base_department_acl acl ON acl.knowledge_base_id=k.id "
@@ -483,7 +547,7 @@ def create_knowledge_base(payload: KnowledgeBaseCreate, request: Request, user: 
     if payload.security_level not in {"public", "internal", "confidential", "secret"}:
         raise HTTPException(422, "无效的密级")
     if not is_admin(user):
-        if "knowledge_base_admin" not in user["roles"] or payload.owner_department_id not in user["department_ids"]:
+        if payload.owner_department_id not in user["department_ids"]:
             raise HTTPException(403, "无权为该部门创建知识库")
     with connect() as conn, conn.cursor() as cursor:
         cursor.execute("SELECT id FROM department WHERE id=%s AND status=1", (payload.owner_department_id,))

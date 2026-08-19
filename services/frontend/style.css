@@ -176,6 +176,7 @@ tr:last-child td { border-bottom: 0; }
 .badge.success { background: #e8f8f1; color: var(--green); }
 .badge.pending { background: #fff6df; color: var(--amber); }
 .badge.failed { background: #fff0f1; color: var(--red); }
+.badge.admin-dept { background: #ede9fe; color: #6d28d9; }
 .actions { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .actions button { padding: 7px 10px; font-size: 11px; }
 
@@ -254,6 +255,10 @@ dialog::backdrop { background: rgba(11, 23, 43, .62); }
 .toast.bad { background: var(--red); }
 .progress { height: 6px; overflow: hidden; border-radius: 6px; background: #edf0f5; }
 .progress i { display: block; height: 100%; background: var(--blue); }
+.temporary-password { display: grid; gap: 16px; }
+.temporary-password p { margin: 0; line-height: 1.7; }
+.password-once { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 10px; padding: 14px; border: 1px solid #b9ccf4; border-radius: 10px; background: #f5f8ff; }
+.password-once code { min-width: 0; overflow: auto; padding: 10px 12px; border-radius: 7px; background: #fff; color: #173b79; font-size: 15px; font-weight: 700; white-space: nowrap; user-select: all; }
 
 @media (max-width: 1180px) {
   .stats { grid-template-columns: repeat(2, minmax(0, 1fr)); }
