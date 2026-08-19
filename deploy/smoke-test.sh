@@ -4,7 +4,16 @@ set -euo pipefail
 BASE_URL="http://127.0.0.1:18000"
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 TEST_DIR="$(mktemp -d)"
-trap 'rm -rf -- "$TEST_DIR"' EXIT
+E2E_ADMIN_CREATED=0
+cleanup() {
+  if [[ "$E2E_ADMIN_CREATED" == "1" ]]; then
+    docker compose --env-file .env -f deploy/docker-compose.yml exec -T \
+      -e E2E_ADMIN_USERNAME="$ADMIN_USER" api python /tmp/e2e-admin.py cleanup >/dev/null 2>&1 || true
+  fi
+  docker compose --env-file .env -f deploy/docker-compose.yml exec -T api rm -f -- /tmp/e2e-admin.py >/dev/null 2>&1 || true
+  rm -rf -- "$TEST_DIR"
+}
+trap cleanup EXIT
 
 cd "$PROJECT_DIR"
 for _ in $(seq 1 30); do
@@ -12,19 +21,23 @@ for _ in $(seq 1 30); do
   sleep 1
 done
 curl -fsS "$BASE_URL/readyz" >/dev/null
-if [[ ! -f .initial-admin-password ]]; then
-  echo "缺少 .initial-admin-password，无法自动执行管理员登录验收" >&2
-  exit 1
-fi
-ADMIN_PASSWORD="$(<.initial-admin-password)"
 STAMP="$(date +%s)"
+ADMIN_USER="e2e_admin_${STAMP}"
+ADMIN_PASSWORD="Admin!Aa${STAMP}"
 HR_USER="e2e_hr_${STAMP}"
 TECH_USER="e2e_tech_${STAMP}"
 CHANGED_PASSWORD="Changed!Aa${STAMP}"
 
+API_CONTAINER="$(docker compose --env-file .env -f deploy/docker-compose.yml ps -q api)"
+docker cp deploy/e2e-admin.py "$API_CONTAINER:/tmp/e2e-admin.py"
+docker compose --env-file .env -f deploy/docker-compose.yml exec -T \
+  -e E2E_ADMIN_USERNAME="$ADMIN_USER" -e E2E_ADMIN_PASSWORD="$ADMIN_PASSWORD" \
+  api python /tmp/e2e-admin.py create
+E2E_ADMIN_CREATED=1
+
 json_login() { printf '{"username":"%s","password":"%s"}' "$1" "$2"; }
 curl -fsS -c "$TEST_DIR/admin.cookie" -H 'Content-Type: application/json' \
-  -d "$(json_login admin "$ADMIN_PASSWORD")" "$BASE_URL/api/v1/auth/login" > "$TEST_DIR/admin.json"
+  -d "$(json_login "$ADMIN_USER" "$ADMIN_PASSWORD")" "$BASE_URL/api/v1/auth/login" > "$TEST_DIR/admin.json"
 python3 -c 'import json,sys; u=json.load(open(sys.argv[1]))["user"]; assert u["is_platform_admin"] is True, u; assert [x["code"] for x in u["departments"]]==["PLATFORM_ADMIN"], u; assert "roles" not in u, u' "$TEST_DIR/admin.json"
 
 curl -fsS -b "$TEST_DIR/admin.cookie" "$BASE_URL/api/v1/departments" > "$TEST_DIR/departments.json"
