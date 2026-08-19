@@ -28,6 +28,7 @@ curl -fsS -c "$TEST_DIR/admin.cookie" -H 'Content-Type: application/json' \
   -d "$(json_login admin "$ADMIN_PASSWORD")" "$BASE_URL/api/v1/auth/login" > "$TEST_DIR/admin.json"
 
 curl -fsS -b "$TEST_DIR/admin.cookie" "$BASE_URL/api/v1/departments" > "$TEST_DIR/departments.json"
+python3 -c 'import json,sys; d={x["code"]:x["name"] for x in json.load(open(sys.argv[1]))}; assert d["COMPANY"]=="公司", d; assert d["HR"]=="人力资源部", d; assert d["TECH"]=="技术部", d' "$TEST_DIR/departments.json"
 HR_ID="$(python3 -c 'import json,sys; print(next(x["id"] for x in json.load(open(sys.argv[1])) if x["code"]=="HR"))' "$TEST_DIR/departments.json")"
 TECH_ID="$(python3 -c 'import json,sys; print(next(x["id"] for x in json.load(open(sys.argv[1])) if x["code"]=="TECH"))' "$TEST_DIR/departments.json")"
 
@@ -96,4 +97,4 @@ curl -fsS -b "$TEST_DIR/admin.cookie" -X DELETE "$BASE_URL/api/v1/documents/$DOC
 curl -fsS -b "$TEST_DIR/admin.cookie" -H 'Content-Type: application/json' -X PATCH -d '{"status":0}' "$BASE_URL/api/v1/users/$HR_USER_ID/status" > /dev/null
 curl -fsS -b "$TEST_DIR/admin.cookie" -H 'Content-Type: application/json' -X PATCH -d '{"status":0}' "$BASE_URL/api/v1/users/$TECH_USER_ID/status" > /dev/null
 
-python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("E2E PASS | password_change=ok | department_isolation=ok | agent_visibility=ok | vector=%s keyword=%s final=%s | rerank=%s | employee_manage=403 | cross_department=403" % (d["candidate_counts"]["vector"], d["candidate_counts"]["keyword"], d["candidate_counts"]["final"], d["retrieval_method"]["rerank"]))' "$TEST_DIR/chat.json"
+python3 -c 'import json,sys; d=json.load(open(sys.argv[1])); print("E2E PASS | seed_encoding=ok | password_change=ok | department_isolation=ok | agent_visibility=ok | vector=%s keyword=%s final=%s | rerank=%s | employee_manage=403 | cross_department=403" % (d["candidate_counts"]["vector"], d["candidate_counts"]["keyword"], d["candidate_counts"]["final"], d["retrieval_method"]["rerank"]))' "$TEST_DIR/chat.json"
