@@ -1,47 +1,12 @@
 <!doctype html>
 <html lang="zh-CN">
-<head>
-  <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>企业智能体平台</title>
-  <link rel="stylesheet" href="/style.css?v=20260819-4">
-</head>
-<body>
-  <div id="toast" class="toast"></div>
-  <section id="login-view" class="login-shell">
-    <div class="login-brand">
-      <span class="brand-mark">智</span>
-      <div><h1>企业智能体平台</h1><p>让企业知识安全、准确地服务每一位员工</p></div>
-    </div>
-    <form id="login-form" class="login-card">
-      <div><span class="eyebrow">INTERNAL PLATFORM</span><h2>欢迎登录</h2><p class="muted">使用管理员创建的企业账号</p></div>
-      <label>用户名<input name="username" autocomplete="username" required autofocus></label>
-      <label>密码<input name="password" type="password" autocomplete="current-password" required></label>
-      <button class="primary wide" type="submit">登录平台</button>
-      <p id="login-error" class="error"></p>
-    </form>
-  </section>
-
-  <div id="app-view" class="app-shell hidden">
-    <aside class="sidebar">
-      <div class="logo"><span class="brand-mark small">智</span><div><strong>企业智能体</strong><small>KNOWLEDGE OS</small></div></div>
-      <nav id="nav">
-        <button data-page="home" class="active"><span>⌂</span>工作台</button>
-        <button data-page="knowledge"><span>▤</span>知识库</button>
-        <button data-page="agents"><span>✦</span>智能体</button>
-        <button data-page="connections"><span>⛓</span>系统连接</button>
-        <button data-page="users" class="admin-only"><span>♙</span>用户与部门</button>
-        <button data-page="audit" class="admin-only"><span>◷</span>审计日志</button>
-      </nav>
-      <div class="sidebar-foot"><span class="health-dot"></span><span>服务运行正常</span></div>
-    </aside>
-    <main class="main">
-      <header class="topbar"><div><h1 id="page-title">工作台</h1><p id="page-subtitle">企业知识与智能体统一入口</p></div><div class="user-area"><div class="avatar" id="avatar">A</div><div><strong id="user-name"></strong><small id="user-dept"></small></div><button id="change-password" class="ghost">修改密码</button><button id="logout" class="ghost">退出</button></div></header>
-      <section id="content" class="content"></section>
-    </main>
-  </div>
-
-  <dialog id="modal"><div class="modal-card"><header><h2 id="modal-title"></h2><button id="modal-close" type="button" class="icon-button" aria-label="关闭">×</button></header><div id="modal-body"></div></div></dialog>
-  <script src="/app.js?v=20260819-4" defer></script>
-</body>
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>企业智能体平台</title>
+  </head>
+  <body>
+    <div id="app"></div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
 </html>
