@@ -1,0 +1,22 @@
+services:
+  infinity:
+    image: michaelf34/infinity:latest-cpu
+    restart: unless-stopped
+    command: >
+      v2 --engine torch
+      --model-id /models/bge-m3
+      --served-model-name BAAI/bge-m3
+      --model-id /models/bge-reranker-v2-m3
+      --served-model-name BAAI/bge-reranker-v2-m3
+      --port 7997
+    environment:
+      HF_HOME: /app/.cache
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      OMP_NUM_THREADS: "16"
+    volumes:
+      - ${DATA_ROOT}/models/infinity:/app/.cache
+      - ${DATA_ROOT}/models/source:/models:ro
+    cpus: 16
+    mem_limit: 24g
+    networks:
+      - kb-internal
