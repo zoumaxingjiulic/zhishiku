@@ -113,6 +113,7 @@ function navigate(target: string) {
 }
 
 function onAuthExpired() {
+  if (!user.value) return;
   showLogin();
   loginError.value = "登录已失效，请重新登录";
 }
