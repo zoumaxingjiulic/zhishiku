@@ -76,6 +76,12 @@ class KnowledgeBaseCreate(BaseModel):
     security_level: str = "internal"
 
 
+class KnowledgeBaseUpdate(BaseModel):
+    name: str = Field(min_length=2, max_length=128)
+    description: str | None = None
+    security_level: str = "internal"
+
+
 class KnowledgeBaseAclUpdate(BaseModel):
     department_ids: list[int] = Field(min_length=1)
     manager_department_id: int
@@ -640,6 +646,29 @@ def create_knowledge_base(payload: KnowledgeBaseCreate, request: Request, user: 
             conn.rollback()
             raise HTTPException(409, "知识库编码已存在") from exc
     return {"id": kb_id, **payload.model_dump(), "status": "active"}
+
+
+@app.put("/api/v1/knowledge-bases/{knowledge_base_id}", tags=["knowledge-bases"])
+def update_knowledge_base(
+    knowledge_base_id: int,
+    payload: KnowledgeBaseUpdate,
+    request: Request,
+    user: dict = Depends(current_user),
+) -> dict:
+    if payload.security_level not in {"public", "internal", "confidential", "secret"}:
+        raise HTTPException(422, "无效的密级")
+    kb_permission(user, knowledge_base_id, manage=True)
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            "UPDATE knowledge_base SET name=%s,description=%s,security_level=%s "
+            "WHERE id=%s AND status='active'",
+            (payload.name, payload.description, payload.security_level, knowledge_base_id),
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "知识库不存在或已归档")
+        audit(cursor, user["id"], "knowledge_base.update", "knowledge_base", knowledge_base_id, payload.model_dump(), request.client.host)
+        conn.commit()
+    return {"id": knowledge_base_id, **payload.model_dump(), "status": "active"}
 
 
 @app.put("/api/v1/knowledge-bases/{knowledge_base_id}/acl", tags=["knowledge-bases"])

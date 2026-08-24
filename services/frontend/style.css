@@ -194,7 +194,12 @@ tr:last-child td { border-bottom: 0; }
 .folder-pane-head small { margin-top: 3px; color: var(--muted); font-size: 10px; }
 .folder-pane-head button { padding: 7px 9px; font-size: 11px; }
 .folder-tree { max-height: 560px; overflow: auto; padding: 8px; }
-.folder-item { width: 100%; display: grid; grid-template-columns: 20px minmax(0, 1fr) auto; align-items: center; gap: 5px; margin: 2px 0; border: 0; border-radius: 7px; padding: 9px 8px 9px var(--indent, 8px); background: transparent; color: #40506a; text-align: left; }
+.folder-item { width: 100%; display: grid; align-items: center; gap: 5px; margin: 2px 0; border: 0; border-radius: 7px; padding: 9px 8px; background: transparent; color: #40506a; text-align: left; }
+.root-folder { grid-template-columns: 20px minmax(0, 1fr); font-weight: 750; }
+.folder-children { margin: 0 6px 4px 18px; border-left: 1px solid #d8e1ee; }
+.child-folder { grid-template-columns: 12px 18px minmax(0, 1fr) auto; padding-left: var(--indent, 6px); }
+.tree-branch { color: #9aaac0; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.folder-icon { display: grid; place-items: center; color: #3570da; }
 .folder-item:hover, .folder-item.active { background: var(--blue-soft); color: #174fc5; }
 .folder-item strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .folder-item small { color: var(--muted); font-size: 10px; }
