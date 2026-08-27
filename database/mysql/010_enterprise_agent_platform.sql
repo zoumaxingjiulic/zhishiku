@@ -26,7 +26,7 @@ CREATE TABLE llm_gateway_profile (
 
 ALTER TABLE agent
     ADD COLUMN llm_gateway_profile_id BIGINT UNSIGNED NULL AFTER llm_model,
-    ADD COLUMN launch_mode VARCHAR(32) NOT NULL DEFAULT 'chat' AFTER agent_type COMMENT 'chat|form|workflow|dashboard|external',
+    ADD COLUMN launch_mode VARCHAR(32) NOT NULL DEFAULT 'chat' COMMENT 'chat|form|workflow|dashboard|external' AFTER agent_type,
     ADD COLUMN icon VARCHAR(32) NULL AFTER launch_mode,
     ADD COLUMN category VARCHAR(64) NULL AFTER icon,
     ADD CONSTRAINT fk_agent_llm_gateway FOREIGN KEY (llm_gateway_profile_id) REFERENCES llm_gateway_profile (id);
