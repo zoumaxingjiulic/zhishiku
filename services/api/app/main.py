@@ -12,6 +12,7 @@ from pathlib import Path
 from urllib.parse import quote
 
 import pymysql
+from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 from minio import Minio
@@ -29,7 +30,7 @@ from .retrieval import (
 from .security import create_token, decode_token, hash_password, validate_password, verify_password
 
 log = logging.getLogger("kb-api")
-app = FastAPI(title="企业智能体平台 API", version="0.7.0", docs_url="/docs", redoc_url=None)
+app = FastAPI(title="企业智能体平台 API", version="0.9.0", docs_url="/docs", redoc_url=None)
 COOKIE_NAME = "kb_session"
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 
@@ -114,6 +115,44 @@ class DocumentFolderUpdate(BaseModel):
     row_version: int = Field(ge=1)
 
 
+class PromptTemplateWrite(BaseModel):
+    name: str = Field(min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=512)
+    content: str = Field(min_length=1, max_length=50000)
+    variables: list[str] = Field(default_factory=list)
+
+
+class AgentRequestCreate(BaseModel):
+    department_id: int
+    title: str = Field(min_length=2, max_length=128)
+    business_problem: str = Field(min_length=10, max_length=10000)
+    expected_outcome: str = Field(min_length=5, max_length=10000)
+    data_sources: list[str] = Field(default_factory=list)
+    frequency: str | None = Field(default=None, max_length=32)
+    urgency: str = Field(default="normal", pattern=r"^(normal|urgent|strategic)$")
+
+
+class AgentRequestReview(BaseModel):
+    status: str = Field(pattern=r"^(reviewing|approved|rejected|delivered|closed)$")
+    admin_comment: str | None = Field(default=None, max_length=10000)
+
+
+class ModelGatewayWrite(BaseModel):
+    code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
+    name: str = Field(min_length=2, max_length=128)
+    provider_type: str = Field(pattern=r"^(openai|azure_openai|deepseek|qwen|ollama|custom)$")
+    base_url: str = Field(min_length=4, max_length=1024)
+    api_key: str | None = Field(default=None, max_length=4096)
+    model_name: str = Field(min_length=1, max_length=255)
+    capabilities: list[str] = Field(default_factory=lambda: ["chat"])
+    config: dict = Field(default_factory=dict)
+    status: str = Field(default="active", pattern=r"^(active|disabled)$")
+
+
+class AgentModelBinding(BaseModel):
+    model_gateway_profile_id: int | None = None
+
+
 def object_store() -> Minio:
     return Minio(
         settings.minio_endpoint,
@@ -138,6 +177,53 @@ def audit(
         (user_id, action, resource_type, str(resource_id) if resource_id is not None else None,
          json.dumps(detail, ensure_ascii=False) if detail else None, ip_address),
     )
+
+
+def encrypt_model_credential(value: str) -> str:
+    if not settings.model_credential_key:
+        raise HTTPException(503, "模型凭据加密密钥未配置")
+    try:
+        return Fernet(settings.model_credential_key.encode()).encrypt(value.encode()).decode()
+    except (ValueError, TypeError) as exc:
+        raise HTTPException(503, "模型凭据加密密钥格式无效") from exc
+
+
+def model_profile_view(row: dict) -> dict:
+    result = dict(row)
+    result["has_api_key"] = bool(result.pop("api_key_ciphertext", None))
+    for source, target in (("capabilities_json", "capabilities"), ("config_json", "config")):
+        raw = result.pop(source, None)
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                raw = None
+        result[target] = raw or ([] if target == "capabilities" else {})
+    return result
+
+
+def agent_model_gateway(profile_id: int | None) -> dict | None:
+    if profile_id is None:
+        return None
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT base_url,api_key_ciphertext,model_name FROM llm_gateway_profile "
+            "WHERE id=%s AND status='active'", (profile_id,)
+        )
+        row = cursor.fetchone()
+    if not row:
+        raise HTTPException(503, "智能体绑定的模型配置不可用")
+    api_key = ""
+    if row["api_key_ciphertext"]:
+        if not settings.model_credential_key:
+            raise HTTPException(503, "模型凭据加密密钥未配置")
+        try:
+            api_key = Fernet(settings.model_credential_key.encode()).decrypt(
+                row["api_key_ciphertext"].encode()
+            ).decode()
+        except (InvalidToken, ValueError, TypeError) as exc:
+            raise HTTPException(503, "模型凭据无法解密") from exc
+    return {"base_url": row["base_url"], "api_key": api_key, "model_name": row["model_name"]}
 
 
 def load_user(user_id: int) -> dict:
@@ -1147,22 +1233,243 @@ def retry_job(job_id: int, user: dict = Depends(current_user)) -> dict:
     return {"status": "queued"}
 
 
+@app.get("/api/v1/prompt-templates", tags=["prompt-templates"])
+def list_prompt_templates(user: dict = Depends(current_user)) -> list[dict]:
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT id,name,description,content,variables_json,status,created_at,updated_at "
+            "FROM prompt_template WHERE owner_user_id=%s AND status='active' ORDER BY updated_at DESC,id DESC",
+            (user["id"],),
+        )
+        rows = list(cursor.fetchall())
+    for row in rows:
+        raw = row.pop("variables_json", None)
+        row["variables"] = json.loads(raw) if isinstance(raw, str) else (raw or [])
+    return rows
+
+
+@app.post("/api/v1/prompt-templates", tags=["prompt-templates"])
+def create_prompt_template(payload: PromptTemplateWrite, request: Request, user: dict = Depends(current_user)) -> dict:
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            "INSERT INTO prompt_template (owner_user_id,name,description,content,variables_json) VALUES (%s,%s,%s,%s,%s)",
+            (user["id"], payload.name, payload.description, payload.content,
+             json.dumps(payload.variables, ensure_ascii=False)),
+        )
+        template_id = cursor.lastrowid
+        audit(cursor, user["id"], "prompt.create", "prompt_template", template_id, ip_address=request.client.host)
+        conn.commit()
+    return {"id": template_id, "status": "created"}
+
+
+@app.put("/api/v1/prompt-templates/{template_id}", tags=["prompt-templates"])
+def update_prompt_template(template_id: int, payload: PromptTemplateWrite, request: Request,
+                           user: dict = Depends(current_user)) -> dict:
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            "UPDATE prompt_template SET name=%s,description=%s,content=%s,variables_json=%s "
+            "WHERE id=%s AND owner_user_id=%s AND status='active'",
+            (payload.name, payload.description, payload.content, json.dumps(payload.variables, ensure_ascii=False),
+             template_id, user["id"]),
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "提示词模板不存在")
+        audit(cursor, user["id"], "prompt.update", "prompt_template", template_id, ip_address=request.client.host)
+        conn.commit()
+    return {"status": "updated"}
+
+
+@app.delete("/api/v1/prompt-templates/{template_id}", tags=["prompt-templates"])
+def delete_prompt_template(template_id: int, request: Request, user: dict = Depends(current_user)) -> dict:
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            "UPDATE prompt_template SET status='deleted' WHERE id=%s AND owner_user_id=%s AND status='active'",
+            (template_id, user["id"]),
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "提示词模板不存在")
+        audit(cursor, user["id"], "prompt.delete", "prompt_template", template_id, ip_address=request.client.host)
+        conn.commit()
+    return {"status": "deleted"}
+
+
+@app.get("/api/v1/agent-requests", tags=["agent-requests"])
+def list_agent_requests(user: dict = Depends(current_user)) -> list[dict]:
+    where = "" if is_admin(user) else "WHERE r.applicant_user_id=%s"
+    parameters = [] if is_admin(user) else [user["id"]]
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT r.id,r.request_no,r.title,r.business_problem,r.expected_outcome,r.data_sources_json,"
+            "r.frequency,r.urgency,r.status,r.admin_comment,r.created_at,r.updated_at,"
+            "u.display_name applicant_name,d.name department_name,reviewer.display_name reviewer_name "
+            "FROM agent_request r JOIN app_user u ON u.id=r.applicant_user_id "
+            "JOIN department d ON d.id=r.department_id LEFT JOIN app_user reviewer ON reviewer.id=r.reviewed_by "
+            f"{where} ORDER BY r.id DESC",
+            parameters,
+        )
+        rows = list(cursor.fetchall())
+    for row in rows:
+        raw = row.pop("data_sources_json", None)
+        row["data_sources"] = json.loads(raw) if isinstance(raw, str) else (raw or [])
+    return rows
+
+
+@app.post("/api/v1/agent-requests", tags=["agent-requests"])
+def create_agent_request(payload: AgentRequestCreate, request: Request,
+                         user: dict = Depends(current_user)) -> dict:
+    if not is_admin(user) and payload.department_id not in user["department_ids"]:
+        raise HTTPException(403, "只能为自己所属部门提交申请")
+    request_no = f"AR-{time.strftime('%Y%m%d')}-{secrets.token_hex(3).upper()}"
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute("SELECT id FROM department WHERE id=%s AND status=1", (payload.department_id,))
+        if not cursor.fetchone():
+            raise HTTPException(422, "申请部门不存在")
+        cursor.execute(
+            "INSERT INTO agent_request (request_no,applicant_user_id,department_id,title,business_problem,"
+            "expected_outcome,data_sources_json,frequency,urgency) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+            (request_no, user["id"], payload.department_id, payload.title, payload.business_problem,
+             payload.expected_outcome, json.dumps(payload.data_sources, ensure_ascii=False),
+             payload.frequency, payload.urgency),
+        )
+        request_id = cursor.lastrowid
+        audit(cursor, user["id"], "agent_request.create", "agent_request", request_id,
+              {"request_no": request_no}, request.client.host)
+        conn.commit()
+    return {"id": request_id, "request_no": request_no, "status": "submitted"}
+
+
+@app.patch("/api/v1/agent-requests/{agent_request_id}", tags=["agent-requests"])
+def review_agent_request(agent_request_id: int, payload: AgentRequestReview, request: Request,
+                         user: dict = Depends(platform_admin)) -> dict:
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            "UPDATE agent_request SET status=%s,admin_comment=%s,reviewed_by=%s,reviewed_at=NOW(3) WHERE id=%s",
+            (payload.status, payload.admin_comment, user["id"], agent_request_id),
+        )
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "智能体申请不存在")
+        audit(cursor, user["id"], "agent_request.review", "agent_request", agent_request_id,
+              {"status": payload.status}, request.client.host)
+        conn.commit()
+    return {"status": payload.status}
+
+
+@app.get("/api/v1/model-gateway/profiles", tags=["model-gateway"])
+def list_model_profiles(user: dict = Depends(platform_admin)) -> list[dict]:
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT p.id,p.code,p.name,p.provider_type,p.base_url,p.api_key_ciphertext,p.model_name,"
+            "p.capabilities_json,p.config_json,p.status,p.created_at,p.updated_at,COUNT(a.id) agent_count "
+            "FROM llm_gateway_profile p LEFT JOIN agent a ON a.llm_gateway_profile_id=p.id "
+            "GROUP BY p.id ORDER BY p.id"
+        )
+        return [model_profile_view(row) for row in cursor.fetchall()]
+
+
+@app.post("/api/v1/model-gateway/profiles", tags=["model-gateway"])
+def create_model_profile(payload: ModelGatewayWrite, request: Request,
+                         user: dict = Depends(platform_admin)) -> dict:
+    ciphertext = encrypt_model_credential(payload.api_key) if payload.api_key else None
+    with connect() as conn, conn.cursor() as cursor:
+        try:
+            cursor.execute(
+                "INSERT INTO llm_gateway_profile (code,name,provider_type,base_url,api_key_ciphertext,model_name,"
+                "capabilities_json,config_json,status,created_by) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                (payload.code, payload.name, payload.provider_type, payload.base_url, ciphertext,
+                 payload.model_name, json.dumps(payload.capabilities), json.dumps(payload.config),
+                 payload.status, user["id"]),
+            )
+        except pymysql.err.IntegrityError as exc:
+            raise HTTPException(409, "模型配置编码已存在") from exc
+        profile_id = cursor.lastrowid
+        audit(cursor, user["id"], "model_profile.create", "llm_gateway_profile", profile_id,
+              {"provider_type": payload.provider_type, "model_name": payload.model_name}, request.client.host)
+        conn.commit()
+    return {"id": profile_id, "status": "created"}
+
+
+@app.put("/api/v1/model-gateway/profiles/{profile_id}", tags=["model-gateway"])
+def update_model_profile(profile_id: int, payload: ModelGatewayWrite, request: Request,
+                         user: dict = Depends(platform_admin)) -> dict:
+    key_clause = ",api_key_ciphertext=%s" if payload.api_key else ""
+    parameters: list = [payload.code, payload.name, payload.provider_type, payload.base_url, payload.model_name,
+                        json.dumps(payload.capabilities), json.dumps(payload.config), payload.status]
+    if payload.api_key:
+        parameters.append(encrypt_model_credential(payload.api_key))
+    parameters.append(profile_id)
+    with connect() as conn, conn.cursor() as cursor:
+        try:
+            cursor.execute(
+                "UPDATE llm_gateway_profile SET code=%s,name=%s,provider_type=%s,base_url=%s,model_name=%s,"
+                f"capabilities_json=%s,config_json=%s,status=%s{key_clause} WHERE id=%s",
+                parameters,
+            )
+        except pymysql.err.IntegrityError as exc:
+            raise HTTPException(409, "模型配置编码已存在") from exc
+        if cursor.rowcount == 0:
+            raise HTTPException(404, "模型配置不存在或没有变化")
+        audit(cursor, user["id"], "model_profile.update", "llm_gateway_profile", profile_id,
+              {"provider_type": payload.provider_type, "model_name": payload.model_name}, request.client.host)
+        conn.commit()
+    return {"status": "updated"}
+
+
+@app.put("/api/v1/agents/{agent_id}/model-profile", tags=["model-gateway"])
+def bind_agent_model_profile(agent_id: int, payload: AgentModelBinding, request: Request,
+                             user: dict = Depends(platform_admin)) -> dict:
+    with connect() as conn, conn.cursor() as cursor:
+        if payload.model_gateway_profile_id is not None:
+            cursor.execute("SELECT id FROM llm_gateway_profile WHERE id=%s AND status='active'",
+                           (payload.model_gateway_profile_id,))
+            if not cursor.fetchone():
+                raise HTTPException(422, "模型配置不存在或未启用")
+        cursor.execute("UPDATE agent SET llm_gateway_profile_id=%s WHERE id=%s",
+                       (payload.model_gateway_profile_id, agent_id))
+        if cursor.rowcount == 0:
+            cursor.execute("SELECT id FROM agent WHERE id=%s", (agent_id,))
+            if not cursor.fetchone():
+                raise HTTPException(404, "智能体不存在")
+        audit(cursor, user["id"], "agent.model.bind", "agent", agent_id,
+              {"model_gateway_profile_id": payload.model_gateway_profile_id}, request.client.host)
+        conn.commit()
+    return {"status": "updated"}
+
+
 @app.get("/api/v1/agents", tags=["agents"])
 def list_agents(user: dict = Depends(current_user)) -> list[dict]:
     kb_ids = accessible_knowledge_base_ids(user)
-    if not kb_ids:
-        return []
-    placeholders = ",".join(["%s"] * len(kb_ids))
+    access_clause = ""
+    parameters: list = []
+    if not is_admin(user):
+        conditions: list[str] = []
+        if user["department_ids"]:
+            dept_placeholders = ",".join(["%s"] * len(user["department_ids"]))
+            conditions.append(
+                f"EXISTS (SELECT 1 FROM agent_department_acl aa WHERE aa.agent_id=a.id "
+                f"AND aa.department_id IN ({dept_placeholders}))"
+            )
+            parameters.extend(user["department_ids"])
+        if kb_ids:
+            kb_placeholders = ",".join(["%s"] * len(kb_ids))
+            conditions.append(
+                f"EXISTS (SELECT 1 FROM agent_knowledge_base access_ak WHERE access_ak.agent_id=a.id "
+                f"AND access_ak.knowledge_base_id IN ({kb_placeholders}))"
+            )
+            parameters.extend(kb_ids)
+        if not conditions:
+            return []
+        access_clause = "AND (" + " OR ".join(conditions) + ")"
     with connect() as conn, conn.cursor() as cursor:
         cursor.execute(
-            f"SELECT DISTINCT a.id,a.code,a.name,a.description,a.agent_type,a.status,"
+            f"SELECT a.id,a.code,a.name,a.description,a.agent_type,a.launch_mode,a.icon,a.category,"
+            f"a.llm_gateway_profile_id,a.status,"
             f"GROUP_CONCAT(DISTINCT k.name ORDER BY k.id SEPARATOR ', ') knowledge_bases,"
             f"GROUP_CONCAT(DISTINCT k.id ORDER BY k.id SEPARATOR ',') knowledge_base_ids "
-            f"FROM agent a JOIN agent_knowledge_base ak ON ak.agent_id=a.id "
-            f"JOIN knowledge_base k ON k.id=ak.knowledge_base_id "
-            f"WHERE a.status='active' AND ak.knowledge_base_id IN ({placeholders}) "
+            f"FROM agent a LEFT JOIN agent_knowledge_base ak ON ak.agent_id=a.id "
+            f"LEFT JOIN knowledge_base k ON k.id=ak.knowledge_base_id "
+            f"WHERE a.status='active' {access_clause} "
             f"GROUP BY a.id ORDER BY a.id",
-            kb_ids,
+            parameters,
         )
         return list(cursor.fetchall())
 
@@ -1170,13 +1477,24 @@ def list_agents(user: dict = Depends(current_user)) -> list[dict]:
 def agent_for_user(user: dict, agent_id: int) -> dict:
     accessible = set(accessible_knowledge_base_ids(user))
     with connect() as conn, conn.cursor() as cursor:
-        cursor.execute("SELECT id,code,name,system_prompt,llm_model,status FROM agent WHERE id=%s", (agent_id,))
+        cursor.execute(
+            "SELECT id,code,name,system_prompt,llm_model,llm_gateway_profile_id,agent_type,launch_mode,status "
+            "FROM agent WHERE id=%s", (agent_id,)
+        )
         agent = cursor.fetchone()
         if not agent or agent["status"] != "active":
             raise HTTPException(404, "智能体不存在或未启用")
         cursor.execute("SELECT knowledge_base_id FROM agent_knowledge_base WHERE agent_id=%s", (agent_id,))
         agent["knowledge_base_ids"] = [row["knowledge_base_id"] for row in cursor.fetchall() if row["knowledge_base_id"] in accessible]
-    if not agent["knowledge_base_ids"]:
+        explicit_access = is_admin(user)
+        if not explicit_access and user["department_ids"]:
+            placeholders = ",".join(["%s"] * len(user["department_ids"]))
+            cursor.execute(
+                f"SELECT 1 FROM agent_department_acl WHERE agent_id=%s AND department_id IN ({placeholders}) LIMIT 1",
+                [agent_id, *user["department_ids"]],
+            )
+            explicit_access = cursor.fetchone() is not None
+    if not explicit_access and not agent["knowledge_base_ids"]:
         raise HTTPException(403, "无权使用该智能体")
     return agent
 
@@ -1223,7 +1541,11 @@ def hydrate_units(
 @app.post("/api/v1/agents/{agent_id}/chat", tags=["agents"])
 def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict = Depends(current_user)) -> dict:
     agent = agent_for_user(user, agent_id)
+    if agent["launch_mode"] != "chat":
+        raise HTTPException(422, "该智能体不是问答型入口")
     knowledge_base_ids = agent["knowledge_base_ids"]
+    if not knowledge_base_ids:
+        raise HTTPException(422, "该问答智能体尚未配置知识范围")
     if payload.knowledge_base_id is not None:
         if payload.knowledge_base_id not in knowledge_base_ids:
             raise HTTPException(403, "无权在所选知识库中问答")
@@ -1243,7 +1565,10 @@ def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict
     keyword = keyword_candidates(payload.question, knowledge_base_ids, departments, document_ids)
     fused = reciprocal_rank_fusion(vector, keyword)
     units, rerank_method = rerank(payload.question, hydrate_units(fused, knowledge_base_ids, user, document_ids))
-    answer, answer_method = generate_answer(agent["system_prompt"], payload.question, units, agent["llm_model"])
+    gateway = agent_model_gateway(agent["llm_gateway_profile_id"])
+    answer, answer_method = generate_answer(
+        agent["system_prompt"], payload.question, units, agent["llm_model"], gateway
+    )
     citations = [
         {
             "document_id": unit["document_id"],
@@ -1268,7 +1593,8 @@ def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict
         cursor.execute("INSERT INTO chat_message (session_id,role,content) VALUES (%s,'user',%s)", (session_id, payload.question))
         cursor.execute(
             "INSERT INTO chat_message (session_id,role,content,citations_json,model_name) VALUES (%s,'assistant',%s,%s,%s)",
-            (session_id, answer, json.dumps(citations, ensure_ascii=False), settings.llm_model or answer_method),
+            (session_id, answer, json.dumps(citations, ensure_ascii=False),
+             gateway["model_name"] if gateway else (agent["llm_model"] or settings.llm_model or answer_method)),
         )
         audit(cursor, user["id"], "agent.chat", "agent", agent_id, {
             "session_id": session_id,

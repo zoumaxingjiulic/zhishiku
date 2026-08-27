@@ -32,3 +32,5 @@ Apply a single migration from the project root with `bash deploy/apply-mysql-mig
 `008_cleanup_legacy_e2e_accounts.sql` soft-deletes legacy automated test accounts that predate automatic smoke-test cleanup.
 
 `009_knowledge_folders.sql` adds the virtual folder tree, document folder ownership and optimistic-lock versions. Existing documents remain in the knowledge-base root directory.
+
+`010_enterprise_agent_platform.sql` adds encrypted model-gateway profiles, per-agent model binding, explicit agent department ACLs, personal prompt templates, agent application records, and launch metadata for chat, form, workflow, dashboard, and external agents.

@@ -159,22 +159,31 @@ def rerank(question: str, units: list[dict], top_n: int = 8) -> tuple[list[dict]
     return [unit for _, unit in ranked[:top_n]], "local"
 
 
-def generate_answer(system_prompt: str, question: str, units: list[dict], model_override: str | None = None) -> tuple[str, str]:
+def generate_answer(
+    system_prompt: str,
+    question: str,
+    units: list[dict],
+    model_override: str | None = None,
+    gateway: dict | None = None,
+) -> tuple[str, str]:
     if not units:
         return "在当前账号有权访问的知识库中，没有检索到足以回答该问题的资料。", "no_evidence"
     context = "\n\n".join(
         f"[来源{index}] {unit['title']} 第{unit['page_start'] or '未知'}页\n{unit['content_text']}"
         for index, unit in enumerate(units, 1)
     )
-    if settings.llm_base_url and (model_override or settings.llm_model):
+    base_url = gateway.get("base_url") if gateway else settings.llm_base_url
+    api_key = gateway.get("api_key") if gateway else settings.llm_api_key
+    model_name = gateway.get("model_name") if gateway else (model_override or settings.llm_model)
+    if base_url and model_name:
         headers = {"Content-Type": "application/json"}
-        if settings.llm_api_key:
-            headers["Authorization"] = f"Bearer {settings.llm_api_key}"
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
         response = httpx.post(
-            settings.llm_base_url.rstrip("/") + "/chat/completions",
+            base_url.rstrip("/") + "/chat/completions",
             headers=headers,
             json={
-                "model": model_override or settings.llm_model,
+                "model": model_name,
                 "messages": [
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"问题：{question}\n\n资料：\n{context}"},
