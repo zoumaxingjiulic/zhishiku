@@ -1576,7 +1576,7 @@ def list_agent_chat_sessions(agent_id: int, user: dict = Depends(current_user)) 
         raise HTTPException(422, "该智能体不是问答型入口")
     with connect() as conn, conn.cursor() as cursor:
         cursor.execute(
-            "SELECT s.id,s.title,s.created_at,s.updated_at,COUNT(m.id) message_count," 
+            "SELECT s.id,s.title,s.created_at,s.updated_at,COUNT(m.id) message_count,"
             "(SELECT lm.role FROM chat_message lm WHERE lm.session_id=s.id ORDER BY lm.id DESC LIMIT 1) last_role "
             "FROM chat_session s LEFT JOIN chat_message m ON m.session_id=s.id "
             "WHERE s.agent_id=%s AND s.user_id=%s AND s.status='active' "
