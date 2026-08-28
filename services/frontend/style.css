@@ -268,6 +268,8 @@ tr:last-child td { border-bottom: 0; }
 .chat-input button { height: 44px; min-width: 78px; }
 .chat-scope { display: grid; grid-template-columns: auto minmax(220px, 1fr); align-items: center; gap: 12px; margin-bottom: 12px; padding: 10px 12px; border: 1px solid var(--line); border-radius: 9px; background: #f8faff; color: #53627a; }
 .chat-scope select { padding: 8px 10px; }
+.chat-scope.fixed strong { color: var(--ink); font-size: 13px; }
+.chat-scope.fixed small { grid-column: 2; margin-top: -8px; color: var(--muted); font-size: 11px; }
 
 .connector-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .connector { padding: 24px; }

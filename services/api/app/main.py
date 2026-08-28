@@ -1538,6 +1538,37 @@ def hydrate_units(
     return [rows[unit_id] for unit_id in unit_ids if unit_id in rows]
 
 
+@app.get("/api/v1/agents/{agent_id}/chat/latest", tags=["agents"])
+def latest_agent_chat(agent_id: int, user: dict = Depends(current_user)) -> dict:
+    """Return the caller's most recently active conversation for this chat agent."""
+    agent = agent_for_user(user, agent_id)
+    if agent["launch_mode"] != "chat":
+        raise HTTPException(422, "该智能体不是问答型入口")
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT id FROM chat_session WHERE agent_id=%s AND user_id=%s AND status='active' "
+            "ORDER BY updated_at DESC,id DESC LIMIT 1",
+            (agent_id, user["id"]),
+        )
+        session = cursor.fetchone()
+        if not session:
+            return {"session_id": None, "messages": []}
+        cursor.execute(
+            "SELECT role,content,citations_json,created_at FROM chat_message WHERE session_id=%s ORDER BY id",
+            (session["id"],),
+        )
+        messages = list(cursor.fetchall())
+    for message in messages:
+        raw = message.pop("citations_json", None)
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                raw = []
+        message["citations"] = raw or []
+    return {"session_id": session["id"], "messages": messages}
+
+
 @app.post("/api/v1/agents/{agent_id}/chat", tags=["agents"])
 def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict = Depends(current_user)) -> dict:
     agent = agent_for_user(user, agent_id)
@@ -1596,6 +1627,7 @@ def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict
             (session_id, answer, json.dumps(citations, ensure_ascii=False),
              gateway["model_name"] if gateway else (agent["llm_model"] or settings.llm_model or answer_method)),
         )
+        cursor.execute("UPDATE chat_session SET updated_at=NOW(3) WHERE id=%s", (session_id,))
         audit(cursor, user["id"], "agent.chat", "agent", agent_id, {
             "session_id": session_id,
             "knowledge_base_id": payload.knowledge_base_id,
