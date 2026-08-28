@@ -115,19 +115,21 @@ label { display: grid; gap: 8px; min-width: 0; font-size: 13px; font-weight: 650
 .logo strong { display: block; font-size: 17px; }
 .logo small { display: block; margin-top: 3px; color: #7890af; font-size: 9px; letter-spacing: 1.3px; }
 nav { display: grid; gap: 5px; }
-nav button {
+nav button, nav a {
+  display: block;
   border: 0;
   border-radius: 9px;
   padding: 12px 15px;
   background: transparent;
   color: #aabbd1;
   font-weight: 650;
+  text-decoration: none;
   text-align: left;
   white-space: nowrap;
 }
-nav button span { display: inline-block; width: 25px; font-size: 17px; }
-nav button:hover, nav button.active { background: var(--navy-2); color: #fff; }
-nav button.active { box-shadow: inset 3px 0 #4d8cff; }
+nav button span, nav a span { display: inline-block; width: 25px; font-size: 17px; }
+nav button:hover, nav button.active, nav a:hover, nav a.active { background: var(--navy-2); color: #fff; }
+nav button.active, nav a.active { box-shadow: inset 3px 0 #4d8cff; }
 .sidebar-foot { margin-top: auto; border-top: 1px solid #29405f; padding: 18px 10px 4px; color: #8ca1bc; font-size: 12px; }
 .health-dot { display: inline-block; width: 8px; height: 8px; margin-right: 8px; border-radius: 50%; background: #30d18a; }
 

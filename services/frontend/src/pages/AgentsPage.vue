@@ -1,26 +1,246 @@
 <script setup lang="ts">
-import { computed, nextTick, onBeforeUnmount, onMounted, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
+import { useRoute, useRouter } from "vue-router";
 import { api } from "../api";
-const emit=defineEmits<{toast:[message:string,bad?:boolean]}>();
-const agents=ref<any[]>([]),selected=ref<any>(null),question=ref(""),sessionId=ref<string|null>(null),sending=ref(false),messages=ref<any[]>([]),sessions=ref<any[]>([]);
-const modeMeta:Record<string,{label:string,icon:string,hint:string}>={chat:{label:"问答",icon:"✦",hint:"对话查询与知识检索"},form:{label:"任务",icon:"▣",hint:"填写参数后执行任务"},workflow:{label:"流程",icon:"⇢",hint:"多步骤业务流程"},dashboard:{label:"看板",icon:"▥",hint:"业务数据分析看板"},external:{label:"系统",icon:"↗",hint:"打开外部业务应用"}};
-const welcomeMessage={role:"assistant",text:"您好，我会仅根据智能体已授权的企业资料回答，并提供引用来源。"};
-const isAwaitingAnswer=computed(()=>sending.value||messages.value.at(-1)?.role==="user");
-let pollTimer:number|undefined;
-onMounted(async()=>{agents.value=await api<any[]>("/api/v1/agents");const lastAgentId=Number(sessionStorage.getItem("kb.lastChatAgentId"));const agent=agents.value.find(item=>item.id===lastAgentId&&item.launch_mode==="chat");if(agent)await open(agent);});
-onBeforeUnmount(()=>stopPolling());
-function sessionKey(agentId:number){return `kb.chatSession.${agentId}`;}
-function stopPolling(){if(pollTimer){window.clearTimeout(pollTimer);pollTimer=undefined;}}
-function schedulePendingPoll(id:string){stopPolling();if(messages.value.at(-1)?.role!=="user")return;pollTimer=window.setTimeout(async()=>{if(sessionId.value!==id)return;try{const history=await api<any>(`/api/v1/agents/${selected.value.id}/chat/sessions/${id}`);if(sessionId.value!==id)return;messages.value=history.messages?.length?history.messages:[welcomeMessage];await loadSessions();if(messages.value.at(-1)?.role==="user")schedulePendingPoll(id);else{stopPolling();await nextTick();document.querySelector(".messages")?.scrollTo({top:999999,behavior:"smooth"});}}catch{stopPolling();}},2000);}
-async function loadSessions(){sessions.value=await api<any[]>(`/api/v1/agents/${selected.value.id}/chat/sessions`);}
-async function loadSession(id:string){stopPolling();const history=await api<any>(`/api/v1/agents/${selected.value.id}/chat/sessions/${id}`);sessionId.value=id;sessionStorage.setItem(sessionKey(selected.value.id),id);messages.value=history.messages?.length?history.messages:[welcomeMessage];schedulePendingPoll(id);await nextTick();document.querySelector(".messages")?.scrollTo({top:999999});}
-async function open(agent:any){selected.value=agent;if(agent.launch_mode!=="chat")return;sessionStorage.setItem("kb.lastChatAgentId",String(agent.id));try{await loadSessions();const remembered=sessionStorage.getItem(sessionKey(agent.id));const target=sessions.value.find(item=>item.id===remembered)||sessions.value[0];if(target)await loadSession(target.id);else await newConversation();}catch(e:any){sessionId.value=null;messages.value=[welcomeMessage];emit("toast",e.message,true);}}
-async function newConversation(){if(sending.value)return;try{const created=await api<any>(`/api/v1/agents/${selected.value.id}/chat/sessions`,{method:"POST"});await loadSessions();await loadSession(created.id);}catch(e:any){emit("toast",e.message,true);}}
-async function deleteConversation(event:Event,item:any){event.stopPropagation();if(item.last_role==="user"){emit("toast","该对话正在生成回答，请完成后再删除",true);return;}if(sending.value)return;if(!window.confirm(`确定删除对话“${item.title||"新对话"}”吗？删除后无法恢复。`))return;try{await api(`/api/v1/agents/${selected.value.id}/chat/sessions/${item.id}`,{method:"DELETE"});if(sessionId.value===item.id){sessionStorage.removeItem(sessionKey(selected.value.id));await loadSessions();if(sessions.value.length)await loadSession(sessions.value[0].id);else await newConversation();}else await loadSessions();emit("toast","对话已删除");}catch(e:any){emit("toast",e.message,true);}}
-function backToList(){stopPolling();sessionStorage.removeItem("kb.lastChatAgentId");selected.value=null;}
-async function send(){const text=question.value.trim();if(!text||isAwaitingAnswer.value)return;if(!sessionId.value)await newConversation();messages.value.push({role:"user",text});question.value="";sending.value=true;try{const result=await api<any>(`/api/v1/agents/${selected.value.id}/chat`,{method:"POST",body:JSON.stringify({question:text,session_id:sessionId.value})});sessionId.value=result.session_id;messages.value.push({role:"assistant",text:result.answer,citations:result.citations,method:result.retrieval_method});await loadSessions();}catch(e:any){messages.value.push({role:"assistant",text:`请求失败：${e.message}`});emit("toast",e.message,true);}finally{sending.value=false;await nextTick();document.querySelector(".messages")?.scrollTo({top:999999,behavior:"smooth"});}}
+
+const emit = defineEmits<{ toast: [message: string, bad?: boolean] }>();
+const route = useRoute();
+const router = useRouter();
+const agents = ref<any[]>([]);
+const selected = ref<any>(null);
+const question = ref("");
+const sessionId = ref<string | null>(null);
+const sending = ref(false);
+const messages = ref<any[]>([]);
+const sessions = ref<any[]>([]);
+const modeMeta: Record<string, { label: string; icon: string; hint: string }> = {
+  chat: { label: "问答", icon: "✦", hint: "对话查询与知识检索" },
+  form: { label: "任务", icon: "▣", hint: "填写参数后执行任务" },
+  workflow: { label: "流程", icon: "⇢", hint: "多步骤业务流程" },
+  dashboard: { label: "看板", icon: "▥", hint: "业务数据分析看板" },
+  external: { label: "系统", icon: "↗", hint: "打开外部业务应用" },
+};
+const welcomeMessage = { role: "assistant", text: "您好，我会仅根据智能体已授权的企业资料回答，并提供引用来源。" };
+const isAwaitingAnswer = computed(() => sending.value || messages.value.at(-1)?.role === "user");
+let pollTimer: number | undefined;
+let routeSyncVersion = 0;
+
+onMounted(async () => {
+  try {
+    agents.value = await api<any[]>("/api/v1/agents");
+    await syncFromRoute();
+  } catch (error: any) { emit("toast", error.message, true); }
+});
+watch(() => route.fullPath, () => {
+  if (agents.value.length) void syncFromRoute();
+});
+onBeforeUnmount(() => {
+  routeSyncVersion += 1;
+  stopPolling();
+});
+
+function sessionKey(agentId: number) { return `kb.chatSession.${agentId}`; }
+function stopPolling() {
+  if (pollTimer) {
+    window.clearTimeout(pollTimer);
+    pollTimer = undefined;
+  }
+}
+async function scrollToBottom(smooth = false) {
+  await nextTick();
+  document.querySelector(".messages")?.scrollTo({ top: 999999, behavior: smooth ? "smooth" : "auto" });
+}
+function schedulePendingPoll(id: string) {
+  stopPolling();
+  if (messages.value.at(-1)?.role !== "user") return;
+  pollTimer = window.setTimeout(async () => {
+    if (sessionId.value !== id || !selected.value) return;
+    try {
+      const history = await api<any>(`/api/v1/agents/${selected.value.id}/chat/sessions/${id}`);
+      if (sessionId.value !== id) return;
+      messages.value = history.messages?.length ? history.messages : [welcomeMessage];
+      await loadSessions();
+      if (messages.value.at(-1)?.role === "user") schedulePendingPoll(id);
+      else {
+        stopPolling();
+        await scrollToBottom(true);
+      }
+    } catch { stopPolling(); }
+  }, 2000);
+}
+async function loadSessions() {
+  if (!selected.value) return;
+  sessions.value = await api<any[]>(`/api/v1/agents/${selected.value.id}/chat/sessions`);
+}
+async function fetchSession(id: string) {
+  stopPolling();
+  const history = await api<any>(`/api/v1/agents/${selected.value.id}/chat/sessions/${id}`);
+  sessionId.value = id;
+  sessionStorage.setItem(sessionKey(selected.value.id), id);
+  sessionStorage.setItem("kb.lastAgentRoute", route.fullPath);
+  messages.value = history.messages?.length ? history.messages : [welcomeMessage];
+  schedulePendingPoll(id);
+  await scrollToBottom();
+}
+async function loadSession(id: string) {
+  if (!selected.value) return;
+  const routeId = typeof route.params.sessionId === "string" ? route.params.sessionId : "";
+  if (route.name !== "agent-chat" || routeId !== id) {
+    await router.push({ name: "agent-chat", params: { agentId: selected.value.id, sessionId: id } });
+    return;
+  }
+  await fetchSession(id);
+}
+async function syncFromRoute() {
+  const version = ++routeSyncVersion;
+  stopPolling();
+  if (route.name === "agents") {
+    const lastRoute = sessionStorage.getItem("kb.lastAgentRoute");
+    if (lastRoute && lastRoute !== route.fullPath) {
+      await router.replace(lastRoute);
+      return;
+    }
+    selected.value = null;
+    sessionId.value = null;
+    messages.value = [];
+    sessions.value = [];
+    return;
+  }
+
+  const agentId = Number(route.params.agentId);
+  const agent = agents.value.find((item) => item.id === agentId);
+  if (!agent) {
+    sessionStorage.removeItem("kb.lastAgentRoute");
+    await router.replace({ name: "agents" });
+    return;
+  }
+  selected.value = agent;
+  if (agent.launch_mode !== "chat") {
+    sessionStorage.setItem("kb.lastAgentRoute", route.fullPath);
+    sessionId.value = null;
+    messages.value = [];
+    sessions.value = [];
+    return;
+  }
+
+  try {
+    await loadSessions();
+    if (version !== routeSyncVersion) return;
+    const requested = typeof route.params.sessionId === "string" ? route.params.sessionId : "";
+    const remembered = sessionStorage.getItem(sessionKey(agent.id));
+    const target = sessions.value.find((item) => item.id === requested)
+      || sessions.value.find((item) => item.id === remembered)
+      || sessions.value[0];
+    if (!target) {
+      await newConversation();
+      return;
+    }
+    if (route.name !== "agent-chat" || requested !== target.id) {
+      await router.replace({ name: "agent-chat", params: { agentId: agent.id, sessionId: target.id } });
+      return;
+    }
+    sessionStorage.setItem("kb.lastAgentRoute", route.fullPath);
+    await fetchSession(target.id);
+  } catch (error: any) {
+    sessionId.value = null;
+    messages.value = [welcomeMessage];
+    emit("toast", error.message, true);
+  }
+}
+async function open(agent: any) {
+  await router.push({ name: "agent", params: { agentId: agent.id } });
+}
+async function newConversation() {
+  if (sending.value || !selected.value) return null;
+  try {
+    const created = await api<any>(`/api/v1/agents/${selected.value.id}/chat/sessions`, { method: "POST" });
+    await loadSessions();
+    sessionId.value = created.id;
+    messages.value = [welcomeMessage];
+    sessionStorage.setItem(sessionKey(selected.value.id), created.id);
+    await router.push({ name: "agent-chat", params: { agentId: selected.value.id, sessionId: created.id } });
+    return created.id as string;
+  } catch (error: any) {
+    emit("toast", error.message, true);
+    return null;
+  }
+}
+async function deleteConversation(event: Event, item: any) {
+  event.stopPropagation();
+  if (item.last_role === "user") {
+    emit("toast", "该对话正在生成回答，请完成后再删除", true);
+    return;
+  }
+  if (sending.value || !selected.value) return;
+  if (!window.confirm(`确定删除对话“${item.title || "新对话"}”吗？删除后无法恢复。`)) return;
+  try {
+    await api(`/api/v1/agents/${selected.value.id}/chat/sessions/${item.id}`, { method: "DELETE" });
+    if (sessionId.value === item.id) {
+      sessionStorage.removeItem(sessionKey(selected.value.id));
+      await loadSessions();
+      if (sessions.value.length) {
+        await router.replace({ name: "agent-chat", params: { agentId: selected.value.id, sessionId: sessions.value[0].id } });
+      } else await newConversation();
+    } else await loadSessions();
+    emit("toast", "对话已删除");
+  } catch (error: any) { emit("toast", error.message, true); }
+}
+async function backToList() {
+  stopPolling();
+  sessionStorage.removeItem("kb.lastAgentRoute");
+  await router.push({ name: "agents" });
+}
+async function send() {
+  const text = question.value.trim();
+  if (!text || isAwaitingAnswer.value || !selected.value) return;
+  if (!sessionId.value && !await newConversation()) return;
+  messages.value.push({ role: "user", text });
+  question.value = "";
+  sending.value = true;
+  try {
+    const result = await api<any>(`/api/v1/agents/${selected.value.id}/chat`, {
+      method: "POST",
+      body: JSON.stringify({ question: text, session_id: sessionId.value }),
+    });
+    sessionId.value = result.session_id;
+    messages.value.push({ role: "assistant", text: result.answer, citations: result.citations, method: result.retrieval_method });
+    await loadSessions();
+  } catch (error: any) {
+    messages.value.push({ role: "assistant", text: `请求失败：${error.message}` });
+    emit("toast", error.message, true);
+  } finally {
+    sending.value = false;
+    await scrollToBottom(true);
+  }
+}
 </script>
+
 <template>
-  <template v-if="!selected"><div class="section-head"><div><h2>可用智能体</h2><p>问答、流程、任务和业务看板统一从这里进入</p></div><span class="badge success">{{agents.length}} 个可用</span></div><div v-if="agents.length" class="agents-grid"><article v-for="agent in agents" :key="agent.id" class="card agent-list-card" @click="open(agent)"><div class="agent-card-top"><div class="agent-symbol compact">{{agent.icon||modeMeta[agent.launch_mode]?.icon||'✦'}}</div><span class="badge">{{modeMeta[agent.launch_mode]?.label||agent.agent_type}}</span></div><div class="agent-list-content"><h2>{{agent.name}}</h2><p>{{agent.description||modeMeta[agent.launch_mode]?.hint}}</p><div class="agent-card-foot"><small>{{agent.category||modeMeta[agent.launch_mode]?.hint}}</small><span>打开 →</span></div></div></article></div><div v-else class="card empty">暂无可用智能体</div></template>
-  <template v-else><div class="agent-chat-head"><button class="secondary" @click="backToList">← 返回智能体列表</button><div><h2>{{selected.name}}</h2><p>{{modeMeta[selected.launch_mode]?.hint}}</p></div></div><div v-if="selected.launch_mode==='chat'" class="chat-layout"><div class="agent-card"><div class="agent-identity"><div class="agent-symbol light">✦</div><span class="eyebrow">CHAT AGENT</span><h2>{{selected.name}}</h2><p>{{selected.description}}</p><div class="agent-scope dark"><small>授权知识范围</small><strong>{{selected.knowledge_bases}}</strong></div></div><div class="conversation-head"><strong>我的对话</strong><button class="new-chat" :disabled="sending" @click="newConversation">＋ 新建</button></div><div class="conversation-list"><button v-for="item in sessions" :key="item.id" class="conversation-item" :class="{active:sessionId===item.id}" @click="loadSession(item.id)"><span><strong>{{item.title||'新对话'}}</strong><small>{{item.last_role==='user'?'回答中…':item.message_count+' 条消息'}}</small></span><i title="删除对话" @click="deleteConversation($event,item)">×</i></button></div></div><div class="card chat-box"><div class="chat-scope fixed"><span>检索范围</span><strong>智能体授权知识范围</strong><small>由管理员在智能体配置中统一设定</small></div><div class="messages"><div v-for="(message,index) in messages" :key="index" class="message" :class="message.role">{{message.content||message.text}}<div v-if="message.citations?.length" class="citation">引用：<span v-for="(citation,i) in message.citations" :key="i">《{{citation.title}}》{{citation.page?'第 '+citation.page+' 页':''}}{{i<message.citations.length-1?'；':''}}</span><br>检索：向量 + 关键词 / RRF / {{message.method?.rerank==="model"?"模型":"本地"}}重排序</div></div></div><form class="chat-input" @submit.prevent="send"><textarea v-model="question" :disabled="isAwaitingAnswer" placeholder="请输入您想查询的问题…" required></textarea><button class="primary" :disabled="isAwaitingAnswer">{{isAwaitingAnswer?"回答中…":"发送"}}</button></form></div></div><div v-else class="card agent-runtime-placeholder"><div class="agent-symbol">{{selected.icon||modeMeta[selected.launch_mode]?.icon}}</div><h2>{{modeMeta[selected.launch_mode]?.label}}型智能体运行区</h2><p>{{selected.description}}</p><div class="runtime-flow"><span>输入业务参数</span><i>→</i><span>调用授权系统与工具</span><i>→</i><span>人工确认关键动作</span><i>→</i><span>输出结果并留痕</span></div><p class="muted">该入口已支持独立运行形态；具体表单、流程步骤和系统工具将在智能体实施时按申请配置。</p></div></template>
+  <template v-if="!selected">
+    <div class="section-head"><div><h2>可用智能体</h2><p>问答、流程、任务和业务看板统一从这里进入</p></div><span class="badge success">{{agents.length}} 个可用</span></div>
+    <div v-if="agents.length" class="agents-grid">
+      <article v-for="agent in agents" :key="agent.id" class="card agent-list-card" @click="open(agent)">
+        <div class="agent-card-top"><div class="agent-symbol compact">{{agent.icon||modeMeta[agent.launch_mode]?.icon||'✦'}}</div><span class="badge">{{modeMeta[agent.launch_mode]?.label||agent.agent_type}}</span></div>
+        <div class="agent-list-content"><h2>{{agent.name}}</h2><p>{{agent.description||modeMeta[agent.launch_mode]?.hint}}</p><div class="agent-card-foot"><small>{{agent.category||modeMeta[agent.launch_mode]?.hint}}</small><span>打开 →</span></div></div>
+      </article>
+    </div>
+    <div v-else class="card empty">暂无可用智能体</div>
+  </template>
+
+  <template v-else>
+    <div class="agent-chat-head"><button class="secondary" @click="backToList">← 返回智能体列表</button><div><h2>{{selected.name}}</h2><p>{{modeMeta[selected.launch_mode]?.hint}}</p></div></div>
+    <div v-if="selected.launch_mode==='chat'" class="chat-layout">
+      <div class="agent-card">
+        <div class="agent-identity"><div class="agent-symbol light">✦</div><span class="eyebrow">CHAT AGENT</span><h2>{{selected.name}}</h2><p>{{selected.description}}</p><div class="agent-scope dark"><small>授权知识范围</small><strong>{{selected.knowledge_bases}}</strong></div></div>
+        <div class="conversation-head"><strong>我的对话</strong><button class="new-chat" :disabled="sending" @click="newConversation">＋ 新建</button></div>
+        <div class="conversation-list"><button v-for="item in sessions" :key="item.id" class="conversation-item" :class="{active:sessionId===item.id}" @click="loadSession(item.id)"><span><strong>{{item.title||'新对话'}}</strong><small>{{item.last_role==='user'?'回答中…':item.message_count+' 条消息'}}</small></span><i title="删除对话" @click="deleteConversation($event,item)">×</i></button></div>
+      </div>
+      <div class="card chat-box">
+        <div class="chat-scope fixed"><span>检索范围</span><strong>智能体授权知识范围</strong><small>由管理员在智能体配置中统一设定</small></div>
+        <div class="messages"><div v-for="(message,index) in messages" :key="index" class="message" :class="message.role">{{message.content||message.text}}<div v-if="message.citations?.length" class="citation">引用：<span v-for="(citation,i) in message.citations" :key="i">《{{citation.title}}》{{citation.page?'第 '+citation.page+' 页':''}}{{i<message.citations.length-1?'；':''}}</span><br>检索：向量 + 关键词 / RRF / {{message.method?.rerank==="model"?"模型":"本地"}}重排序</div></div></div>
+        <form class="chat-input" @submit.prevent="send"><textarea v-model="question" :disabled="isAwaitingAnswer" placeholder="请输入您想查询的问题…" required></textarea><button class="primary" :disabled="isAwaitingAnswer">{{isAwaitingAnswer?"回答中…":"发送"}}</button></form>
+      </div>
+    </div>
+    <div v-else class="card agent-runtime-placeholder"><div class="agent-symbol">{{selected.icon||modeMeta[selected.launch_mode]?.icon}}</div><h2>{{modeMeta[selected.launch_mode]?.label}}型智能体运行区</h2><p>{{selected.description}}</p><div class="runtime-flow"><span>输入业务参数</span><i>→</i><span>调用授权系统与工具</span><i>→</i><span>人工确认关键动作</span><i>→</i><span>输出结果并留痕</span></div><p class="muted">该入口已支持独立运行形态；具体表单、流程步骤和系统工具将在智能体实施时按申请配置。</p></div>
+  </template>
 </template>

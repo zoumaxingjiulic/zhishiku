@@ -1,22 +1,12 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onErrorCaptured, onMounted, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onErrorCaptured, reactive, ref } from "vue";
+import { RouterLink, RouterView, useRoute, useRouter } from "vue-router";
 import { api } from "./api";
+import { authReady, authUser, clearAuthUser, setAuthUser } from "./auth";
 import AppModal from "./components/AppModal.vue";
-import DashboardPage from "./pages/DashboardPage.vue";
-import KnowledgePage from "./pages/KnowledgePage.vue";
-import AgentsPage from "./pages/AgentsPage.vue";
-import ConnectionsPage from "./pages/ConnectionsPage.vue";
-import ModelGatewayPage from "./pages/ModelGatewayPage.vue";
-import PromptTemplatesPage from "./pages/PromptTemplatesPage.vue";
-import AgentRequestsPage from "./pages/AgentRequestsPage.vue";
-import UsersPage from "./pages/UsersPage.vue";
-import AuditPage from "./pages/AuditPage.vue";
 
-type PageKey = "home" | "knowledge" | "agents" | "prompts" | "agentRequests" | "connections" | "modelGateway" | "users" | "audit";
-
-const user = ref<any>(null);
-const checkingSession = ref(true);
-const page = ref<PageKey>("home");
+const route = useRoute();
+const router = useRouter();
 const loginBusy = ref(false);
 const loginError = ref("");
 const passwordModal = ref(false);
@@ -25,35 +15,32 @@ const loginForm = reactive({ username: "", password: "" });
 const passwordForm = reactive({ current_password: "", new_password: "", confirmation: "" });
 let toastTimer: number | undefined;
 
-const pageMeta: Record<PageKey, { title: string; subtitle: string }> = {
-  home: { title: "工作台", subtitle: "企业知识服务运行概览" },
-  knowledge: { title: "知识库", subtitle: "资料、文件夹与索引生命周期管理" },
-  agents: { title: "智能体", subtitle: "统一使用问答、流程与数据处理智能体" },
-  prompts: { title: "提示词模板", subtitle: "保存和复用我的常用提示词" },
-  agentRequests: { title: "智能体申请", subtitle: "提交业务需求并跟踪评审进度" },
-  connections: { title: "系统连接", subtitle: "ERP、PLM 与 MOM 系统接入预留" },
-  modelGateway: { title: "大模型网关", subtitle: "统一管理模型厂商、凭据与智能体模型路由" },
-  users: { title: "用户与部门", subtitle: "账号、部门和数据权限管理" },
-  audit: { title: "审计日志", subtitle: "关键操作的安全审计记录" },
-};
-const currentMeta = computed(() => pageMeta[page.value]);
-const isAdmin = computed(() => Boolean(user.value?.is_platform_admin));
-const departments = computed(() => user.value?.departments?.map((item: any) => item.name).join("、") || "未分配部门");
-const avatar = computed(() => user.value?.display_name?.trim()?.charAt(0) || "企");
+const currentMeta = computed(() => ({
+  title: String(route.meta.title || "企业智能体平台"),
+  subtitle: String(route.meta.subtitle || ""),
+}));
+const isAdmin = computed(() => Boolean(authUser.value?.is_platform_admin));
+const departments = computed(() => authUser.value?.departments?.map((item: any) => item.name).join("、") || "未分配部门");
+const avatar = computed(() => authUser.value?.display_name?.trim()?.charAt(0) || "企");
+const viewProps = computed(() => route.meta.passUser ? { user: authUser.value } : {});
+const viewListeners = computed(() => ({
+  ...(route.meta.toast ? { toast } : {}),
+  ...(route.meta.navigate ? { navigate } : {}),
+}));
 
 const navItems = computed(() => [
-  { key: "home", icon: "⌂", label: "工作台" },
-  { key: "knowledge", icon: "▤", label: "知识库" },
-  { key: "agents", icon: "✦", label: "智能体" },
-  { key: "prompts", icon: "⌑", label: "提示词模板" },
-  { key: "agentRequests", icon: "✎", label: "智能体申请" },
-  { key: "connections", icon: "⌘", label: "系统连接" },
+  { section: "workbench", to: { name: "workbench" }, icon: "⌂", label: "工作台" },
+  { section: "knowledge", to: { name: "knowledge" }, icon: "▤", label: "知识库" },
+  { section: "agents", to: { name: "agents" }, icon: "✦", label: "智能体" },
+  { section: "prompts", to: { name: "prompts" }, icon: "⌑", label: "提示词模板" },
+  { section: "agent-requests", to: { name: "agent-requests" }, icon: "✎", label: "智能体申请" },
+  { section: "connections", to: { name: "connections" }, icon: "⌘", label: "系统连接" },
   ...(isAdmin.value ? [
-    { key: "modelGateway", icon: "◈", label: "大模型网关" },
-    { key: "users", icon: "♟", label: "用户与部门" },
-    { key: "audit", icon: "◷", label: "审计日志" },
+    { section: "model-gateway", to: { name: "model-gateway" }, icon: "◈", label: "大模型网关" },
+    { section: "users", to: { name: "users" }, icon: "♟", label: "用户与部门" },
+    { section: "audit", to: { name: "audit" }, icon: "◷", label: "审计日志" },
   ] : []),
-] as Array<{ key: PageKey; icon: string; label: string }>);
+]);
 
 function toast(message: string, bad = false) {
   toastState.message = message;
@@ -63,34 +50,29 @@ function toast(message: string, bad = false) {
   toastTimer = window.setTimeout(() => { toastState.visible = false; }, 3500);
 }
 
-function showLogin() {
-  user.value = null;
-  page.value = "home";
-  passwordModal.value = false;
-  loginForm.password = "";
-}
-
-async function restoreSession() {
-  try { user.value = await api("/api/v1/auth/me"); }
-  catch { showLogin(); }
-  finally { checkingSession.value = false; }
-}
-
 async function login() {
   loginBusy.value = true;
   loginError.value = "";
   try {
     const result = await api<any>("/api/v1/auth/login", { method: "POST", body: JSON.stringify(loginForm) });
-    user.value = result.user;
+    setAuthUser(result.user);
     loginForm.password = "";
-    page.value = "home";
+    const redirect = typeof route.query.redirect === "string" && route.query.redirect.startsWith("/") && !route.query.redirect.startsWith("//")
+      ? route.query.redirect
+      : "/workbench";
+    await router.replace(redirect);
   } catch (error: any) { loginError.value = error.message; }
   finally { loginBusy.value = false; }
 }
 
 async function logout() {
   try { await api("/api/v1/auth/logout", { method: "POST" }); }
-  finally { showLogin(); }
+  finally {
+    clearAuthUser();
+    passwordModal.value = false;
+    loginForm.password = "";
+    await router.replace({ name: "login" });
+  }
 }
 
 function openPasswordModal() {
@@ -110,31 +92,36 @@ async function changePassword() {
     });
     passwordModal.value = false;
     toast("密码已修改，请重新登录");
-    window.setTimeout(showLogin, 700);
+    window.setTimeout(async () => {
+      clearAuthUser();
+      await router.replace({ name: "login" });
+    }, 700);
   } catch (error: any) { toast(error.message, true); }
 }
 
 function navigate(target: string) {
-  if (target === "users" || target === "audit" || target === "modelGateway") {
-    if (!isAdmin.value) return;
-  }
-  page.value = target as PageKey;
+  const mapping: Record<string, string> = {
+    home: "workbench", knowledge: "knowledge", agents: "agents", prompts: "prompts",
+    agentRequests: "agent-requests", connections: "connections", modelGateway: "model-gateway",
+    users: "users", audit: "audit",
+  };
+  if ((target === "users" || target === "audit" || target === "modelGateway") && !isAdmin.value) return;
+  router.push({ name: mapping[target] || target });
 }
 
-function onAuthExpired() {
-  if (!user.value) return;
-  showLogin();
+async function onAuthExpired() {
+  if (!authUser.value) return;
+  clearAuthUser();
+  passwordModal.value = false;
   loginError.value = "登录已失效，请重新登录";
+  await router.replace({ name: "login", query: { redirect: route.fullPath } });
 }
 
 onErrorCaptured((error: any) => {
   toast(error?.message || "页面加载失败", true);
   return false;
 });
-onMounted(() => {
-  window.addEventListener("auth-expired", onAuthExpired);
-  restoreSession();
-});
+window.addEventListener("auth-expired", onAuthExpired);
 onBeforeUnmount(() => {
   window.removeEventListener("auth-expired", onAuthExpired);
   if (toastTimer) window.clearTimeout(toastTimer);
@@ -142,9 +129,9 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="checkingSession" class="boot-screen"><div class="brand-mark">智</div><p>正在连接企业知识平台…</p></div>
+  <div v-if="!authReady" class="boot-screen"><div class="brand-mark">智</div><p>正在连接企业知识平台…</p></div>
 
-  <main v-else-if="!user" class="login-shell">
+  <main v-else-if="!authUser" class="login-shell">
     <section class="login-brand">
       <div class="brand-mark">智</div>
       <div><h1>企业智能体平台</h1><p>让制度、技术资料与业务知识安全地服务每个部门</p></div>
@@ -162,7 +149,7 @@ onBeforeUnmount(() => {
     <aside class="sidebar">
       <div class="logo"><div class="brand-mark small">智</div><div><strong>企业智能体</strong><small>KNOWLEDGE OS</small></div></div>
       <nav aria-label="平台导航">
-        <button v-for="item in navItems" :key="item.key" :class="{ active: page === item.key }" @click="navigate(item.key)"><span>{{ item.icon }}</span>{{ item.label }}</button>
+        <RouterLink v-for="item in navItems" :key="item.section" :to="item.to" :class="{ active: route.meta.section === item.section }"><span>{{ item.icon }}</span>{{ item.label }}</RouterLink>
       </nav>
       <div class="sidebar-foot"><span class="health-dot"></span>服务运行正常</div>
     </aside>
@@ -172,21 +159,15 @@ onBeforeUnmount(() => {
         <div><h1>{{ currentMeta.title }}</h1><p>{{ currentMeta.subtitle }}</p></div>
         <div class="user-area">
           <div class="avatar">{{ avatar }}</div>
-          <div><strong>{{ user.display_name }}</strong><small>{{ departments }}</small></div>
+          <div><strong>{{ authUser.display_name }}</strong><small>{{ departments }}</small></div>
           <button class="ghost" @click="openPasswordModal">修改密码</button>
           <button class="ghost" @click="logout">退出</button>
         </div>
       </header>
       <section class="content">
-        <DashboardPage v-if="page === 'home'" @navigate="navigate" />
-        <KnowledgePage v-else-if="page === 'knowledge'" :user="user" @toast="toast" />
-        <AgentsPage v-else-if="page === 'agents'" @toast="toast" />
-        <PromptTemplatesPage v-else-if="page === 'prompts'" @toast="toast" />
-        <AgentRequestsPage v-else-if="page === 'agentRequests'" :user="user" @toast="toast" />
-        <ConnectionsPage v-else-if="page === 'connections'" />
-        <ModelGatewayPage v-else-if="page === 'modelGateway' && isAdmin" @toast="toast" />
-        <UsersPage v-else-if="page === 'users' && isAdmin" @toast="toast" />
-        <AuditPage v-else-if="page === 'audit' && isAdmin" />
+        <RouterView v-slot="{ Component }">
+          <component :is="Component" v-bind="viewProps" v-on="viewListeners" />
+        </RouterView>
       </section>
     </main>
 
