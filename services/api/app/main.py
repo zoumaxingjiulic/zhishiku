@@ -1569,6 +1569,88 @@ def latest_agent_chat(agent_id: int, user: dict = Depends(current_user)) -> dict
     return {"session_id": session["id"], "messages": messages}
 
 
+@app.get("/api/v1/agents/{agent_id}/chat/sessions", tags=["agents"])
+def list_agent_chat_sessions(agent_id: int, user: dict = Depends(current_user)) -> list[dict]:
+    agent = agent_for_user(user, agent_id)
+    if agent["launch_mode"] != "chat":
+        raise HTTPException(422, "该智能体不是问答型入口")
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT s.id,s.title,s.created_at,s.updated_at,COUNT(m.id) message_count "
+            "FROM chat_session s LEFT JOIN chat_message m ON m.session_id=s.id "
+            "WHERE s.agent_id=%s AND s.user_id=%s AND s.status='active' "
+            "GROUP BY s.id ORDER BY s.updated_at DESC,s.id DESC",
+            (agent_id, user["id"]),
+        )
+        return list(cursor.fetchall())
+
+
+@app.post("/api/v1/agents/{agent_id}/chat/sessions", tags=["agents"])
+def create_agent_chat_session(agent_id: int, request: Request, user: dict = Depends(current_user)) -> dict:
+    agent = agent_for_user(user, agent_id)
+    if agent["launch_mode"] != "chat":
+        raise HTTPException(422, "该智能体不是问答型入口")
+    session_id = str(uuid.uuid4())
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            "INSERT INTO chat_session (id,agent_id,user_id,title) VALUES (%s,%s,%s,'新对话')",
+            (session_id, agent_id, user["id"]),
+        )
+        audit(cursor, user["id"], "chat_session.create", "chat_session", None,
+              {"session_id": session_id, "agent_id": agent_id}, request.client.host)
+        conn.commit()
+    return {"id": session_id, "title": "新对话", "message_count": 0}
+
+
+@app.get("/api/v1/agents/{agent_id}/chat/sessions/{session_id}", tags=["agents"])
+def get_agent_chat_session(agent_id: int, session_id: str, user: dict = Depends(current_user)) -> dict:
+    agent = agent_for_user(user, agent_id)
+    if agent["launch_mode"] != "chat":
+        raise HTTPException(422, "该智能体不是问答型入口")
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT id,title FROM chat_session WHERE id=%s AND agent_id=%s AND user_id=%s AND status='active'",
+            (session_id, agent_id, user["id"]),
+        )
+        session = cursor.fetchone()
+        if not session:
+            raise HTTPException(404, "对话不存在")
+        cursor.execute(
+            "SELECT role,content,citations_json,created_at FROM chat_message WHERE session_id=%s ORDER BY id",
+            (session_id,),
+        )
+        messages = list(cursor.fetchall())
+    for message in messages:
+        raw = message.pop("citations_json", None)
+        if isinstance(raw, str):
+            try:
+                raw = json.loads(raw)
+            except json.JSONDecodeError:
+                raw = []
+        message["citations"] = raw or []
+    return {**session, "messages": messages}
+
+
+@app.delete("/api/v1/agents/{agent_id}/chat/sessions/{session_id}", tags=["agents"])
+def delete_agent_chat_session(agent_id: int, session_id: str, request: Request,
+                              user: dict = Depends(current_user)) -> dict:
+    agent = agent_for_user(user, agent_id)
+    if agent["launch_mode"] != "chat":
+        raise HTTPException(422, "该智能体不是问答型入口")
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT id FROM chat_session WHERE id=%s AND agent_id=%s AND user_id=%s AND status='active'",
+            (session_id, agent_id, user["id"]),
+        )
+        if not cursor.fetchone():
+            raise HTTPException(404, "对话不存在")
+        audit(cursor, user["id"], "chat_session.delete", "chat_session", None,
+              {"session_id": session_id, "agent_id": agent_id}, request.client.host)
+        cursor.execute("DELETE FROM chat_session WHERE id=%s", (session_id,))
+        conn.commit()
+    return {"status": "deleted"}
+
+
 @app.post("/api/v1/agents/{agent_id}/chat", tags=["agents"])
 def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict = Depends(current_user)) -> dict:
     agent = agent_for_user(user, agent_id)
@@ -1613,7 +1695,10 @@ def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict
     session_id = payload.session_id or str(uuid.uuid4())
     with connect() as conn, conn.cursor() as cursor:
         if payload.session_id:
-            cursor.execute("SELECT id FROM chat_session WHERE id=%s AND user_id=%s", (session_id, user["id"]))
+            cursor.execute(
+                "SELECT id FROM chat_session WHERE id=%s AND agent_id=%s AND user_id=%s AND status='active'",
+                (session_id, agent_id, user["id"]),
+            )
             if not cursor.fetchone():
                 raise HTTPException(404, "会话不存在")
         else:
@@ -1627,7 +1712,11 @@ def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict
             (session_id, answer, json.dumps(citations, ensure_ascii=False),
              gateway["model_name"] if gateway else (agent["llm_model"] or settings.llm_model or answer_method)),
         )
-        cursor.execute("UPDATE chat_session SET updated_at=NOW(3) WHERE id=%s", (session_id,))
+        cursor.execute(
+            "UPDATE chat_session SET title=CASE WHEN title='新对话' THEN %s ELSE title END,updated_at=NOW(3) "
+            "WHERE id=%s",
+            (payload.question[:120], session_id),
+        )
         audit(cursor, user["id"], "agent.chat", "agent", agent_id, {
             "session_id": session_id,
             "knowledge_base_id": payload.knowledge_base_id,
