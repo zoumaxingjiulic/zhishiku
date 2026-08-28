@@ -10,7 +10,7 @@ const agents = ref<any[]>([]);
 const selected = ref<any>(null);
 const question = ref("");
 const sessionId = ref<string | null>(null);
-const sending = ref(false);
+const pendingSessionIds = ref(new Set<string>());
 const messages = ref<any[]>([]);
 const sessions = ref<any[]>([]);
 const modeMeta: Record<string, { label: string; icon: string; hint: string }> = {
@@ -21,7 +21,9 @@ const modeMeta: Record<string, { label: string; icon: string; hint: string }> = 
   external: { label: "系统", icon: "↗", hint: "打开外部业务应用" },
 };
 const welcomeMessage = { role: "assistant", text: "您好，我会仅根据智能体已授权的企业资料回答，并提供引用来源。" };
-const isAwaitingAnswer = computed(() => sending.value || messages.value.at(-1)?.role === "user");
+const isAwaitingAnswer = computed(() => Boolean(
+  sessionId.value && (pendingSessionIds.value.has(sessionId.value) || messages.value.at(-1)?.role === "user")
+));
 let pollTimer: number | undefined;
 let routeSyncVersion = 0;
 
@@ -151,7 +153,7 @@ async function open(agent: any) {
   await router.push({ name: "agent", params: { agentId: agent.id } });
 }
 async function newConversation() {
-  if (sending.value || !selected.value) return null;
+  if (!selected.value) return null;
   try {
     const created = await api<any>(`/api/v1/agents/${selected.value.id}/chat/sessions`, { method: "POST" });
     await loadSessions();
@@ -167,11 +169,11 @@ async function newConversation() {
 }
 async function deleteConversation(event: Event, item: any) {
   event.stopPropagation();
-  if (item.last_role === "user") {
+  if (item.last_role === "user" || pendingSessionIds.value.has(item.id)) {
     emit("toast", "该对话正在生成回答，请完成后再删除", true);
     return;
   }
-  if (sending.value || !selected.value) return;
+  if (!selected.value) return;
   if (!window.confirm(`确定删除对话“${item.title || "新对话"}”吗？删除后无法恢复。`)) return;
   try {
     await api(`/api/v1/agents/${selected.value.id}/chat/sessions/${item.id}`, { method: "DELETE" });
@@ -194,23 +196,29 @@ async function send() {
   const text = question.value.trim();
   if (!text || isAwaitingAnswer.value || !selected.value) return;
   if (!sessionId.value && !await newConversation()) return;
+  const targetSessionId = sessionId.value as string;
+  const targetAgentId = selected.value.id as number;
   messages.value.push({ role: "user", text });
   question.value = "";
-  sending.value = true;
+  pendingSessionIds.value.add(targetSessionId);
   try {
-    const result = await api<any>(`/api/v1/agents/${selected.value.id}/chat`, {
+    const result = await api<any>(`/api/v1/agents/${targetAgentId}/chat`, {
       method: "POST",
-      body: JSON.stringify({ question: text, session_id: sessionId.value }),
+      body: JSON.stringify({ question: text, session_id: targetSessionId }),
     });
-    sessionId.value = result.session_id;
-    messages.value.push({ role: "assistant", text: result.answer, citations: result.citations, method: result.retrieval_method });
-    await loadSessions();
+    if (selected.value?.id === targetAgentId && sessionId.value === targetSessionId) {
+      messages.value.push({ role: "assistant", text: result.answer, citations: result.citations, method: result.retrieval_method });
+    }
+    if (selected.value?.id === targetAgentId) await loadSessions();
   } catch (error: any) {
-    messages.value.push({ role: "assistant", text: `请求失败：${error.message}` });
+    if (selected.value?.id === targetAgentId && sessionId.value === targetSessionId) {
+      messages.value.push({ role: "assistant", text: `请求失败：${error.message}` });
+    }
     emit("toast", error.message, true);
   } finally {
-    sending.value = false;
-    await scrollToBottom(true);
+    pendingSessionIds.value.delete(targetSessionId);
+    if (selected.value?.id === targetAgentId) await loadSessions();
+    if (sessionId.value === targetSessionId) await scrollToBottom(true);
   }
 }
 </script>
@@ -232,8 +240,8 @@ async function send() {
     <div v-if="selected.launch_mode==='chat'" class="chat-layout">
       <div class="agent-card">
         <div class="agent-identity"><div class="agent-symbol light">✦</div><span class="eyebrow">CHAT AGENT</span><h2>{{selected.name}}</h2><p>{{selected.description}}</p><div class="agent-scope dark"><small>授权知识范围</small><strong>{{selected.knowledge_bases}}</strong></div></div>
-        <div class="conversation-head"><strong>我的对话</strong><button class="new-chat" :disabled="sending" @click="newConversation">＋ 新建</button></div>
-        <div class="conversation-list"><button v-for="item in sessions" :key="item.id" class="conversation-item" :class="{active:sessionId===item.id}" @click="loadSession(item.id)"><span><strong>{{item.title||'新对话'}}</strong><small>{{item.last_role==='user'?'回答中…':item.message_count+' 条消息'}}</small></span><i title="删除对话" @click="deleteConversation($event,item)">×</i></button></div>
+        <div class="conversation-head"><strong>我的对话</strong><button class="new-chat" @click="newConversation">＋ 新建</button></div>
+        <div class="conversation-list"><button v-for="item in sessions" :key="item.id" class="conversation-item" :class="{active:sessionId===item.id}" @click="loadSession(item.id)"><span><strong>{{item.title||'新对话'}}</strong><small>{{item.last_role==='user'||pendingSessionIds.has(item.id)?'回答中…':item.message_count+' 条消息'}}</small></span><i title="删除对话" @click="deleteConversation($event,item)">×</i></button></div>
       </div>
       <div class="card chat-box">
         <div class="chat-scope fixed"><span>检索范围</span><strong>智能体授权知识范围</strong><small>由管理员在智能体配置中统一设定</small></div>
