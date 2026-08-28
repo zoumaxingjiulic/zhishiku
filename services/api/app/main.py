@@ -1673,25 +1673,6 @@ def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict
             payload.folder_id,
             payload.include_subfolders,
         )
-    departments = effective_departments(user)
-    vector = vector_candidates(payload.question, knowledge_base_ids, document_ids)
-    keyword = keyword_candidates(payload.question, knowledge_base_ids, departments, document_ids)
-    fused = reciprocal_rank_fusion(vector, keyword)
-    units, rerank_method = rerank(payload.question, hydrate_units(fused, knowledge_base_ids, user, document_ids))
-    gateway = agent_model_gateway(agent["llm_gateway_profile_id"])
-    answer, answer_method = generate_answer(
-        agent["system_prompt"], payload.question, units, agent["llm_model"], gateway
-    )
-    citations = [
-        {
-            "document_id": unit["document_id"],
-            "title": unit["title"],
-            "filename": unit["original_filename"],
-            "page": unit["page_start"],
-            "content_unit_id": unit["id"],
-        }
-        for unit in units
-    ]
     session_id = payload.session_id or str(uuid.uuid4())
     with connect() as conn, conn.cursor() as cursor:
         if payload.session_id:
@@ -1708,15 +1689,53 @@ def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict
             )
         cursor.execute("INSERT INTO chat_message (session_id,role,content) VALUES (%s,'user',%s)", (session_id, payload.question))
         cursor.execute(
-            "INSERT INTO chat_message (session_id,role,content,citations_json,model_name) VALUES (%s,'assistant',%s,%s,%s)",
-            (session_id, answer, json.dumps(citations, ensure_ascii=False),
-             gateway["model_name"] if gateway else (agent["llm_model"] or settings.llm_model or answer_method)),
-        )
-        cursor.execute(
             "UPDATE chat_session SET title=CASE WHEN title='新对话' THEN %s ELSE title END,updated_at=NOW(3) "
             "WHERE id=%s",
             (payload.question[:120], session_id),
         )
+        conn.commit()
+
+    try:
+        departments = effective_departments(user)
+        vector = vector_candidates(payload.question, knowledge_base_ids, document_ids)
+        keyword = keyword_candidates(payload.question, knowledge_base_ids, departments, document_ids)
+        fused = reciprocal_rank_fusion(vector, keyword)
+        units, rerank_method = rerank(payload.question, hydrate_units(fused, knowledge_base_ids, user, document_ids))
+        gateway = agent_model_gateway(agent["llm_gateway_profile_id"])
+        answer, answer_method = generate_answer(
+            agent["system_prompt"], payload.question, units, agent["llm_model"], gateway
+        )
+        citations = [
+            {
+                "document_id": unit["document_id"],
+                "title": unit["title"],
+                "filename": unit["original_filename"],
+                "page": unit["page_start"],
+                "content_unit_id": unit["id"],
+            }
+            for unit in units
+        ]
+    except Exception as exc:
+        log.exception("Agent response generation failed for session %s", session_id)
+        with connect() as conn, conn.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO chat_message (session_id,role,content,model_name) "
+                "VALUES (%s,'assistant','回答生成失败，请稍后重试。','error')",
+                (session_id,),
+            )
+            cursor.execute("UPDATE chat_session SET updated_at=NOW(3) WHERE id=%s", (session_id,))
+            audit(cursor, user["id"], "agent.chat.failed", "agent", agent_id,
+                  {"session_id": session_id, "error_type": type(exc).__name__}, request.client.host)
+            conn.commit()
+        raise
+
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            "INSERT INTO chat_message (session_id,role,content,citations_json,model_name) VALUES (%s,'assistant',%s,%s,%s)",
+            (session_id, answer, json.dumps(citations, ensure_ascii=False),
+             gateway["model_name"] if gateway else (agent["llm_model"] or settings.llm_model or answer_method)),
+        )
+        cursor.execute("UPDATE chat_session SET updated_at=NOW(3) WHERE id=%s", (session_id,))
         audit(cursor, user["id"], "agent.chat", "agent", agent_id, {
             "session_id": session_id,
             "knowledge_base_id": payload.knowledge_base_id,

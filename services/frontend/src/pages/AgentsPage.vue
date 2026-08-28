@@ -1,18 +1,22 @@
 <script setup lang="ts">
-import { nextTick, onMounted, ref } from "vue";
+import { nextTick, onBeforeUnmount, onMounted, ref } from "vue";
 import { api } from "../api";
 const emit=defineEmits<{toast:[message:string,bad?:boolean]}>();
 const agents=ref<any[]>([]),selected=ref<any>(null),question=ref(""),sessionId=ref<string|null>(null),sending=ref(false),messages=ref<any[]>([]),sessions=ref<any[]>([]);
 const modeMeta:Record<string,{label:string,icon:string,hint:string}>={chat:{label:"问答",icon:"✦",hint:"对话查询与知识检索"},form:{label:"任务",icon:"▣",hint:"填写参数后执行任务"},workflow:{label:"流程",icon:"⇢",hint:"多步骤业务流程"},dashboard:{label:"看板",icon:"▥",hint:"业务数据分析看板"},external:{label:"系统",icon:"↗",hint:"打开外部业务应用"}};
 const welcomeMessage={role:"assistant",text:"您好，我会仅根据智能体已授权的企业资料回答，并提供引用来源。"};
+let pollTimer:number|undefined;
 onMounted(async()=>{agents.value=await api<any[]>("/api/v1/agents");const lastAgentId=Number(sessionStorage.getItem("kb.lastChatAgentId"));const agent=agents.value.find(item=>item.id===lastAgentId&&item.launch_mode==="chat");if(agent)await open(agent);});
+onBeforeUnmount(()=>stopPolling());
 function sessionKey(agentId:number){return `kb.chatSession.${agentId}`;}
+function stopPolling(){if(pollTimer){window.clearTimeout(pollTimer);pollTimer=undefined;}}
+function schedulePendingPoll(id:string){stopPolling();if(messages.value.at(-1)?.role!=="user")return;pollTimer=window.setTimeout(async()=>{if(sessionId.value!==id)return;try{const history=await api<any>(`/api/v1/agents/${selected.value.id}/chat/sessions/${id}`);if(sessionId.value!==id)return;messages.value=history.messages?.length?history.messages:[welcomeMessage];await loadSessions();if(messages.value.at(-1)?.role==="user")schedulePendingPoll(id);else{stopPolling();await nextTick();document.querySelector(".messages")?.scrollTo({top:999999,behavior:"smooth"});}}catch{stopPolling();}},2000);}
 async function loadSessions(){sessions.value=await api<any[]>(`/api/v1/agents/${selected.value.id}/chat/sessions`);}
-async function loadSession(id:string){const history=await api<any>(`/api/v1/agents/${selected.value.id}/chat/sessions/${id}`);sessionId.value=id;sessionStorage.setItem(sessionKey(selected.value.id),id);messages.value=history.messages?.length?history.messages:[welcomeMessage];await nextTick();document.querySelector(".messages")?.scrollTo({top:999999});}
+async function loadSession(id:string){stopPolling();const history=await api<any>(`/api/v1/agents/${selected.value.id}/chat/sessions/${id}`);sessionId.value=id;sessionStorage.setItem(sessionKey(selected.value.id),id);messages.value=history.messages?.length?history.messages:[welcomeMessage];schedulePendingPoll(id);await nextTick();document.querySelector(".messages")?.scrollTo({top:999999});}
 async function open(agent:any){selected.value=agent;if(agent.launch_mode!=="chat")return;sessionStorage.setItem("kb.lastChatAgentId",String(agent.id));try{await loadSessions();const remembered=sessionStorage.getItem(sessionKey(agent.id));const target=sessions.value.find(item=>item.id===remembered)||sessions.value[0];if(target)await loadSession(target.id);else await newConversation();}catch(e:any){sessionId.value=null;messages.value=[welcomeMessage];emit("toast",e.message,true);}}
 async function newConversation(){if(sending.value)return;try{const created=await api<any>(`/api/v1/agents/${selected.value.id}/chat/sessions`,{method:"POST"});await loadSessions();await loadSession(created.id);}catch(e:any){emit("toast",e.message,true);}}
 async function deleteConversation(event:Event,item:any){event.stopPropagation();if(sending.value)return;if(!window.confirm(`确定删除对话“${item.title||"新对话"}”吗？删除后无法恢复。`))return;try{await api(`/api/v1/agents/${selected.value.id}/chat/sessions/${item.id}`,{method:"DELETE"});if(sessionId.value===item.id){sessionStorage.removeItem(sessionKey(selected.value.id));await loadSessions();if(sessions.value.length)await loadSession(sessions.value[0].id);else await newConversation();}else await loadSessions();emit("toast","对话已删除");}catch(e:any){emit("toast",e.message,true);}}
-function backToList(){sessionStorage.removeItem("kb.lastChatAgentId");selected.value=null;}
+function backToList(){stopPolling();sessionStorage.removeItem("kb.lastChatAgentId");selected.value=null;}
 async function send(){const text=question.value.trim();if(!text||sending.value)return;if(!sessionId.value)await newConversation();messages.value.push({role:"user",text});question.value="";sending.value=true;try{const result=await api<any>(`/api/v1/agents/${selected.value.id}/chat`,{method:"POST",body:JSON.stringify({question:text,session_id:sessionId.value})});sessionId.value=result.session_id;messages.value.push({role:"assistant",text:result.answer,citations:result.citations,method:result.retrieval_method});await loadSessions();}catch(e:any){messages.value.push({role:"assistant",text:`请求失败：${e.message}`});emit("toast",e.message,true);}finally{sending.value=false;await nextTick();document.querySelector(".messages")?.scrollTo({top:999999,behavior:"smooth"});}}
 </script>
 <template>
