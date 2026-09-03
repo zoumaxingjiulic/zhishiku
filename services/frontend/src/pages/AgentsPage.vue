@@ -2,6 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api } from "../api";
+import { formatPageRange } from "../utils";
 
 const emit = defineEmits<{ toast: [message: string, bad?: boolean] }>();
 const route = useRoute();
@@ -245,7 +246,7 @@ async function send() {
       </div>
       <div class="card chat-box">
         <div class="chat-scope fixed"><span>检索范围</span><strong>智能体授权知识范围</strong><small>由管理员在智能体配置中统一设定</small></div>
-        <div class="messages"><div v-for="(message,index) in messages" :key="index" class="message" :class="message.role">{{message.content||message.text}}<div v-if="message.citations?.length" class="citation">引用：<span v-for="(citation,i) in message.citations" :key="i">《{{citation.title}}》{{citation.page?'第 '+citation.page+' 页':''}}{{i<message.citations.length-1?'；':''}}</span><br>检索：向量 + 关键词 / RRF / {{message.method?.rerank==="model"?"模型":"本地"}}重排序</div></div></div>
+        <div class="messages"><div v-for="(message,index) in messages" :key="index" class="message" :class="message.role">{{message.content||message.text}}<div v-if="message.citations?.length" class="citation">引用：<span v-for="(citation,i) in message.citations" :key="i">《{{citation.title}}》{{formatPageRange(citation.page,citation.page_end)}}{{i<message.citations.length-1?'；':''}}</span><br>检索：向量 + 关键词 / RRF / {{message.method?.rerank==="model"?"模型":"本地"}}重排序</div></div></div>
         <form class="chat-input" @submit.prevent="send"><textarea v-model="question" :disabled="isAwaitingAnswer" placeholder="请输入您想查询的问题…" required></textarea><button class="primary" :disabled="isAwaitingAnswer">{{isAwaitingAnswer?"回答中…":"发送"}}</button></form>
       </div>
     </div>

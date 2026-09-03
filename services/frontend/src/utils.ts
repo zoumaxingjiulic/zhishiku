@@ -2,6 +2,11 @@ export function formatDate(value?: string | null) {
   return value ? new Date(value).toLocaleString("zh-CN", { hour12: false }) : "—";
 }
 
+export function formatPageRange(start?: number | null, end?: number | null) {
+  if (!start) return "";
+  return end && end !== start ? `第 ${start}—${end} 页` : `第 ${start} 页`;
+}
+
 export function formatSize(bytes?: number | null) {
   if (bytes == null) return "—";
   return bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;

@@ -1,4 +1,5 @@
 import hashlib
+import json
 import logging
 import math
 import os
@@ -10,13 +11,10 @@ from urllib.parse import unquote, urlparse
 
 import httpx
 import pymysql
-import pytesseract
-from docx import Document as DocxDocument
 from minio import Minio
-from openpyxl import load_workbook
-from pdf2image import convert_from_path
-from pypdf import PdfReader
 from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, connections, utility
+
+from .parsing import PARSER_VERSION, Chunk, extract, split_blocks
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("kb-worker")
@@ -67,7 +65,7 @@ def finish(job: dict, ok: bool, error: str | None = None) -> None:
             cur.execute("UPDATE ingestion_job SET status='succeeded',finished_at=NOW(3),error_message=NULL WHERE id=%s", (job["job_id"],))
             if job["job_type"] != "delete":
                 cur.execute("UPDATE document_version SET extraction_status='succeeded',extracted_at=NOW(3),"
-                    "parser_name='builtin',parser_version='0.5.0' WHERE id=%s", (job["document_version_id"],))
+                    "parser_name='builtin-structured',parser_version=%s WHERE id=%s", (PARSER_VERSION, job["document_version_id"]))
         else:
             cur.execute("UPDATE ingestion_job SET status='failed',finished_at=NOW(3),error_message=%s WHERE id=%s", ((error or "")[:4000], job["job_id"]))
             if job["job_type"] != "delete":
@@ -90,52 +88,6 @@ def download(job: dict) -> Path:
     return path
 
 
-def extract(path: Path, filename: str) -> list[tuple[int | None, str]]:
-    extension = Path(filename).suffix.lower()
-    if extension == ".pdf":
-        pages = [(number, (page.extract_text() or "").strip()) for number, page in enumerate(PdfReader(str(path)).pages, 1)]
-        if sum(len(text) for _, text in pages) >= 100:
-            return pages
-        return [(number, pytesseract.image_to_string(image, lang="chi_sim+eng").strip())
-                for number, image in enumerate(convert_from_path(str(path), dpi=200), 1)]
-    if extension == ".docx":
-        document = DocxDocument(str(path))
-        lines = [paragraph.text.strip() for paragraph in document.paragraphs if paragraph.text.strip()]
-        for table in document.tables:
-            lines.extend(" | ".join(cell.text.strip().replace("\n", " ") for cell in row.cells) for row in table.rows)
-        return [(None, "\n".join(lines))]
-    if extension in {".xlsx", ".xlsm"}:
-        workbook, lines = load_workbook(str(path), read_only=True, data_only=True), []
-        for sheet in workbook.worksheets:
-            lines.append(f"# 工作表：{sheet.title}")
-            for row in sheet.iter_rows(values_only=True):
-                cells = [str(cell).strip() if cell is not None else "" for cell in row]
-                if any(cells):
-                    lines.append(" | ".join(cells))
-        workbook.close()
-        return [(None, "\n".join(lines))]
-    if extension in {".txt", ".md", ".csv"}:
-        return [(None, path.read_text(encoding="utf-8", errors="ignore"))]
-    if extension in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}:
-        return [(1, pytesseract.image_to_string(str(path), lang="chi_sim+eng").strip())]
-    raise ValueError(f"暂不支持的文件类型：{extension}")
-
-
-def split_pages(pages: list[tuple[int | None, str]], size: int = 1200, overlap: int = 150) -> list[tuple[int | None, str]]:
-    output = []
-    for page, text in pages:
-        buffer = ""
-        for line in (line.strip() for line in text.splitlines() if line.strip()):
-            if buffer and len(buffer) + len(line) + 1 > size:
-                output.append((page, buffer))
-                buffer = buffer[-overlap:] + "\n" + line
-            else:
-                buffer = (buffer + "\n" + line).strip()
-        if buffer:
-            output.append((page, buffer))
-    return output
-
-
 def cleanup_indexes(document_id: int) -> None:
     try:
         connections.connect(alias="default", uri=value("MILVUS_URI", True))
@@ -155,16 +107,19 @@ def cleanup_indexes(document_id: int) -> None:
         log.warning("清理 OpenSearch 文档 %s 失败：%s", document_id, exc)
 
 
-def save_units(job: dict, chunks: list[tuple[int | None, str]]) -> list[dict]:
+def save_units(job: dict, chunks: list[Chunk]) -> list[dict]:
     cleanup_indexes(job["document_id"])
     with db() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM content_unit WHERE document_version_id=%s", (job["document_version_id"],))
         units = []
-        for sequence, (page, text) in enumerate(chunks, 1):
+        for sequence, chunk in enumerate(chunks, 1):
+            text = chunk.text
             cur.execute("INSERT INTO content_unit (document_version_id,unit_type,sequence_no,page_start,page_end,content_text,content_hash,token_count,metadata_json) "
-                "VALUES (%s,'chunk',%s,%s,%s,%s,%s,%s,JSON_OBJECT('source','worker'))",
-                (job["document_version_id"], sequence, page, page, text, hashlib.sha256(text.encode()).hexdigest(), max(1, len(text) // 3)))
-            units.append({"id": cur.lastrowid, "page": page, "text": text})
+                "VALUES (%s,'chunk',%s,%s,%s,%s,%s,%s,%s)",
+                (job["document_version_id"], sequence, chunk.page_start, chunk.page_end, text,
+                 hashlib.sha256(text.encode()).hexdigest(), max(1, len(text) // 3),
+                 json.dumps(chunk.metadata, ensure_ascii=False)))
+            units.append({"id": cur.lastrowid, "page": chunk.page_start, "text": text})
         conn.commit()
         return units
 
@@ -278,9 +233,11 @@ def run(job: dict) -> None:
         return
     source = download(job)
     try:
-        units = save_units(job, split_pages(extract(source, job["original_filename"])))
-        if not units:
+        chunks = split_blocks(extract(source, job["original_filename"]))
+        if not chunks:
             raise ValueError("未提取到可用文本")
+        # Validate extraction before cleaning up an existing document's indexes.
+        units = save_units(job, chunks)
         index_units(job, units)
         finish(job, True)
         log.info("完成任务 %s，切片数 %s", job["job_id"], len(units))

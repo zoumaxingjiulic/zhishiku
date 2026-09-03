@@ -1526,7 +1526,7 @@ def hydrate_units(
         )
         parameters.extend(user["department_ids"])
     query = (
-        "SELECT cu.id,cu.content_text,cu.page_start,d.id document_id,d.title,d.knowledge_base_id,v.original_filename "
+        "SELECT cu.id,cu.content_text,cu.page_start,cu.page_end,d.id document_id,d.title,d.knowledge_base_id,v.original_filename "
         "FROM content_unit cu JOIN document_version v ON v.id=cu.document_version_id "
         "JOIN document d ON d.id=v.document_id "
         f"WHERE cu.id IN ({unit_placeholders}) AND d.status='active' "
@@ -1712,6 +1712,7 @@ def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict
                 "title": unit["title"],
                 "filename": unit["original_filename"],
                 "page": unit["page_start"],
+                "page_end": unit.get("page_end"),
                 "content_unit_id": unit["id"],
             }
             for unit in units

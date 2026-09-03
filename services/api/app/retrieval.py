@@ -159,6 +159,13 @@ def rerank(question: str, units: list[dict], top_n: int = 8) -> tuple[list[dict]
     return [unit for _, unit in ranked[:top_n]], "local"
 
 
+def source_location(unit: dict) -> str:
+    start, end = unit.get("page_start"), unit.get("page_end")
+    if not start:
+        return ""  # DOCX/Excel do not have reliable rendered page numbers.
+    return f"第{start}—{end}页" if end and end != start else f"第{start}页"
+
+
 def generate_answer(
     system_prompt: str,
     question: str,
@@ -169,7 +176,7 @@ def generate_answer(
     if not units:
         return "在当前账号有权访问的知识库中，没有检索到足以回答该问题的资料。", "no_evidence"
     context = "\n\n".join(
-        f"[来源{index}] {unit['title']} 第{unit['page_start'] or '未知'}页\n{unit['content_text']}"
+        f"[来源{index}] {unit['title']} {source_location(unit)}\n{unit['content_text']}"
         for index, unit in enumerate(units, 1)
     )
     base_url = gateway.get("base_url") if gateway else settings.llm_base_url
