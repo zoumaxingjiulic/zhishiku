@@ -127,7 +127,12 @@ def local_relevance(question: str, text: str) -> float:
     return len(question_tokens & text_tokens) / max(1, len(question_tokens))
 
 
-def rerank(question: str, units: list[dict], top_n: int = 8) -> tuple[list[dict], str]:
+def rerank(
+    question: str,
+    units: list[dict],
+    top_n: int = 8,
+    score_threshold: float | None = None,
+) -> tuple[list[dict], str]:
     if not units:
         return [], "none"
     if settings.rerank_base_url and settings.rerank_model:
@@ -148,15 +153,31 @@ def rerank(question: str, units: list[dict], top_n: int = 8) -> tuple[list[dict]
             )
             response.raise_for_status()
             results = response.json().get("results", [])
-            return [units[int(item["index"])] for item in results if int(item["index"]) < len(units)], "model"
+            ranked = []
+            for item in results:
+                index = int(item["index"])
+                score = float(item.get("relevance_score", item.get("score", 0.0)))
+                if index >= len(units) or (score_threshold is not None and score < score_threshold):
+                    continue
+                unit = dict(units[index])
+                unit["_rerank_score"] = score
+                ranked.append(unit)
+            return ranked, "model"
         except Exception:
             pass
-    ranked = sorted(
-        enumerate(units),
-        key=lambda item: (local_relevance(question, item[1]["content_text"]), -item[0]),
-        reverse=True,
-    )
-    return [unit for _, unit in ranked[:top_n]], "local"
+    ranked = []
+    for index, unit in enumerate(units):
+        score = local_relevance(question, unit["content_text"])
+        ranked.append((index, score, unit))
+    ranked.sort(key=lambda item: (item[1], -item[0]), reverse=True)
+    selected = []
+    for _, score, unit in ranked[:top_n]:
+        if score_threshold is not None and score < score_threshold:
+            continue
+        item = dict(unit)
+        item["_rerank_score"] = score
+        selected.append(item)
+    return selected, "local"
 
 
 def source_location(unit: dict) -> str:

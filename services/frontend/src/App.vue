@@ -38,6 +38,7 @@ const navItems = computed(() => [
   ...(isAdmin.value ? [
     { section: "model-gateway", to: { name: "model-gateway" }, icon: "◈", label: "大模型网关" },
     { section: "users", to: { name: "users" }, icon: "♟", label: "用户与部门" },
+    { section: "observability", to: { name: "observability" }, icon: "◎", label: "运行监控" },
     { section: "audit", to: { name: "audit" }, icon: "◷", label: "审计日志" },
   ] : []),
 ]);
@@ -103,9 +104,9 @@ function navigate(target: string) {
   const mapping: Record<string, string> = {
     home: "workbench", knowledge: "knowledge", agents: "agents", prompts: "prompts",
     agentRequests: "agent-requests", connections: "connections", modelGateway: "model-gateway",
-    users: "users", audit: "audit",
+    users: "users", observability: "observability", audit: "audit",
   };
-  if ((target === "users" || target === "audit" || target === "modelGateway") && !isAdmin.value) return;
+  if ((target === "users" || target === "audit" || target === "observability" || target === "modelGateway") && !isAdmin.value) return;
   router.push({ name: mapping[target] || target });
 }
 

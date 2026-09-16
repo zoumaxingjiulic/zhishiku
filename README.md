@@ -1,6 +1,6 @@
 # 企业智能体平台与部门知识库
 
-面向企业内网的单机部署知识库与智能问答 MVP。当前已具备部门隔离、资料管理、文件夹、异步入库、混合检索、AI 问答、账号管理及审计能力。首个业务智能体为人资制度问答助手。
+面向企业内网的单机部署知识库与企业智能体平台。当前已具备部门隔离、资料管理、文件夹、异步入库、混合检索、多轮 AI 问答、MCP 企业系统工具、账号管理、运行追踪及审计能力。
 
 平台正在从知识问答 MVP 演进为统一企业智能体平台；全局模块、权限边界、智能体运行形态、大模型网关与系统连接器路线见 [企业智能体平台全局设计](docs/enterprise-agent-platform-design.md)。知识库内部设计仍保持独立演进。
 
@@ -20,7 +20,8 @@
        ├─ Milvus：语义向量检索
        ├─ OpenSearch：关键词/全文检索
        ├─ Infinity：本地 embedding、rerank
-       └─ DeepSeek API：最终回答生成
+       ├─ DeepSeek API：最终回答与工具选择
+       └─ MCP：按智能体授权的 ERP、OA、PLM、MOM 只读工具
 
 Worker：从 Redis 取任务，执行解析/OCR、切片、向量化和全文索引。
 ~~~
@@ -40,17 +41,38 @@ Worker：从 Redis 取任务，执行解析/OCR、切片、向量化和全文索
 ~~~text
 用户问题
 → 身份/部门/知识库/文件夹范围校验
+→ 读取同一会话最近的多轮上下文
 → BGE-M3 生成问题向量
 → Milvus 语义召回 + OpenSearch 关键词召回
 → RRF 融合
 → BGE Reranker 重排序
-→ DeepSeek 基于最终切片生成回答与引用
+→ 上下文去重与长度预算
+→ DeepSeek 基于最终切片生成回答与引用，或选择已授权 MCP 工具
+→ 保存引用、工具事件、各阶段耗时与匿名问题哈希
 ~~~
 
 - Milvus 使用 COSINE 度量。
 - BAAI/bge-m3 输出 1024 维向量。
 - 权限和范围过滤在检索、rerank、LLM 调用之前执行；跨部门资料不得进入候选集。
 - 未配置模型 rerank 时系统会降级为本地词项重排序；当前已使用模型 rerank。
+- `agent_knowledge_base.retrieval_config_json` 可配置 `candidate_k`、`top_k`、`score_threshold`、`context_max_chars` 和 `history_messages`。
+- MCP 工具必须在服务端明确声明 `readOnlyHint=true`，并经平台管理员绑定到具体智能体后才会暴露给模型。
+
+## MCP 企业系统连接
+
+平台支持 MCP Streamable HTTP + Bearer Token。Token 使用与大模型网关相同的 `MODEL_CREDENTIAL_KEY` 做 Fernet 加密，数据库和 API 均不返回明文。连接流程为：
+
+~~~text
+配置连接地址和 Token
+→ MCP initialize
+→ tools/list 发现工具与 JSON Schema
+→ 管理员按智能体授予只读工具
+→ 模型按问题选择工具
+→ 后端再次校验绑定关系并调用 MCP
+→ 只保存工具名、成功状态、耗时和追踪 ID，不保存业务结果
+~~~
+
+当前已接入 ERP U9 料品查询与 OA 通讯录查询。系统连接页面可以查看连接状态、重新发现工具并管理智能体授权。敏感写操作默认不接入；未来接入写工具时必须增加参数校验、人工确认、幂等键和审批审计。
 
 ## 权限与资料模型
 
@@ -108,7 +130,7 @@ deploy/
   upgrade-v05.sh                  既有环境升级
   apply-mysql-migration.sh        单个迁移执行器
   queue-reindex.py                既有文档重建索引任务
-database/mysql/                   001~009 MySQL 初始化与增量迁移
+database/mysql/                   001~011 MySQL 初始化与增量迁移
 services/api/                     FastAPI 管理、检索、问答、审计
 services/worker/                  解析、OCR、切片、Embedding、索引
 services/frontend/                管理与问答前端
@@ -280,7 +302,7 @@ PY
 全新 MySQL 数据目录自动执行 001_initial_schema.sql。既有环境的后续迁移每个文件只能执行一次：
 
 ~~~bash
-bash deploy/apply-mysql-migration.sh database/mysql/009_knowledge_folders.sql
+bash deploy/apply-mysql-migration.sh database/mysql/011_mcp_agent_runtime_observability.sql
 ~~~
 
 历史迁移见 [database/mysql/README.md](database/mysql/README.md)。已执行过的迁移绝不能修改或重写。
@@ -291,7 +313,7 @@ bash deploy/apply-mysql-migration.sh database/mysql/009_knowledge_folders.sql
 bash deploy/smoke-test.sh
 ~~~
 
-它验证账号、软删除、部门隔离、跨部门 403、上传、解析、切片、Milvus、OpenSearch、RRF、rerank、LLM 回答、文件夹范围检索、文档移动不重索引，并清理临时资料和账号。
+它验证账号、软删除、部门隔离、跨部门 403、上传、解析、切片、Milvus、OpenSearch、RRF、rerank、LLM 回答、文件夹范围检索、文档移动不重索引，并清理临时资料和账号。MCP 连接发现与工具授权另在系统连接页面验证，验收时不要调用会产生业务副作用的工具。
 
 | 现象 | 优先检查 |
 | --- | --- |

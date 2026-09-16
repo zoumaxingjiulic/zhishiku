@@ -20,8 +20,9 @@ from pydantic import BaseModel, Field
 
 from .config import settings
 from .database import connect
+from .agent_runtime import generate_agent_answer
+from .mcp_client import McpError, StreamableHttpMcpClient
 from .retrieval import (
-    generate_answer,
     keyword_candidates,
     reciprocal_rank_fusion,
     rerank,
@@ -30,7 +31,7 @@ from .retrieval import (
 from .security import create_token, decode_token, hash_password, validate_password, verify_password
 
 log = logging.getLogger("kb-api")
-app = FastAPI(title="企业智能体平台 API", version="0.9.0", docs_url="/docs", redoc_url=None)
+app = FastAPI(title="企业智能体平台 API", version="1.0.0", docs_url="/docs", redoc_url=None)
 COOKIE_NAME = "kb_session"
 LOGIN_ATTEMPTS: dict[str, list[float]] = {}
 
@@ -153,6 +154,21 @@ class AgentModelBinding(BaseModel):
     model_gateway_profile_id: int | None = None
 
 
+class ConnectorWrite(BaseModel):
+    code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
+    name: str = Field(min_length=2, max_length=128)
+    connector_type: str = Field(pattern=r"^(erp|oa|plm|mom|custom)$")
+    description: str | None = None
+    base_url: str = Field(min_length=8, max_length=1024)
+    bearer_token: str | None = Field(default=None, max_length=4096)
+    protocol_version: str = Field(default="2025-06-18", max_length=32)
+    status: str = Field(default="active", pattern=r"^(draft|active|disabled)$")
+
+
+class AgentToolBinding(BaseModel):
+    connector_tool_ids: list[int] = Field(default_factory=list)
+
+
 def object_store() -> Minio:
     return Minio(
         settings.minio_endpoint,
@@ -186,6 +202,125 @@ def encrypt_model_credential(value: str) -> str:
         return Fernet(settings.model_credential_key.encode()).encrypt(value.encode()).decode()
     except (ValueError, TypeError) as exc:
         raise HTTPException(503, "模型凭据加密密钥格式无效") from exc
+
+
+def decrypt_credential(value: str | None) -> str:
+    if not value:
+        return ""
+    if not settings.model_credential_key:
+        raise HTTPException(503, "凭据加密密钥未配置")
+    try:
+        return Fernet(settings.model_credential_key.encode()).decrypt(value.encode()).decode()
+    except (InvalidToken, ValueError, TypeError) as exc:
+        raise HTTPException(503, "连接器凭据无法解密") from exc
+
+
+def connector_view(row: dict, include_details: bool = False) -> dict:
+    result = dict(row)
+    result["has_credential"] = bool(result.pop("credential_ciphertext", None))
+    raw = result.pop("config_json", None)
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except json.JSONDecodeError:
+            raw = None
+    result["config"] = raw or {}
+    if not include_details:
+        result.pop("last_error", None)
+        result.pop("base_url", None)
+    return result
+
+
+def parse_json_column(value, fallback):
+    if value is None:
+        return fallback
+    if isinstance(value, str):
+        try:
+            return json.loads(value)
+        except json.JSONDecodeError:
+            return fallback
+    return value
+
+
+def connector_runtime(connector_id: int) -> dict:
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT id,code,name,base_url,credential_ciphertext,protocol_version,status "
+            "FROM system_connector WHERE id=%s", (connector_id,)
+        )
+        row = cursor.fetchone()
+    if not row or row["status"] != "active":
+        raise McpError("连接器不存在或未启用")
+    row["bearer_token"] = decrypt_credential(row.pop("credential_ciphertext", None))
+    return row
+
+
+def discover_mcp_tools(connector_id: int) -> tuple[dict, list[dict]]:
+    connector = connector_runtime(connector_id)
+    with StreamableHttpMcpClient(connector["base_url"], connector["bearer_token"],
+                                 connector["protocol_version"]) as client:
+        tools = client.list_tools()
+        server_info = client.server_info
+    return server_info, tools
+
+
+def bound_agent_tools(agent_id: int) -> list[dict]:
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT ct.id,ct.tool_name,ct.title,ct.description,ct.input_schema_json,ct.output_schema_json,"
+            "ct.annotations_json,c.id connector_id,c.code connector_code,c.name connector_name "
+            "FROM agent_connector_tool act JOIN connector_tool ct ON ct.id=act.connector_tool_id "
+            "JOIN system_connector c ON c.id=ct.connector_id "
+            "WHERE act.agent_id=%s AND act.permission='read' AND ct.status='active' AND c.status='active' "
+            "ORDER BY c.id,ct.id", (agent_id,)
+        )
+        rows = list(cursor.fetchall())
+    for row in rows:
+        row["input_schema"] = parse_json_column(row.pop("input_schema_json"), {})
+        row["output_schema"] = parse_json_column(row.pop("output_schema_json"), {})
+        row["annotations"] = parse_json_column(row.pop("annotations_json"), {})
+    return rows
+
+
+def execute_bound_tool(tool: dict, arguments: dict) -> tuple[dict, dict]:
+    connector = connector_runtime(tool["connector_id"])
+    with StreamableHttpMcpClient(connector["base_url"], connector["bearer_token"],
+                                 connector["protocol_version"]) as client:
+        result = client.call_tool(tool["tool_name"], arguments)
+    structured = result.get("structuredContent")
+    content = result.get("content") or []
+    tool_result = structured if structured is not None else {
+        "content": [item for item in content if item.get("type") in {"text", "resource_link"}]
+    }
+    trace_id = structured.get("trace_id") if isinstance(structured, dict) else None
+    return tool_result, {"connector": tool["connector_code"], "connector_name": tool["connector_name"],
+                         "tool": tool["tool_name"], "success": True, "trace_id": trace_id}
+
+
+def retrieval_config(agent_id: int, knowledge_base_ids: list[int]) -> dict:
+    config = {"candidate_k": 40, "top_k": 8, "score_threshold": None,
+              "context_max_chars": 12000, "history_messages": 12}
+    if not knowledge_base_ids:
+        return config
+    placeholders = ",".join(["%s"] * len(knowledge_base_ids))
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            f"SELECT retrieval_config_json FROM agent_knowledge_base WHERE agent_id=%s "
+            f"AND knowledge_base_id IN ({placeholders})", [agent_id, *knowledge_base_ids]
+        )
+        rows = cursor.fetchall()
+    for row in rows:
+        candidate = parse_json_column(row["retrieval_config_json"], {})
+        for key in config:
+            if key in candidate:
+                config[key] = candidate[key]
+    config["candidate_k"] = max(5, min(100, int(config["candidate_k"])))
+    config["top_k"] = max(1, min(20, int(config["top_k"])))
+    config["context_max_chars"] = max(2000, min(40000, int(config["context_max_chars"])))
+    config["history_messages"] = max(0, min(30, int(config["history_messages"])))
+    if config["score_threshold"] is not None:
+        config["score_threshold"] = max(0.0, min(1.0, float(config["score_threshold"])))
+    return config
 
 
 def model_profile_view(row: dict) -> dict:
@@ -446,7 +581,7 @@ def startup() -> None:
 
 @app.get("/healthz", tags=["system"])
 def healthz() -> dict:
-    return {"status": "ok", "service": "knowledge-base-api", "version": "0.7.0"}
+    return {"status": "ok", "service": "knowledge-base-api", "version": "1.0.0"}
 
 
 @app.get("/readyz", tags=["system"])
@@ -1464,7 +1599,12 @@ def list_agents(user: dict = Depends(current_user)) -> list[dict]:
             f"SELECT a.id,a.code,a.name,a.description,a.agent_type,a.launch_mode,a.icon,a.category,"
             f"a.llm_gateway_profile_id,a.status,"
             f"GROUP_CONCAT(DISTINCT k.name ORDER BY k.id SEPARATOR ', ') knowledge_bases,"
-            f"GROUP_CONCAT(DISTINCT k.id ORDER BY k.id SEPARATOR ',') knowledge_base_ids "
+            f"GROUP_CONCAT(DISTINCT k.id ORDER BY k.id SEPARATOR ',') knowledge_base_ids,"
+            f"(SELECT GROUP_CONCAT(DISTINCT CONCAT(sc.name,' / ',COALESCE(ct.title,ct.tool_name)) "
+            f"ORDER BY sc.id,ct.id SEPARATOR ', ') FROM agent_connector_tool act "
+            f"JOIN connector_tool ct ON ct.id=act.connector_tool_id "
+            f"JOIN system_connector sc ON sc.id=ct.connector_id "
+            f"WHERE act.agent_id=a.id AND act.permission='read' AND ct.status='active' AND sc.status='active') tools "
             f"FROM agent a LEFT JOIN agent_knowledge_base ak ON ak.agent_id=a.id "
             f"LEFT JOIN knowledge_base k ON k.id=ak.knowledge_base_id "
             f"WHERE a.status='active' {access_clause} "
@@ -1554,18 +1694,13 @@ def latest_agent_chat(agent_id: int, user: dict = Depends(current_user)) -> dict
         if not session:
             return {"session_id": None, "messages": []}
         cursor.execute(
-            "SELECT role,content,citations_json,created_at FROM chat_message WHERE session_id=%s ORDER BY id",
+            "SELECT role,content,citations_json,tool_calls_json,created_at FROM chat_message WHERE session_id=%s ORDER BY id",
             (session["id"],),
         )
         messages = list(cursor.fetchall())
     for message in messages:
-        raw = message.pop("citations_json", None)
-        if isinstance(raw, str):
-            try:
-                raw = json.loads(raw)
-            except json.JSONDecodeError:
-                raw = []
-        message["citations"] = raw or []
+        message["citations"] = parse_json_column(message.pop("citations_json", None), [])
+        message["tool_calls"] = parse_json_column(message.pop("tool_calls_json", None), [])
     return {"session_id": session["id"], "messages": messages}
 
 
@@ -1617,18 +1752,13 @@ def get_agent_chat_session(agent_id: int, session_id: str, user: dict = Depends(
         if not session:
             raise HTTPException(404, "对话不存在")
         cursor.execute(
-            "SELECT role,content,citations_json,created_at FROM chat_message WHERE session_id=%s ORDER BY id",
+            "SELECT role,content,citations_json,tool_calls_json,created_at FROM chat_message WHERE session_id=%s ORDER BY id",
             (session_id,),
         )
         messages = list(cursor.fetchall())
     for message in messages:
-        raw = message.pop("citations_json", None)
-        if isinstance(raw, str):
-            try:
-                raw = json.loads(raw)
-            except json.JSONDecodeError:
-                raw = []
-        message["citations"] = raw or []
+        message["citations"] = parse_json_column(message.pop("citations_json", None), [])
+        message["tool_calls"] = parse_json_column(message.pop("tool_calls_json", None), [])
     return {**session, "messages": messages}
 
 
@@ -1658,8 +1788,9 @@ def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict
     if agent["launch_mode"] != "chat":
         raise HTTPException(422, "该智能体不是问答型入口")
     knowledge_base_ids = agent["knowledge_base_ids"]
-    if not knowledge_base_ids:
-        raise HTTPException(422, "该问答智能体尚未配置知识范围")
+    tools = bound_agent_tools(agent_id)
+    if not knowledge_base_ids and not tools:
+        raise HTTPException(422, "该智能体尚未配置知识范围或系统工具")
     if payload.knowledge_base_id is not None:
         if payload.knowledge_base_id not in knowledge_base_ids:
             raise HTTPException(403, "无权在所选知识库中问答")
@@ -1675,6 +1806,8 @@ def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict
             payload.include_subfolders,
         )
     session_id = payload.session_id or str(uuid.uuid4())
+    config = retrieval_config(agent_id, knowledge_base_ids)
+    history: list[dict] = []
     with connect() as conn, conn.cursor() as cursor:
         if payload.session_id:
             cursor.execute(
@@ -1688,24 +1821,56 @@ def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict
                 "INSERT INTO chat_session (id,agent_id,user_id,title) VALUES (%s,%s,%s,%s)",
                 (session_id, agent_id, user["id"], payload.question[:120]),
             )
+        if config["history_messages"]:
+            cursor.execute(
+                "SELECT role,content FROM (SELECT id,role,content FROM chat_message WHERE session_id=%s "
+                "AND role IN ('user','assistant') ORDER BY id DESC LIMIT %s) recent ORDER BY id",
+                (session_id, config["history_messages"]),
+            )
+            history = list(cursor.fetchall())
         cursor.execute("INSERT INTO chat_message (session_id,role,content) VALUES (%s,'user',%s)", (session_id, payload.question))
         cursor.execute(
             "UPDATE chat_session SET title=CASE WHEN title='新对话' THEN %s ELSE title END,updated_at=NOW(3) "
             "WHERE id=%s",
             (payload.question[:120], session_id),
         )
+        run_id = str(uuid.uuid4())
+        cursor.execute(
+            "INSERT INTO agent_run (id,session_id,agent_id,user_id,question_hash,route,status) "
+            "VALUES (%s,%s,%s,%s,%s,'chat','running')",
+            (run_id, session_id, agent_id, user["id"], hashlib.sha256(payload.question.encode()).hexdigest()),
+        )
         conn.commit()
 
+    started = time.perf_counter()
+    timings: dict[str, float] = {}
+    vector: list[int] = []
+    keyword: list[int] = []
+    units: list[dict] = []
+    tool_events: list[dict] = []
+    rerank_method = "none"
     try:
-        departments = effective_departments(user)
-        vector = vector_candidates(payload.question, knowledge_base_ids, document_ids)
-        keyword = keyword_candidates(payload.question, knowledge_base_ids, departments, document_ids)
-        fused = reciprocal_rank_fusion(vector, keyword)
-        units, rerank_method = rerank(payload.question, hydrate_units(fused, knowledge_base_ids, user, document_ids))
+        if knowledge_base_ids:
+            stage = time.perf_counter()
+            departments = effective_departments(user)
+            vector = vector_candidates(payload.question, knowledge_base_ids, document_ids,
+                                       limit=config["candidate_k"])
+            keyword = keyword_candidates(payload.question, knowledge_base_ids, departments, document_ids,
+                                         limit=config["candidate_k"])
+            timings["retrieve_ms"] = round((time.perf_counter() - stage) * 1000, 1)
+            stage = time.perf_counter()
+            fused = reciprocal_rank_fusion(vector, keyword)
+            hydrated = hydrate_units(fused, knowledge_base_ids, user, document_ids)
+            units, rerank_method = rerank(payload.question, hydrated, config["top_k"],
+                                          config["score_threshold"])
+            timings["rerank_ms"] = round((time.perf_counter() - stage) * 1000, 1)
         gateway = agent_model_gateway(agent["llm_gateway_profile_id"])
-        answer, answer_method = generate_answer(
-            agent["system_prompt"], payload.question, units, agent["llm_model"], gateway
+        stage = time.perf_counter()
+        answer, answer_method, tool_events, cited_units = generate_agent_answer(
+            agent["system_prompt"], payload.question, units, history, tools, execute_bound_tool,
+            agent["llm_model"], gateway, config["context_max_chars"],
         )
+        timings["generation_ms"] = round((time.perf_counter() - stage) * 1000, 1)
         citations = [
             {
                 "document_id": unit["document_id"],
@@ -1714,11 +1879,13 @@ def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict
                 "page": unit["page_start"],
                 "page_end": unit.get("page_end"),
                 "content_unit_id": unit["id"],
+                "rerank_score": unit.get("_rerank_score"),
             }
-            for unit in units
+            for unit in cited_units
         ]
     except Exception as exc:
         log.exception("Agent response generation failed for session %s", session_id)
+        timings["total_ms"] = round((time.perf_counter() - started) * 1000, 1)
         with connect() as conn, conn.cursor() as cursor:
             cursor.execute(
                 "INSERT INTO chat_message (session_id,role,content,model_name) "
@@ -1726,38 +1893,78 @@ def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict
                 (session_id,),
             )
             cursor.execute("UPDATE chat_session SET updated_at=NOW(3) WHERE id=%s", (session_id,))
+            cursor.execute(
+                "UPDATE agent_run SET status='failed',candidate_counts_json=%s,timings_json=%s,"
+                "tool_events_json=%s,error_type=%s,finished_at=NOW(3) WHERE id=%s",
+                (json.dumps({"vector": len(vector), "keyword": len(keyword), "final": len(units)}),
+                 json.dumps(timings), json.dumps(tool_events, ensure_ascii=False), type(exc).__name__, run_id),
+            )
             audit(cursor, user["id"], "agent.chat.failed", "agent", agent_id,
-                  {"session_id": session_id, "error_type": type(exc).__name__}, request.client.host)
+                  {"session_id": session_id, "trace_id": run_id, "error_type": type(exc).__name__},
+                  request.client.host)
             conn.commit()
         raise
 
+    timings["total_ms"] = round((time.perf_counter() - started) * 1000, 1)
+    counts = {"vector": len(vector), "keyword": len(keyword), "final": len(citations)}
+    route = "hybrid" if tool_events and citations else "tool" if tool_events else "rag" if citations else "chat"
     with connect() as conn, conn.cursor() as cursor:
         cursor.execute(
-            "INSERT INTO chat_message (session_id,role,content,citations_json,model_name) VALUES (%s,'assistant',%s,%s,%s)",
+            "INSERT INTO chat_message (session_id,role,content,citations_json,tool_calls_json,model_name) "
+            "VALUES (%s,'assistant',%s,%s,%s,%s)",
             (session_id, answer, json.dumps(citations, ensure_ascii=False),
+             json.dumps(tool_events, ensure_ascii=False),
              gateway["model_name"] if gateway else (agent["llm_model"] or settings.llm_model or answer_method)),
         )
         cursor.execute("UPDATE chat_session SET updated_at=NOW(3) WHERE id=%s", (session_id,))
+        cursor.execute(
+            "UPDATE agent_run SET route=%s,status='succeeded',candidate_counts_json=%s,timings_json=%s,"
+            "tool_events_json=%s,finished_at=NOW(3) WHERE id=%s",
+            (route, json.dumps(counts), json.dumps(timings), json.dumps(tool_events, ensure_ascii=False), run_id),
+        )
         audit(cursor, user["id"], "agent.chat", "agent", agent_id, {
             "session_id": session_id,
+            "trace_id": run_id,
             "knowledge_base_id": payload.knowledge_base_id,
             "folder_id": payload.folder_id,
+            "route": route,
         }, request.client.host)
         conn.commit()
     return {
+        "trace_id": run_id,
         "session_id": session_id,
         "answer": answer,
         "citations": citations,
+        "tool_calls": tool_events,
         "retrieval_method": {"fusion": "rrf", "rerank": rerank_method, "answer": answer_method},
-        "candidate_counts": {"vector": len(vector), "keyword": len(keyword), "final": len(units)},
+        "candidate_counts": counts,
+        "timings": timings,
     }
 
 
 @app.get("/api/v1/connectors", tags=["connectors"])
 def list_connectors(user: dict = Depends(current_user)) -> dict:
     with connect() as conn, conn.cursor() as cursor:
-        cursor.execute("SELECT id,code,name,connector_type,description,status,created_at FROM system_connector ORDER BY id")
-        connectors = list(cursor.fetchall())
+        cursor.execute(
+            "SELECT id,code,name,connector_type,transport_type,auth_type,description,base_url,status,"
+            "credential_ciphertext,config_json,last_checked_at,last_error,tool_count,created_at,updated_at "
+            "FROM system_connector WHERE status<>'disabled' OR %s=1 ORDER BY id", (1 if is_admin(user) else 0,)
+        )
+        connectors = [connector_view(row, is_admin(user)) for row in cursor.fetchall()]
+        connector_ids = [row["id"] for row in connectors]
+        tools_by_connector: dict[int, list] = {item: [] for item in connector_ids}
+        if connector_ids:
+            placeholders = ",".join(["%s"] * len(connector_ids))
+            cursor.execute(
+                f"SELECT id,connector_id,tool_name,title,description,annotations_json,status,last_discovered_at "
+                f"FROM connector_tool WHERE connector_id IN ({placeholders}) AND status='active' ORDER BY connector_id,id",
+                connector_ids,
+            )
+            for tool in cursor.fetchall():
+                tool["annotations"] = parse_json_column(tool.pop("annotations_json", None), {})
+                tools_by_connector[tool["connector_id"]].append(tool)
+        for connector in connectors:
+            connector["tools"] = tools_by_connector.get(connector["id"], [])
     return {
         "items": connectors,
         "planned_types": [
@@ -1766,6 +1973,182 @@ def list_connectors(user: dict = Depends(current_user)) -> dict:
             {"type": "mom", "name": "MOM", "description": "生产执行、质量、设备与工序数据"},
         ],
     }
+
+
+@app.post("/api/v1/connectors", tags=["connectors"])
+def create_connector(payload: ConnectorWrite, request: Request, user: dict = Depends(platform_admin)) -> dict:
+    if not payload.base_url.startswith(("http://", "https://")):
+        raise HTTPException(422, "MCP 地址仅支持 HTTP/HTTPS")
+    ciphertext = encrypt_model_credential(payload.bearer_token) if payload.bearer_token else None
+    with connect() as conn, conn.cursor() as cursor:
+        try:
+            cursor.execute(
+                "INSERT INTO system_connector (code,name,connector_type,transport_type,auth_type,description,"
+                "base_url,credential_ciphertext,protocol_version,status,created_by) "
+                "VALUES (%s,%s,%s,'streamable_http','bearer',%s,%s,%s,%s,%s,%s)",
+                (payload.code, payload.name, payload.connector_type, payload.description, payload.base_url,
+                 ciphertext, payload.protocol_version, payload.status, user["id"]),
+            )
+        except pymysql.err.IntegrityError as exc:
+            raise HTTPException(409, "连接器编码已存在") from exc
+        connector_id = cursor.lastrowid
+        audit(cursor, user["id"], "connector.create", "system_connector", connector_id,
+              {"connector_type": payload.connector_type}, request.client.host)
+        conn.commit()
+    return {"id": connector_id, "status": "created"}
+
+
+@app.put("/api/v1/connectors/{connector_id}", tags=["connectors"])
+def update_connector(connector_id: int, payload: ConnectorWrite, request: Request,
+                     user: dict = Depends(platform_admin)) -> dict:
+    if not payload.base_url.startswith(("http://", "https://")):
+        raise HTTPException(422, "MCP 地址仅支持 HTTP/HTTPS")
+    credential_clause = ",credential_ciphertext=%s" if payload.bearer_token else ""
+    parameters: list = [payload.code, payload.name, payload.connector_type, payload.description, payload.base_url,
+                        payload.protocol_version, payload.status]
+    if payload.bearer_token:
+        parameters.append(encrypt_model_credential(payload.bearer_token))
+    parameters.append(connector_id)
+    with connect() as conn, conn.cursor() as cursor:
+        try:
+            cursor.execute(
+                "UPDATE system_connector SET code=%s,name=%s,connector_type=%s,transport_type='streamable_http',"
+                "auth_type='bearer',description=%s,base_url=%s,protocol_version=%s,status=%s"
+                f"{credential_clause} WHERE id=%s", parameters,
+            )
+        except pymysql.err.IntegrityError as exc:
+            raise HTTPException(409, "连接器编码已存在") from exc
+        if cursor.rowcount == 0:
+            cursor.execute("SELECT id FROM system_connector WHERE id=%s", (connector_id,))
+            if not cursor.fetchone():
+                raise HTTPException(404, "连接器不存在")
+        audit(cursor, user["id"], "connector.update", "system_connector", connector_id,
+              {"connector_type": payload.connector_type, "status": payload.status}, request.client.host)
+        conn.commit()
+    return {"status": "updated"}
+
+
+@app.post("/api/v1/connectors/{connector_id}/discover", tags=["connectors"])
+def discover_connector_tools(connector_id: int, request: Request,
+                             user: dict = Depends(platform_admin)) -> dict:
+    try:
+        server_info, tools = discover_mcp_tools(connector_id)
+    except Exception as exc:
+        with connect() as conn, conn.cursor() as cursor:
+            cursor.execute("UPDATE system_connector SET last_checked_at=NOW(3),last_error=%s WHERE id=%s",
+                           (str(exc)[:1000], connector_id))
+            audit(cursor, user["id"], "connector.discover.failed", "system_connector", connector_id,
+                  {"error_type": type(exc).__name__}, request.client.host)
+            conn.commit()
+        raise HTTPException(502, "MCP 连接或工具发现失败") from exc
+    discovered_names = []
+    with connect() as conn, conn.cursor() as cursor:
+        for tool in tools:
+            name = tool.get("name")
+            schema = tool.get("inputSchema") or {"type": "object", "properties": {}}
+            if not name or not isinstance(schema, dict):
+                continue
+            discovered_names.append(name)
+            cursor.execute(
+                "INSERT INTO connector_tool (connector_id,tool_name,title,description,input_schema_json,"
+                "output_schema_json,annotations_json,status,last_discovered_at) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,'active',NOW(3)) "
+                "ON DUPLICATE KEY UPDATE title=VALUES(title),description=VALUES(description),"
+                "input_schema_json=VALUES(input_schema_json),output_schema_json=VALUES(output_schema_json),"
+                "annotations_json=VALUES(annotations_json),status='active',last_discovered_at=NOW(3)",
+                (connector_id, name, tool.get("title"), tool.get("description"),
+                 json.dumps(schema, ensure_ascii=False),
+                 json.dumps(tool.get("outputSchema"), ensure_ascii=False) if tool.get("outputSchema") else None,
+                 json.dumps(tool.get("annotations") or {}, ensure_ascii=False)),
+            )
+        if discovered_names:
+            placeholders = ",".join(["%s"] * len(discovered_names))
+            cursor.execute(
+                f"UPDATE connector_tool SET status='missing' WHERE connector_id=%s AND tool_name NOT IN ({placeholders})",
+                [connector_id, *discovered_names],
+            )
+        else:
+            cursor.execute("UPDATE connector_tool SET status='missing' WHERE connector_id=%s", (connector_id,))
+        cursor.execute(
+            "UPDATE system_connector SET config_json=%s,last_checked_at=NOW(3),last_error=NULL,tool_count=%s WHERE id=%s",
+            (json.dumps({"server_info": server_info}, ensure_ascii=False), len(discovered_names), connector_id),
+        )
+        audit(cursor, user["id"], "connector.discover", "system_connector", connector_id,
+              {"tool_count": len(discovered_names), "server_name": server_info.get("name")}, request.client.host)
+        conn.commit()
+    return {"status": "connected", "server_info": server_info, "tool_count": len(discovered_names)}
+
+
+@app.get("/api/v1/connectors/admin/bindings", tags=["connectors"])
+def connector_bindings(user: dict = Depends(platform_admin)) -> dict:
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute("SELECT id,code,name,agent_type,launch_mode FROM agent WHERE status='active' ORDER BY id")
+        agents = list(cursor.fetchall())
+        cursor.execute(
+            "SELECT ct.id,ct.connector_id,ct.tool_name,ct.title,ct.description,ct.annotations_json,"
+            "c.code connector_code,c.name connector_name FROM connector_tool ct "
+            "JOIN system_connector c ON c.id=ct.connector_id WHERE ct.status='active' AND c.status='active' "
+            "ORDER BY c.id,ct.id"
+        )
+        tools = list(cursor.fetchall())
+        for tool in tools:
+            tool["annotations"] = parse_json_column(tool.pop("annotations_json", None), {})
+        cursor.execute("SELECT agent_id,connector_tool_id FROM agent_connector_tool WHERE permission='read'")
+        bindings: dict[str, list[int]] = {}
+        for row in cursor.fetchall():
+            bindings.setdefault(str(row["agent_id"]), []).append(row["connector_tool_id"])
+    return {"agents": agents, "tools": tools, "bindings": bindings}
+
+
+@app.put("/api/v1/agents/{agent_id}/connector-tools", tags=["connectors"])
+def bind_agent_connector_tools(agent_id: int, payload: AgentToolBinding, request: Request,
+                               user: dict = Depends(platform_admin)) -> dict:
+    tool_ids = sorted(set(payload.connector_tool_ids))
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute("SELECT id FROM agent WHERE id=%s", (agent_id,))
+        if not cursor.fetchone():
+            raise HTTPException(404, "智能体不存在")
+        if tool_ids:
+            placeholders = ",".join(["%s"] * len(tool_ids))
+            cursor.execute(
+                f"SELECT id,annotations_json FROM connector_tool WHERE id IN ({placeholders}) AND status='active'",
+                tool_ids,
+            )
+            valid = []
+            for tool in cursor.fetchall():
+                annotations = parse_json_column(tool["annotations_json"], {})
+                if annotations.get("readOnlyHint") is not True:
+                    raise HTTPException(422, "当前仅允许为智能体授权明确声明为只读的 MCP 工具")
+                valid.append(tool["id"])
+            if len(valid) != len(tool_ids):
+                raise HTTPException(422, "包含不存在或未启用的工具")
+        cursor.execute("DELETE FROM agent_connector_tool WHERE agent_id=%s", (agent_id,))
+        for tool_id in tool_ids:
+            cursor.execute(
+                "INSERT INTO agent_connector_tool (agent_id,connector_tool_id,permission) VALUES (%s,%s,'read')",
+                (agent_id, tool_id),
+            )
+        audit(cursor, user["id"], "agent.tools.bind", "agent", agent_id,
+              {"tool_ids": tool_ids}, request.client.host)
+        conn.commit()
+    return {"status": "updated", "tool_count": len(tool_ids)}
+
+
+@app.get("/api/v1/agent-runs", tags=["observability"])
+def list_agent_runs(limit: int = Query(default=50, ge=1, le=200),
+                    user: dict = Depends(platform_admin)) -> list[dict]:
+    with connect() as conn, conn.cursor() as cursor:
+        cursor.execute(
+            "SELECT r.id,r.session_id,r.agent_id,a.name agent_name,r.user_id,u.display_name,r.route,r.status,"
+            "r.candidate_counts_json,r.timings_json,r.tool_events_json,r.error_type,r.started_at,r.finished_at "
+            "FROM agent_run r JOIN agent a ON a.id=r.agent_id JOIN app_user u ON u.id=r.user_id "
+            "ORDER BY r.started_at DESC LIMIT %s", (limit,)
+        )
+        rows = list(cursor.fetchall())
+    for row in rows:
+        for key in ("candidate_counts_json", "timings_json", "tool_events_json"):
+            row[key.removesuffix("_json")] = parse_json_column(row.pop(key, None), {} if key != "tool_events_json" else [])
+    return rows
 
 
 @app.get("/api/v1/audit-logs", tags=["administration"])

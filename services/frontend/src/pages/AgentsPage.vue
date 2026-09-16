@@ -21,7 +21,7 @@ const modeMeta: Record<string, { label: string; icon: string; hint: string }> = 
   dashboard: { label: "看板", icon: "▥", hint: "业务数据分析看板" },
   external: { label: "系统", icon: "↗", hint: "打开外部业务应用" },
 };
-const welcomeMessage = { role: "assistant", text: "您好，我会仅根据智能体已授权的企业资料回答，并提供引用来源。" };
+const welcomeMessage = { role: "assistant", text: "您好，我会使用该智能体获授权的企业知识与只读系统工具协助您。" };
 const isAwaitingAnswer = computed(() => Boolean(
   sessionId.value && (pendingSessionIds.value.has(sessionId.value) || messages.value.at(-1)?.role === "user")
 ));
@@ -208,7 +208,7 @@ async function send() {
       body: JSON.stringify({ question: text, session_id: targetSessionId }),
     });
     if (selected.value?.id === targetAgentId && sessionId.value === targetSessionId) {
-      messages.value.push({ role: "assistant", text: result.answer, citations: result.citations, method: result.retrieval_method });
+      messages.value.push({ role: "assistant", text: result.answer, citations: result.citations, tool_calls: result.tool_calls, method: result.retrieval_method, trace_id: result.trace_id });
     }
     if (selected.value?.id === targetAgentId) await loadSessions();
   } catch (error: any) {
@@ -240,13 +240,13 @@ async function send() {
     <div class="agent-chat-head"><button class="secondary" @click="backToList">← 返回智能体列表</button><div><h2>{{selected.name}}</h2><p>{{modeMeta[selected.launch_mode]?.hint}}</p></div></div>
     <div v-if="selected.launch_mode==='chat'" class="chat-layout">
       <div class="agent-card">
-        <div class="agent-identity"><div class="agent-symbol light">✦</div><span class="eyebrow">CHAT AGENT</span><h2>{{selected.name}}</h2><p>{{selected.description}}</p><div class="agent-scope dark"><small>授权知识范围</small><strong>{{selected.knowledge_bases}}</strong></div></div>
+        <div class="agent-identity"><div class="agent-symbol light">✦</div><span class="eyebrow">CHAT AGENT</span><h2>{{selected.name}}</h2><p>{{selected.description}}</p><div class="agent-scope dark"><small>授权知识 / 工具</small><strong>{{selected.knowledge_bases || selected.tools || '未配置'}}</strong></div></div>
         <div class="conversation-head"><strong>我的对话</strong><button class="new-chat" @click="newConversation">＋ 新建</button></div>
         <div class="conversation-list"><button v-for="item in sessions" :key="item.id" class="conversation-item" :class="{active:sessionId===item.id}" @click="loadSession(item.id)"><span><strong>{{item.title||'新对话'}}</strong><small>{{item.last_role==='user'||pendingSessionIds.has(item.id)?'回答中…':item.message_count+' 条消息'}}</small></span><i title="删除对话" @click="deleteConversation($event,item)">×</i></button></div>
       </div>
       <div class="card chat-box">
-        <div class="chat-scope fixed"><span>检索范围</span><strong>智能体授权知识范围</strong><small>由管理员在智能体配置中统一设定</small></div>
-        <div class="messages"><div v-for="(message,index) in messages" :key="index" class="message" :class="message.role">{{message.content||message.text}}<div v-if="message.citations?.length" class="citation">引用：<span v-for="(citation,i) in message.citations" :key="i">《{{citation.title}}》{{formatPageRange(citation.page,citation.page_end)}}{{i<message.citations.length-1?'；':''}}</span><br>检索：向量 + 关键词 / RRF / {{message.method?.rerank==="model"?"模型":"本地"}}重排序</div></div></div>
+        <div class="chat-scope fixed"><span>授权范围</span><strong>智能体知识库与企业系统工具</strong><small>由管理员统一配置，并在后端再次校验权限</small></div>
+        <div class="messages"><div v-for="(message,index) in messages" :key="index" class="message" :class="message.role">{{message.content||message.text}}<div v-if="message.tool_calls?.length" class="tool-call-note"><span v-for="(event,i) in message.tool_calls" :key="i">{{event.success?'✓':'!'}} {{event.connector_name||event.connector}} / {{event.tool}}{{i<message.tool_calls.length-1?'；':''}}</span></div><div v-if="message.citations?.length" class="citation">引用：<span v-for="(citation,i) in message.citations" :key="i">《{{citation.title}}》{{formatPageRange(citation.page,citation.page_end)}}{{i<message.citations.length-1?'；':''}}</span><br>检索：向量 + 关键词 / RRF / {{message.method?.rerank==="model"?"模型":"本地"}}重排序</div></div></div>
         <form class="chat-input" @submit.prevent="send"><textarea v-model="question" :disabled="isAwaitingAnswer" placeholder="请输入您想查询的问题…" required></textarea><button class="primary" :disabled="isAwaitingAnswer">{{isAwaitingAnswer?"回答中…":"发送"}}</button></form>
       </div>
     </div>

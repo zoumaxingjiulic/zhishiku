@@ -9,6 +9,7 @@ import PromptTemplatesPage from "./pages/PromptTemplatesPage.vue";
 import AgentRequestsPage from "./pages/AgentRequestsPage.vue";
 import UsersPage from "./pages/UsersPage.vue";
 import AuditPage from "./pages/AuditPage.vue";
+import ObservabilityPage from "./pages/ObservabilityPage.vue";
 import LoginRoute from "./pages/LoginRoute.vue";
 
 export const router = createRouter({
@@ -23,10 +24,11 @@ export const router = createRouter({
     { path: "/agents/:agentId(\\d+)/chat/:sessionId", name: "agent-chat", component: AgentsPage, meta: { title: "智能体对话", subtitle: "对话与企业知识检索", section: "agents", toast: true } },
     { path: "/prompt-templates", name: "prompts", component: PromptTemplatesPage, meta: { title: "提示词模板", subtitle: "保存和复用我的常用提示词", section: "prompts", toast: true } },
     { path: "/agent-requests", name: "agent-requests", component: AgentRequestsPage, meta: { title: "智能体申请", subtitle: "提交业务需求并跟踪评审进度", section: "agent-requests", passUser: true, toast: true } },
-    { path: "/connections", name: "connections", component: ConnectionsPage, meta: { title: "系统连接", subtitle: "ERP、PLM 与 MOM 系统接入预留", section: "connections" } },
+    { path: "/connections", name: "connections", component: ConnectionsPage, meta: { title: "系统连接", subtitle: "通过 MCP 安全接入 ERP、OA、PLM 与 MOM", section: "connections", passUser: true, toast: true } },
     { path: "/model-gateway", name: "model-gateway", component: ModelGatewayPage, meta: { title: "大模型网关", subtitle: "统一管理模型厂商、凭据与智能体模型路由", section: "model-gateway", admin: true, toast: true } },
     { path: "/users", name: "users", component: UsersPage, meta: { title: "用户与部门", subtitle: "账号、部门和数据权限管理", section: "users", admin: true, toast: true } },
     { path: "/audit", name: "audit", component: AuditPage, meta: { title: "审计日志", subtitle: "关键操作的安全审计记录", section: "audit", admin: true } },
+    { path: "/observability", name: "observability", component: ObservabilityPage, meta: { title: "运行监控", subtitle: "智能体检索、模型与工具调用追踪", section: "observability", admin: true } },
     { path: "/:pathMatch(.*)*", redirect: "/workbench" },
   ],
 });
