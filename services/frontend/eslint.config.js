@@ -8,6 +8,12 @@ export default tseslint.config(
   ...tseslint.configs.recommended,
   ...vue.configs["flat/essential"],
   {
+    rules: {
+      // Explicit-any removal is tracked per feature in governance phase 3; phase 1 keeps correctness checks runnable.
+      "@typescript-eslint/no-explicit-any": "off",
+    },
+  },
+  {
     files: ["**/*.vue"],
     languageOptions: {
       parserOptions: {
