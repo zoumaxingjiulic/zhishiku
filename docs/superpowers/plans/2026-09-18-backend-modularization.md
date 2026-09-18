@@ -206,32 +206,35 @@ git commit -am "refactor: modularize knowledge management"
 **新增文件**
 
 - `services/api/app/domains/documents/{__init__.py,schemas.py,repository.py,service.py,router.py}`
-- `services/api/app/infrastructure/{__init__.py,object_store.py,vector_store.py,search_index.py}`
+- `services/api/app/infrastructure/{__init__.py,object_store.py}`
+- `services/worker/app/external_stores.py`
 - `tests/api/test_document_routes.py`
 - `tests/api/test_document_lifecycle.py`
 - `tests/api/test_ingestion_job_routes.py`
+- `tests/test_worker_external_stores.py`
 
 **修改文件**
 
 - `services/api/app/main.py`
 - `services/api/app/core/dependencies.py`
+- `services/worker/app/main.py`
 
 ### 4.1 写生命周期测试
 
-覆盖多文件上传、文件类型和大小校验、文档列表/详情/版本、处理状态、重建、删除与任务查询。用伪对象存储断言上传失败会回滚元数据并清理已写对象；删除流程断言数据库状态先进入可恢复状态，再调用对象/向量/全文索引删除适配器；任一外部删除失败必须保留可重试状态和错误记录。
+覆盖上传、文件类型和大小校验、文档列表/详情/版本、处理状态、重建、删除与任务查询。用伪对象存储断言上传失败会回滚元数据并清理已写对象。数据库提交结果未知时，必须先放弃并关闭故障 UoW（不再 rollback 该会话），再通过有界重复的全新只读连接按 `object_key` 核验：任一次确认已提交则保留对象并返回成功，连续确认未提交才删除对象；核验或补偿失败要产生不含存储路径的高严重日志与对账追踪号。删除文档在锁定文档后使用 `FOR UPDATE` current read 读取全部版本，并为每个版本创建固定幂等删除任务。删除流程断言数据库状态先进入可恢复状态，再由 Worker 调用对象、向量和全文索引删除适配器；任一外部删除失败必须保留可重试状态和错误记录。
 
 ### 4.2 提取基础设施适配器
 
-将 MinIO、Milvus、OpenSearch 操作包装为明确接口。Service 只依赖接口，不直接构造客户端；生产依赖由 `core.dependencies` 注入，测试使用内存伪实现。
+API 侧只包装上传、下载和补偿所需的 MinIO 接口。Milvus、OpenSearch 和删除用 MinIO 接口由实际拥有删除流程的 Worker 在 `external_stores.py` 中包装，支持依赖注入、逐项错误来源和重复调用幂等。Service 与 Worker 业务函数不直接构造客户端，测试使用内存伪实现；不创建没有调用方的 API 空壳适配器。
 
 ### 4.3 迁移文档事务
 
-文档、版本、摄取任务和审计记录的数据库写入使用同一事务。外部系统操作不能伪装成数据库原子事务，采用“数据库状态 + 幂等任务 + 可重试错误”保证最终一致性。保留现有 Worker 消费格式。
+文档、版本、摄取任务和审计记录的数据库写入使用同一事务。每个文档版本创建固定 `delete:{version_id}` 删除任务，保留现有 Worker payload。外部系统操作不能伪装成数据库原子事务，采用“数据库状态 + 幂等任务 + 可重试错误”保证最终一致性。单 Worker 启动时将遗留 `running` 任务恢复为 `queued` 后再领取；扩展为多 Worker 前必须改为正式的 lease、owner 和超时回收机制，不能复用单实例启动恢复方案。
 
 ### 4.4 验证并提交
 
 ```bash
-python -m pytest tests/api/test_document_routes.py tests/api/test_document_lifecycle.py tests/api/test_ingestion_job_routes.py tests/api/test_openapi_contract.py -q
+python -m pytest tests/api/test_document_routes.py tests/api/test_document_lifecycle.py tests/api/test_ingestion_job_routes.py tests/test_worker_external_stores.py tests/api/test_openapi_contract.py -q
 python -m pytest -q
 git diff --check
 git commit -am "refactor: modularize document lifecycle"

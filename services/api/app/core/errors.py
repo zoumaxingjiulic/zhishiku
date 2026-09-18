@@ -24,3 +24,10 @@ class ConflictError(ApplicationError):
 class ValidationError(ApplicationError):
     """The request violates a business validation rule."""
 
+
+class CompensationRequiredError(ApplicationError):
+    """A cross-store operation needs operator reconciliation."""
+
+    def __init__(self, operation_id: str) -> None:
+        self.operation_id = operation_id
+        super().__init__(f"操作状态需要人工核对，追踪号：{operation_id}")

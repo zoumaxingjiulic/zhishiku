@@ -36,6 +36,38 @@ class RecordingConnection:
         self.events.append("connection.close")
 
 
+class FailingCleanupConnection(RecordingConnection):
+    def __init__(
+        self,
+        events: list[str],
+        *,
+        fail_rollback: bool = False,
+        fail_cursor_close: bool = False,
+        fail_connection_close: bool = False,
+    ) -> None:
+        super().__init__(events)
+        self.fail_rollback = fail_rollback
+        self.fail_connection_close = fail_connection_close
+        if fail_cursor_close:
+            original_close = self.recording_cursor.close
+
+            def broken_cursor_close() -> None:
+                original_close()
+                raise RuntimeError("cursor close failed")
+
+            self.recording_cursor.close = broken_cursor_close
+
+    def rollback(self) -> None:
+        super().rollback()
+        if self.fail_rollback:
+            raise RuntimeError("rollback failed")
+
+    def close(self) -> None:
+        super().close()
+        if self.fail_connection_close:
+            raise RuntimeError("connection close failed")
+
+
 class RecordingFactory:
     def __init__(self, connection: RecordingConnection, events: list[str]) -> None:
         self.connection = connection
@@ -128,6 +160,53 @@ def test_explicit_rollback_is_idempotent() -> None:
     ]
 
 
+def test_cleanup_failures_never_replace_an_existing_business_exception() -> None:
+    """Catches rollback/cursor/connection cleanup masking the actionable domain error."""
+    from app.core.database import UnitOfWork
+
+    events: list[str] = []
+    connection = FailingCleanupConnection(
+        events,
+        fail_rollback=True,
+        fail_cursor_close=True,
+        fail_connection_close=True,
+    )
+    with pytest.raises(RuntimeError, match="business failure"):
+        with UnitOfWork(RecordingFactory(connection, events)):
+            raise RuntimeError("business failure")
+    assert events[-3:] == [
+        "connection.rollback",
+        "cursor.close",
+        "connection.close",
+    ]
+
+
+def test_cleanup_failure_without_primary_exception_is_reported() -> None:
+    """Catches silent resource cleanup failures on otherwise successful context exit."""
+    from app.core.database import UnitOfWork
+
+    events: list[str] = []
+    connection = FailingCleanupConnection(events, fail_rollback=True)
+    with pytest.raises(RuntimeError, match="rollback failed"):
+        with UnitOfWork(RecordingFactory(connection, events)):
+            pass
+
+
+def test_abandon_closes_faulted_session_without_rollback() -> None:
+    """Catches ambiguous commits being rolled back or reused after the commit call failed."""
+    from app.core.database import UnitOfWork
+
+    events, _, factory = transaction_fixture()
+    with UnitOfWork(factory) as uow:
+        uow.abandon()
+    assert events == [
+        "factory",
+        "connection.cursor",
+        "cursor.close",
+        "connection.close",
+    ]
+
+
 def test_connection_is_closed_when_cursor_creation_fails() -> None:
     """Catches a connection leak during partial context initialization."""
     from app.core.database import UnitOfWork
@@ -145,6 +224,24 @@ def test_connection_is_closed_when_cursor_creation_fails() -> None:
         with UnitOfWork(RecordingFactory(connection, events)):
             pytest.fail("context body must not execute")
 
+    assert events == ["factory", "connection.cursor", "connection.close"]
+
+
+def test_connection_close_failure_does_not_replace_cursor_creation_error() -> None:
+    """Catches partial context cleanup hiding the error that prevented transaction setup."""
+    from app.core.database import UnitOfWork
+
+    events: list[str] = []
+
+    class BrokenConnection(FailingCleanupConnection):
+        def cursor(self):
+            self.events.append("connection.cursor")
+            raise RuntimeError("cursor unavailable")
+
+    connection = BrokenConnection(events, fail_connection_close=True)
+    with pytest.raises(RuntimeError, match="cursor unavailable"):
+        with UnitOfWork(RecordingFactory(connection, events)):
+            pytest.fail("context body must not execute")
     assert events == ["factory", "connection.cursor", "connection.close"]
 
 
@@ -190,4 +287,3 @@ def test_application_errors_are_framework_independent(error_name: str, base_name
 
     assert isinstance(error, base_type)
     assert str(error) == "业务规则被拒绝"
-

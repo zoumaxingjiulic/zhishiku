@@ -10,6 +10,7 @@ from .errors import (
     AuthenticationError,
     AuthorizationError,
     ConflictError,
+    CompensationRequiredError,
     NotFoundError,
     ValidationError,
 )
@@ -26,6 +27,7 @@ def as_http_exception(error: ApplicationError) -> HTTPException:
         AuthorizationError: 403,
         NotFoundError: 404,
         ConflictError: 409,
+        CompensationRequiredError: 503,
         ValidationError: 422,
     }
     return HTTPException(status_codes.get(type(error), 400), str(error))

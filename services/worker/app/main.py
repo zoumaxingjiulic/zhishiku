@@ -15,6 +15,7 @@ from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, connec
 from enterprise_kb.config import load_runtime_config, mysql_connection_params
 
 from .parsing import PARSER_VERSION, Chunk, extract, split_blocks, configured_chunks
+from .external_stores import ExternalDeleteStores, build_external_delete_stores
 
 runtime_config = load_runtime_config(os.environ)
 
@@ -59,6 +60,18 @@ def claim() -> dict | None:
         return job
 
 
+def recover_abandoned_jobs() -> int:
+    """Recover jobs owned by the previous instance in the single-worker deployment."""
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE ingestion_job SET status='queued',started_at=NULL "
+            "WHERE status='running' AND job_type IN ('extract','reindex','delete')"
+        )
+        recovered = int(cur.rowcount)
+        conn.commit()
+    return recovered
+
+
 def finish(job: dict, ok: bool, error: str | None = None) -> None:
     with db() as conn, conn.cursor() as cur:
         if ok:
@@ -88,23 +101,21 @@ def download(job: dict) -> Path:
     return path
 
 
-def cleanup_indexes(document_id: int) -> None:
-    try:
-        connections.connect(alias="default", uri=value("MILVUS_URI", True))
-        if utility.has_collection(COLLECTION):
-            collection = Collection(COLLECTION)
-            collection.delete(f"document_id == {document_id}")
-            collection.flush()
-    except Exception as exc:
-        log.warning("清理 Milvus 文档 %s 失败：%s", document_id, exc)
-    try:
-        response = httpx.post(f"{value('OPENSEARCH_URL', True).rstrip('/')}/{INDEX}/_delete_by_query?refresh=true",
-            auth=(value("OPENSEARCH_USERNAME", True), value("OPENSEARCH_PASSWORD", True)), verify=False,
-            json={"query": {"term": {"document_id": document_id}}}, timeout=30)
-        if response.status_code != 404:
-            response.raise_for_status()
-    except Exception as exc:
-        log.warning("清理 OpenSearch 文档 %s 失败：%s", document_id, exc)
+def cleanup_indexes(
+    document_id: int,
+    strict: bool = False,
+    external_stores: ExternalDeleteStores | None = None,
+) -> None:
+    stores = external_stores or build_external_delete_stores()
+    errors: list[Exception] = []
+    for source, adapter in (("Milvus", stores.milvus), ("OpenSearch", stores.opensearch)):
+        try:
+            adapter.delete_document(document_id)
+        except Exception as exc:
+            log.warning("清理 %s 文档 %s 失败：%s", source, document_id, exc)
+            errors.append(exc)
+    if strict and errors:
+        raise RuntimeError("外部索引清理失败") from errors[0]
 
 
 def save_units(job: dict, chunks: list[Chunk]) -> list[dict]:
@@ -219,12 +230,12 @@ def index_units(job: dict, units: list[dict]) -> None:
         conn.commit()
 
 
-def delete_document(job: dict) -> None:
-    cleanup_indexes(job["document_id"])
-    try:
-        minio().remove_object(value("MINIO_BUCKET", True), job["object_key"])
-    except Exception as exc:
-        log.warning("删除 MinIO 原文件失败：%s", exc)
+def delete_document(
+    job: dict,
+    external_stores: ExternalDeleteStores | None = None,
+) -> None:
+    stores = external_stores or build_external_delete_stores()
+    stores.delete_document(job["document_id"], job["object_key"])
     with db() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM content_unit WHERE document_version_id=%s", (job["document_version_id"],))
         conn.commit()
@@ -259,6 +270,9 @@ def run(job: dict) -> None:
 
 def main() -> None:
     log.info("knowledge-base worker started")
+    recovered = recover_abandoned_jobs()
+    if recovered:
+        log.warning("recovered %s abandoned ingestion jobs", recovered)
     while True:
         job = None
         try:

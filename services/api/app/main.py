@@ -1,20 +1,15 @@
 import hashlib
 import json
 import logging
-import mimetypes
 import os
 import secrets
-import tempfile
 import time
 import uuid
-from pathlib import Path
-from urllib.parse import quote
 
 import pymysql
 from cryptography.fernet import Fernet, InvalidToken
-from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, UploadFile
-from fastapi.responses import JSONResponse, StreamingResponse
-from minio import Minio
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from .config import settings
@@ -32,9 +27,9 @@ from .domains.auth.router import (
 )
 from .domains.users.router import router as users_router
 from .domains.knowledge.router import router as knowledge_router
+from .domains.documents.router import router as documents_router
+from .domains.documents.service import load_accessible_document as accessible_document
 from .domains.knowledge.service import (
-    folder_descendants_for_cursor as folder_descendant_ids,
-    folder_for_cursor as folder_for_kb,
     load_accessible_knowledge_base_ids as accessible_knowledge_base_ids,
     load_folder_document_ids as folder_document_ids,
     load_knowledge_base_permission as kb_permission,
@@ -57,6 +52,7 @@ app = FastAPI(title="企业智能体平台 API", version="1.1.0", docs_url="/doc
 app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(knowledge_router)
+app.include_router(documents_router)
 
 
 class ChatRequest(BaseModel):
@@ -65,11 +61,6 @@ class ChatRequest(BaseModel):
     knowledge_base_id: int | None = Field(default=None, ge=1)
     folder_id: int | None = Field(default=None, ge=0)
     include_subfolders: bool = True
-
-
-class DocumentFolderUpdate(BaseModel):
-    folder_id: int | None = None
-    row_version: int = Field(ge=1)
 
 
 class PromptTemplateWrite(BaseModel):
@@ -129,15 +120,6 @@ class AgentToolBinding(BaseModel):
 async def application_error_handler(request: Request, error: ApplicationError) -> JSONResponse:
     http_error = as_http_exception(error)
     return JSONResponse(status_code=http_error.status_code, content={"detail": http_error.detail})
-
-
-def object_store() -> Minio:
-    return Minio(
-        settings.minio_endpoint,
-        access_key=settings.minio_access_key,
-        secret_key=settings.minio_secret_key,
-        secure=False,
-    )
 
 
 def encrypt_model_credential(value: str) -> str:
@@ -383,290 +365,6 @@ def dashboard_stats(user: dict = Depends(current_user)) -> DashboardStats:
         return load_dashboard_stats(cursor, user)
 
 
-@app.get("/api/v1/documents", tags=["documents"])
-def list_documents(
-    knowledge_base_id: int = Query(..., ge=1),
-    folder_id: int | None = Query(default=None, ge=0),
-    include_subfolders: bool = False,
-    limit: int = Query(100, ge=1, le=500),
-    user: dict = Depends(current_user),
-) -> list[dict]:
-    kb_permission(user, knowledge_base_id)
-    with connect() as conn, conn.cursor() as cursor:
-        folder_clause = ""
-        parameters: list = [knowledge_base_id]
-        if folder_id == 0:
-            folder_clause = "AND d.folder_id IS NULL "
-        elif folder_id is not None:
-            folder_for_kb(cursor, folder_id, knowledge_base_id)
-            folder_ids = folder_descendant_ids(cursor, folder_id) if include_subfolders else [folder_id]
-            placeholders = ",".join(["%s"] * len(folder_ids))
-            folder_clause = f"AND d.folder_id IN ({placeholders}) "
-            parameters.extend(folder_ids)
-        if not is_admin(user):
-            placeholders = ','.join(['%s'] * len(user['department_ids']))
-            folder_clause += f'AND EXISTS (SELECT 1 FROM document_department_acl da WHERE da.document_id=d.id AND da.department_id IN ({placeholders})) '
-            parameters.extend(user['department_ids'])
-        parameters.append(limit)
-        cursor.execute(
-            "SELECT d.id,d.knowledge_base_id,d.folder_id,d.row_version,f.name folder_name,d.title,d.mime_type,d.security_level,d.status,d.current_version_no,"
-            "d.created_at,d.updated_at,v.id document_version_id,v.extraction_status,v.original_filename,v.file_size_bytes,"
-            "(SELECT COUNT(*) FROM content_unit cu WHERE cu.document_version_id=v.id) chunk_count,"
-            "(SELECT COUNT(*) FROM content_unit cu WHERE cu.document_version_id=v.id AND cu.vector_status='indexed') vector_count,"
-            "(SELECT COUNT(*) FROM content_unit cu WHERE cu.document_version_id=v.id AND cu.fulltext_status='indexed') fulltext_count,"
-            "(SELECT status FROM ingestion_job j WHERE j.document_version_id=v.id ORDER BY j.id DESC LIMIT 1) job_status,"
-            "(SELECT error_message FROM ingestion_job j WHERE j.document_version_id=v.id ORDER BY j.id DESC LIMIT 1) job_error "
-            "FROM document d LEFT JOIN knowledge_folder f ON f.id=d.folder_id "
-            "LEFT JOIN document_version v ON v.document_id=d.id AND v.version_no=d.current_version_no "
-            f"WHERE d.knowledge_base_id=%s AND d.status!='deleted' {folder_clause}ORDER BY d.updated_at DESC LIMIT %s",
-            parameters,
-        )
-        return list(cursor.fetchall())
-
-
-@app.post("/api/v1/documents", tags=["documents"])
-def upload_document(
-    request: Request,
-    file: UploadFile = File(...),
-    knowledge_base_id: int = Form(...),
-    folder_id: int | None = Form(None),
-    title: str | None = Form(None),
-    security_level: str = Form("internal"),
-    user: dict = Depends(current_user),
-) -> dict:
-    kb = kb_permission(user, knowledge_base_id, manage=True)
-    if not file.filename:
-        raise HTTPException(422, "缺少文件名")
-    if security_level not in {"public", "internal", "confidential", "secret"}:
-        raise HTTPException(422, "无效的密级")
-    if folder_id is not None:
-        with connect() as conn, conn.cursor() as cursor:
-            folder_for_kb(cursor, folder_id, knowledge_base_id)
-    filename = Path(file.filename).name
-    extension = Path(filename).suffix.lower().lstrip(".") or None
-    mime_type = file.content_type or mimetypes.guess_type(filename)[0] or "application/octet-stream"
-    digest, size = hashlib.sha256(), 0
-    with tempfile.NamedTemporaryFile(prefix="kb-upload-", delete=False) as output:
-        temp_path = Path(output.name)
-        while block := file.file.read(1024 * 1024):
-            size += len(block)
-            if size > settings.max_upload_bytes:
-                temp_path.unlink(missing_ok=True)
-                raise HTTPException(413, f"文件超过限制：{settings.max_upload_bytes} 字节")
-            digest.update(block)
-            output.write(block)
-    object_key = None
-    try:
-        with connect() as conn, conn.cursor() as cursor:
-            cursor.execute(
-                "INSERT INTO document (knowledge_base_id,folder_id,title,mime_type,file_extension,owner_department_id,security_level,created_by) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
-                (knowledge_base_id, folder_id, title or Path(filename).stem, mime_type, extension, kb["owner_department_id"], security_level, user["id"]),
-            )
-            document_id = cursor.lastrowid
-            object_key = f"documents/{knowledge_base_id}/{document_id}/1/{uuid.uuid4().hex}-{filename}"
-            store = object_store()
-            if not store.bucket_exists(settings.minio_bucket):
-                store.make_bucket(settings.minio_bucket)
-            with temp_path.open("rb") as stream:
-                result = store.put_object(settings.minio_bucket, object_key, stream, size, content_type=mime_type)
-            cursor.execute(
-                "INSERT INTO document_version "
-                "(document_id,version_no,original_filename,object_key,object_etag,sha256,file_size_bytes,created_by) "
-                "VALUES (%s,1,%s,%s,%s,%s,%s,%s)",
-                (document_id, filename, object_key, result.etag, digest.hexdigest(), size, user["id"]),
-            )
-            version_id = cursor.lastrowid
-            cursor.execute("UPDATE document SET current_version_no=1 WHERE id=%s", (document_id,))
-            cursor.execute(
-                "INSERT INTO document_department_acl (document_id,department_id,permission) "
-                "SELECT %s,department_id,permission FROM knowledge_base_department_acl WHERE knowledge_base_id=%s",
-                (document_id, knowledge_base_id),
-            )
-            cursor.execute(
-                "INSERT INTO ingestion_job (document_version_id,job_type,idempotency_key,payload_json) "
-                "VALUES (%s,'extract',%s,JSON_OBJECT('knowledge_base_id',%s,'document_id',%s))",
-                (version_id, f"extract:{version_id}:{digest.hexdigest()}", knowledge_base_id, document_id),
-            )
-            job_id = cursor.lastrowid
-            audit(cursor, user["id"], "document.upload", "document", document_id, {"filename": filename, "size": size, "folder_id": folder_id}, request.client.host)
-            conn.commit()
-    except HTTPException:
-        raise
-    except Exception as exc:
-        if object_key:
-            try:
-                object_store().remove_object(settings.minio_bucket, object_key)
-            except Exception:
-                pass
-        raise HTTPException(500, f"上传入库失败：{exc}") from exc
-    finally:
-        temp_path.unlink(missing_ok=True)
-    return {"document_id": document_id, "document_version_id": version_id, "ingestion_job_id": job_id, "status": "queued"}
-
-
-def accessible_document(user: dict, document_id: int, manage: bool = False) -> dict:
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT d.*,v.id document_version_id,v.original_filename,v.object_key,v.file_size_bytes,v.extraction_status "
-            "FROM document d JOIN document_version v ON v.document_id=d.id AND v.version_no=d.current_version_no "
-            "WHERE d.id=%s AND d.status!='deleted'",
-            (document_id,),
-        )
-        document = cursor.fetchone()
-        if not document:
-            raise HTTPException(404, "文档不存在")
-    kb_permission(user, document["knowledge_base_id"], manage=manage)
-    if not is_admin(user):
-        placeholders = ','.join(['%s'] * len(user['department_ids']))
-        with connect() as conn, conn.cursor() as cursor:
-            cursor.execute(f'SELECT 1 FROM document_department_acl WHERE document_id=%s AND department_id IN ({placeholders}) LIMIT 1', [document_id,*user['department_ids']])
-            if not cursor.fetchone():
-                raise HTTPException(403, '无权访问该文档')
-    return document
-
-
-@app.get("/api/v1/documents/{document_id}", tags=["documents"])
-def document_detail(document_id: int, user: dict = Depends(current_user)) -> dict:
-    document = accessible_document(user, document_id)
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT department_id,permission FROM document_department_acl WHERE document_id=%s ORDER BY department_id",
-            (document_id,),
-        )
-        document["department_acl"] = list(cursor.fetchall())
-        return document
-
-
-@app.get("/api/v1/documents/{document_id}/download", tags=["documents"])
-def download_document(document_id: int, user: dict = Depends(current_user)):
-    document = accessible_document(user, document_id)
-    response = object_store().get_object(settings.minio_bucket, document["object_key"])
-    def stream():
-        try:
-            for block in response.stream(1024 * 1024):
-                yield block
-        finally:
-            response.close()
-            response.release_conn()
-    return StreamingResponse(
-        stream(),
-        media_type=document["mime_type"],
-        headers={"Content-Disposition": f"attachment; filename*=UTF-8''{quote(document['original_filename'])}"},
-    )
-
-
-@app.get("/api/v1/documents/{document_id}/chunks", tags=["documents"])
-def document_chunks(document_id: int, user: dict = Depends(current_user)) -> list[dict]:
-    document = accessible_document(user, document_id)
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT id,sequence_no,page_start,page_end,content_text,parent_text,metadata_json,token_count,"
-            "vector_status,fulltext_status,created_at FROM content_unit "
-            "WHERE document_version_id=%s ORDER BY sequence_no LIMIT 500",
-            (document["document_version_id"],),
-        )
-        return list(cursor.fetchall())
-
-
-@app.post("/api/v1/documents/{document_id}/reindex", tags=["documents"])
-def reindex_document(document_id: int, user: dict = Depends(current_user)) -> dict:
-    document = accessible_document(user, document_id, manage=True)
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "INSERT INTO ingestion_job (document_version_id,job_type,idempotency_key,payload_json) "
-            "VALUES (%s,'reindex',%s,JSON_OBJECT('document_id',%s))",
-            (document["document_version_id"], f"reindex:{document['document_version_id']}:{uuid.uuid4().hex}", document_id),
-        )
-        job_id = cursor.lastrowid
-        audit(cursor, user["id"], "document.reindex", "document", document_id)
-        conn.commit()
-    return {"status": "queued", "job_id": job_id}
-
-
-@app.put("/api/v1/documents/{document_id}/folder", tags=["documents"])
-def move_document(
-    document_id: int,
-    payload: DocumentFolderUpdate,
-    request: Request,
-    user: dict = Depends(current_user),
-) -> dict:
-    document = accessible_document(user, document_id, manage=True)
-    with connect() as conn, conn.cursor() as cursor:
-        if payload.folder_id is not None:
-            folder_for_kb(cursor, payload.folder_id, document["knowledge_base_id"])
-        cursor.execute(
-            "UPDATE document SET folder_id=%s,row_version=row_version+1 "
-            "WHERE id=%s AND row_version=%s AND status!='deleted'",
-            (payload.folder_id, document_id, payload.row_version),
-        )
-        if cursor.rowcount == 0:
-            raise HTTPException(409, "资料已被其他操作修改，请刷新后重试")
-        audit(cursor, user["id"], "document.move", "document", document_id, payload.model_dump(), request.client.host)
-        conn.commit()
-    return {"status": "ok", "row_version": payload.row_version + 1}
-
-
-@app.delete("/api/v1/documents/{document_id}", tags=["documents"])
-def delete_document(document_id: int, user: dict = Depends(current_user)) -> dict:
-    document = accessible_document(user, document_id, manage=True)
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute("UPDATE document SET status='deleted',deleted_at=NOW(3) WHERE id=%s", (document_id,))
-        cursor.execute(
-            "INSERT INTO ingestion_job (document_version_id,job_type,idempotency_key,payload_json) "
-            "VALUES (%s,'delete',%s,JSON_OBJECT('document_id',%s))",
-            (document["document_version_id"], f"delete:{document['document_version_id']}:{uuid.uuid4().hex}", document_id),
-        )
-        job_id = cursor.lastrowid
-        audit(cursor, user["id"], "document.delete", "document", document_id)
-        conn.commit()
-    return {"status": "queued", "job_id": job_id}
-
-
-@app.get("/api/v1/jobs", tags=["documents"])
-def list_jobs(
-    knowledge_base_id: int | None = None,
-    limit: int = Query(100, ge=1, le=500),
-    user: dict = Depends(current_user),
-) -> list[dict]:
-    ids = [knowledge_base_id] if knowledge_base_id else accessible_knowledge_base_ids(user)
-    if not ids:
-        return []
-    for kb_id in ids:
-        kb_permission(user, kb_id)
-    placeholders = ",".join(["%s"] * len(ids))
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            f"SELECT j.id,j.job_type,j.status,j.attempt_count,j.error_message,j.started_at,j.finished_at,j.created_at,"
-            f"d.id document_id,d.title,d.knowledge_base_id FROM ingestion_job j "
-            f"JOIN document_version v ON v.id=j.document_version_id JOIN document d ON d.id=v.document_id "
-            f"WHERE d.knowledge_base_id IN ({placeholders}) ORDER BY j.id DESC LIMIT %s",
-            [*ids, limit],
-        )
-        return list(cursor.fetchall())
-
-
-@app.post("/api/v1/jobs/{job_id}/retry", tags=["documents"])
-def retry_job(job_id: int, user: dict = Depends(current_user)) -> dict:
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT j.id,d.knowledge_base_id FROM ingestion_job j "
-            "JOIN document_version v ON v.id=j.document_version_id JOIN document d ON d.id=v.document_id WHERE j.id=%s",
-            (job_id,),
-        )
-        job = cursor.fetchone()
-        if not job:
-            raise HTTPException(404, "任务不存在")
-        kb_permission(user, job["knowledge_base_id"], manage=True)
-        cursor.execute(
-            "UPDATE ingestion_job SET status='queued',error_message=NULL,started_at=NULL,finished_at=NULL WHERE id=%s AND status='failed'",
-            (job_id,),
-        )
-        if cursor.rowcount == 0:
-            raise HTTPException(422, "仅失败任务可以重试")
-        audit(cursor, user["id"], "job.retry", "ingestion_job", job_id)
-        conn.commit()
-    return {"status": "queued"}
 
 
 @app.get("/api/v1/prompt-templates", tags=["prompt-templates"])

@@ -31,7 +31,6 @@ def test_failed_readiness_route_returns_503(monkeypatch):
     def unavailable(*args, **kwargs):
         raise ConnectionError("private connection details")
     monkeypatch.setattr(main, "connect", unavailable)
-    monkeypatch.setattr(main, "object_store", unavailable)
     if importlib.util.find_spec("app.readiness"):
         readiness = importlib.import_module("app.readiness")
         result = readiness.check_readiness(checks={}, config=configured(readiness))

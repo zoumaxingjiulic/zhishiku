@@ -1,5 +1,6 @@
 """Database connection and explicit transaction boundaries."""
 
+import logging
 import os
 from collections.abc import Callable
 from typing import Any
@@ -7,6 +8,9 @@ from typing import Any
 import pymysql
 
 from enterprise_kb.config import mysql_connection_params
+
+
+log = logging.getLogger("kb-api.database")
 
 
 def connect() -> pymysql.connections.Connection:
@@ -37,7 +41,13 @@ class UnitOfWork:
         try:
             self.cursor = self.connection.cursor()
         except BaseException:
-            self.connection.close()
+            try:
+                self.connection.close()
+            except BaseException as cleanup_error:
+                log.error(
+                    "unit of work setup cleanup failed error_type=%s",
+                    type(cleanup_error).__name__,
+                )
             self._closed = True
             raise
         return self
@@ -53,24 +63,58 @@ class UnitOfWork:
         self._require_active()
         if self._completed:
             return
-        self.connection.rollback()
+        try:
+            self.connection.rollback()
+        finally:
+            # A failed rollback also leaves the session unusable; never retry it.
+            self._completed = True
+
+    def abandon(self) -> None:
+        """Discard a faulted session without issuing rollback on it."""
+        self._require_active()
         self._completed = True
+        errors = self._close_resources()
+        if errors:
+            raise errors[0]
 
     def __exit__(self, exc_type, exc_value, traceback) -> bool:
-        try:
-            if not self._completed:
-                self.rollback()
-        finally:
+        errors: list[BaseException] = []
+        if not self._completed and not self._closed:
             try:
-                if self.cursor is not None:
-                    self.cursor.close()
-            finally:
-                if self.connection is not None:
-                    self.connection.close()
-                self._closed = True
+                self.rollback()
+            except BaseException as error:
+                errors.append(error)
+        errors.extend(self._close_resources())
+        if errors:
+            for error in errors:
+                log.error(
+                    "unit of work cleanup failed error_type=%s",
+                    type(error).__name__,
+                )
+            # Never replace the exception that caused context cleanup.
+            if exc_type is None:
+                raise errors[0]
         return False
+
+    def _close_resources(self) -> list[BaseException]:
+        if self._closed:
+            return []
+        errors: list[BaseException] = []
+        try:
+            if self.cursor is not None:
+                try:
+                    self.cursor.close()
+                except BaseException as error:
+                    errors.append(error)
+            if self.connection is not None:
+                try:
+                    self.connection.close()
+                except BaseException as error:
+                    errors.append(error)
+        finally:
+            self._closed = True
+        return errors
 
     def _require_active(self) -> None:
         if not self._entered or self._closed or self.connection is None:
             raise RuntimeError("UnitOfWork is not active")
-
