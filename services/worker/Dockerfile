@@ -14,5 +14,7 @@ COPY shared/python ./shared/python
 RUN pip install --no-cache-dir ./shared/python
 COPY services/worker/app ./app
 
+HEALTHCHECK --interval=30s --timeout=15s --start-period=30s --retries=3 \
+    CMD python -m enterprise_kb.health
 CMD ["python", "-m", "app.main"]
 

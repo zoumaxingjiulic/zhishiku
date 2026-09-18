@@ -14,12 +14,13 @@ from urllib.parse import quote
 import pymysql
 from cryptography.fernet import Fernet, InvalidToken
 from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from minio import Minio
 from pydantic import BaseModel, Field
 
 from .config import settings
 from .database import connect
+from .readiness import check_readiness
 from .dashboard import DashboardStats, load_dashboard_stats
 from .agent_runtime import generate_agent_answer
 from .quality import RetrievalPolicy, retrieve, retrieval_query
@@ -594,19 +595,9 @@ def healthz() -> dict:
 
 
 @app.get("/readyz", tags=["system"])
-def readyz() -> dict:
-    checks = {}
-    try:
-        with connect() as conn, conn.cursor() as cursor:
-            cursor.execute("SELECT 1")
-            checks["mysql"] = cursor.fetchone() is not None
-    except Exception:
-        checks["mysql"] = False
-    try:
-        checks["minio"] = object_store().bucket_exists(settings.minio_bucket)
-    except Exception:
-        checks["minio"] = False
-    return {"status": "ready" if all(checks.values()) else "degraded", "checks": checks}
+def readyz() -> JSONResponse:
+    result = check_readiness()
+    return JSONResponse(status_code=200 if result.ready else 503, content=result.model_dump())
 
 
 @app.post("/api/v1/auth/login", tags=["auth"])

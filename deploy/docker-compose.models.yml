@@ -18,5 +18,11 @@ services:
       - ${DATA_ROOT}/models/source:/models:ro
     cpus: 16
     mem_limit: 24g
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:7997/models', timeout=5).close()"]
+      interval: 30s
+      timeout: 10s
+      start_period: 180s
+      retries: 10
     networks:
       - kb-internal
