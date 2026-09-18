@@ -61,3 +61,12 @@ def test_minio_initialization_precedes_api_and_is_idempotent(configurations):
     assert environment["MINIO_ROOT_PASSWORD"] not in script
     assert services["api"]["depends_on"]["minio-init"]["condition"] == "service_completed_successfully"
     assert services["worker"]["depends_on"]["minio"]["condition"] == "service_healthy"
+
+
+def test_frontend_healthcheck_uses_explicit_ipv4_loopback(configurations):
+    healthcheck = configurations["base"]["frontend"]["healthcheck"]["test"]
+    assert healthcheck[-1] == "http://127.0.0.1/healthz"
+
+    dockerfile = (ROOT / "services/frontend/Dockerfile").read_text(encoding="utf-8")
+    assert "http://127.0.0.1/healthz" in dockerfile
+    assert "http://localhost/healthz" not in dockerfile
