@@ -57,7 +57,7 @@ class Processing(BaseModel):
 
     @model_validator(mode='after')
     def check_size(self):
-        if self.overlap >= self.chunk_size or self.child_size >= self.chunk_size:
+        if self.overlap >= self.chunk_size or (self.mode == 'parent_child' and self.child_size >= self.chunk_size):
             raise ValueError('重叠长度、子块长度必须小于分段长度')
         return self
 

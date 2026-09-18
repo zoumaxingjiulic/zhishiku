@@ -1841,7 +1841,7 @@ def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict
             )
         if config["history_messages"]:
             cursor.execute(
-                "SELECT role,content FROM (SELECT id,role,content FROM chat_message WHERE session_id=%s "
+                "SELECT role,content,citations_json,tool_calls_json FROM (SELECT id,role,content,citations_json,tool_calls_json FROM chat_message WHERE session_id=%s "
                 "AND id<%s AND role IN ('user','assistant') ORDER BY id DESC LIMIT %s) recent ORDER BY id",
                 (session_id, task['user_message_id'] if task else 9223372036854775807, config["history_messages"]),
             )
@@ -1862,6 +1862,22 @@ def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict
         conn.commit()
 
     started = time.perf_counter()
+    # Do not re-inject previously authorized enterprise evidence after access revocation.
+    safe_history = []
+    for message in history:
+        if message['role'] == 'assistant':
+            try:
+                for citation in parse_json_column(message.get('citations_json'), []):
+                    document = accessible_document(user, citation['document_id'])
+                    if document['knowledge_base_id'] not in knowledge_base_ids:
+                        raise HTTPException(403, '历史证据已不在授权范围')
+                allowed_tools = {(t['connector_code'],t['tool_name']) for t in tools}
+                if any((e.get('connector'),e.get('tool')) not in allowed_tools for e in parse_json_column(message.get('tool_calls_json'), [])):
+                    continue
+            except HTTPException:
+                continue
+        safe_history.append(message)
+    history = safe_history
     timings: dict[str, float] = {}
     vector: list[int] = []
     keyword: list[int] = []

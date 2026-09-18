@@ -14,7 +14,7 @@ def test_policy_validation():
     with pytest.raises(ValidationError):
         RetrievalPolicy(top_k=20,candidate_k=5)
     with pytest.raises(ValidationError):
-        Processing(chunk_size=256,child_size=450)
+        Processing(mode='parent_child',chunk_size=256,child_size=450)
     with pytest.raises(ValidationError):
         AgentWrite(code='AB',name='测试',system_prompt='s',launch_mode='workflow')
 
