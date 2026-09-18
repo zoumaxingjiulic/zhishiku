@@ -1,6 +1,10 @@
 # MySQL migrations
 
-001_initial_schema.sql runs automatically only when MySQL starts with an empty data directory.
+When MySQL starts with an empty data directory, the official image executes every
+`*.sql` file mounted in `/docker-entrypoint-initdb.d` in filename order. With this
+repository's Compose file that means `001_initial_schema.sql` through
+`012_platform_quality_runtime.sql`, in order. These files are not rerun after the
+data directory has been initialized.
 
 For an already running environment, apply each later numbered migration exactly once from the project root:
 
@@ -21,7 +25,7 @@ Do not edit a migration that has been applied to any environment. Add a new numb
 
 If `002_agent_platform.sql` was manually applied in a non-UTF-8 terminal and its seeded Chinese labels display as mojibake, apply `003_fix_platform_seed_encoding.sql` once using the same command pattern.
 
-`005_auth_rbac_audit_connectors.sql` adds local authentication, audit logs and connector metadata. On the current server, use `bash deploy/upgrade-v05.sh`; it checks the schema before applying this migration and is safe to rerun.
+`005_auth_rbac_audit_connectors.sql` adds local authentication, audit logs and connector metadata. After checking the applied schema and taking a backup, apply this migration only if it has not already been applied: `bash deploy/apply-mysql-migration.sh database/mysql/005_auth_rbac_audit_connectors.sql`. The migration runner does not detect previously applied migrations; do not rerun them.
 
 `006_fix_company_seed_tech_department.sql` repairs the company-name seed encoding and creates the technical department and its isolated knowledge base. It is idempotent.
 

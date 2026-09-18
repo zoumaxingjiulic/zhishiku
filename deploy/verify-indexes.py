@@ -2,8 +2,8 @@
 
 from pymilvus import Collection, connections, utility
 
-from app.config import settings
-from app.database import connect
+from app.core.config import settings
+from app.core.database import connect
 
 
 with connect() as connection, connection.cursor() as cursor:

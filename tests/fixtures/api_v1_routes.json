@@ -1,0 +1,470 @@
+[
+  {
+    "path": "/api/v1/agent-requests",
+    "method": "GET",
+    "operation_id": "list_agent_requests_api_v1_agent_requests_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/agent-requests",
+    "method": "POST",
+    "operation_id": "create_agent_request_api_v1_agent_requests_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/agent-requests/{agent_request_id}",
+    "method": "PATCH",
+    "operation_id": "review_agent_request_api_v1_agent_requests__agent_request_id__patch",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/agent-runs",
+    "method": "GET",
+    "operation_id": "list_agent_runs_api_v1_agent_runs_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/agents",
+    "method": "GET",
+    "operation_id": "list_agents_api_v1_agents_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/agents/{agent_id}/chat",
+    "method": "POST",
+    "operation_id": "chat_agent_api_v1_agents__agent_id__chat_post",
+    "deprecated": true
+  },
+  {
+    "path": "/api/v1/agents/{agent_id}/chat/latest",
+    "method": "GET",
+    "operation_id": "latest_agent_chat_api_v1_agents__agent_id__chat_latest_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/agents/{agent_id}/chat/sessions",
+    "method": "GET",
+    "operation_id": "list_agent_chat_sessions_api_v1_agents__agent_id__chat_sessions_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/agents/{agent_id}/chat/sessions",
+    "method": "POST",
+    "operation_id": "create_agent_chat_session_api_v1_agents__agent_id__chat_sessions_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/agents/{agent_id}/chat/sessions/{session_id}",
+    "method": "DELETE",
+    "operation_id": "delete_agent_chat_session_api_v1_agents__agent_id__chat_sessions__session_id__delete",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/agents/{agent_id}/chat/sessions/{session_id}",
+    "method": "GET",
+    "operation_id": "get_agent_chat_session_api_v1_agents__agent_id__chat_sessions__session_id__get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/agents/{agent_id}/chat/sessions/{session_id}/task",
+    "method": "GET",
+    "operation_id": "get_task_api_v1_agents__agent_id__chat_sessions__session_id__task_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/agents/{agent_id}/connector-tools",
+    "method": "PUT",
+    "operation_id": "bind_agent_connector_tools_api_v1_agents__agent_id__connector_tools_put",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/agents/{agent_id}/model-profile",
+    "method": "PUT",
+    "operation_id": "bind_agent_model_profile_api_v1_agents__agent_id__model_profile_put",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/agents/{agent_id}/runs",
+    "method": "POST",
+    "operation_id": "submit_api_v1_agents__agent_id__runs_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/agents/{agent_id}/workflow-runs",
+    "method": "GET",
+    "operation_id": "flows_api_v1_agents__agent_id__workflow_runs_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/agents/{agent_id}/workflow-runs",
+    "method": "POST",
+    "operation_id": "start_flow_api_v1_agents__agent_id__workflow_runs_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/audit-logs",
+    "method": "GET",
+    "operation_id": "list_audit_logs_api_v1_audit_logs_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/auth/change-password",
+    "method": "POST",
+    "operation_id": "change_password_api_v1_auth_change_password_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/auth/login",
+    "method": "POST",
+    "operation_id": "login_api_v1_auth_login_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/auth/logout",
+    "method": "POST",
+    "operation_id": "logout_api_v1_auth_logout_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/auth/me",
+    "method": "GET",
+    "operation_id": "me_api_v1_auth_me_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/connectors",
+    "method": "GET",
+    "operation_id": "list_connectors_api_v1_connectors_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/connectors",
+    "method": "POST",
+    "operation_id": "create_connector_api_v1_connectors_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/connectors/admin/bindings",
+    "method": "GET",
+    "operation_id": "connector_bindings_api_v1_connectors_admin_bindings_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/connectors/{connector_id}",
+    "method": "PUT",
+    "operation_id": "update_connector_api_v1_connectors__connector_id__put",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/connectors/{connector_id}/discover",
+    "method": "POST",
+    "operation_id": "discover_connector_tools_api_v1_connectors__connector_id__discover_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/dashboard/stats",
+    "method": "GET",
+    "operation_id": "dashboard_stats_api_v1_dashboard_stats_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/departments",
+    "method": "GET",
+    "operation_id": "list_departments_api_v1_departments_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/departments",
+    "method": "POST",
+    "operation_id": "create_department_api_v1_departments_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/documents",
+    "method": "GET",
+    "operation_id": "list_documents_api_v1_documents_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/documents",
+    "method": "POST",
+    "operation_id": "upload_document_api_v1_documents_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/documents/{document_id}",
+    "method": "DELETE",
+    "operation_id": "delete_document_api_v1_documents__document_id__delete",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/documents/{document_id}",
+    "method": "GET",
+    "operation_id": "document_detail_api_v1_documents__document_id__get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/documents/{document_id}/chunks",
+    "method": "GET",
+    "operation_id": "document_chunks_api_v1_documents__document_id__chunks_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/documents/{document_id}/download",
+    "method": "GET",
+    "operation_id": "download_document_api_v1_documents__document_id__download_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/documents/{document_id}/folder",
+    "method": "PUT",
+    "operation_id": "move_document_api_v1_documents__document_id__folder_put",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/documents/{document_id}/reindex",
+    "method": "POST",
+    "operation_id": "reindex_document_api_v1_documents__document_id__reindex_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/folders",
+    "method": "GET",
+    "operation_id": "list_folders_api_v1_folders_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/folders",
+    "method": "POST",
+    "operation_id": "create_folder_api_v1_folders_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/folders/{folder_id}",
+    "method": "DELETE",
+    "operation_id": "delete_folder_api_v1_folders__folder_id__delete",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/folders/{folder_id}",
+    "method": "PUT",
+    "operation_id": "update_folder_api_v1_folders__folder_id__put",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/jobs",
+    "method": "GET",
+    "operation_id": "list_jobs_api_v1_jobs_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/jobs/{job_id}/retry",
+    "method": "POST",
+    "operation_id": "retry_job_api_v1_jobs__job_id__retry_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/knowledge-bases",
+    "method": "GET",
+    "operation_id": "list_knowledge_bases_api_v1_knowledge_bases_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/knowledge-bases",
+    "method": "POST",
+    "operation_id": "create_knowledge_base_api_v1_knowledge_bases_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/knowledge-bases/{kb_id}/processing",
+    "method": "GET",
+    "operation_id": "get_processing_api_v1_knowledge_bases__kb_id__processing_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/knowledge-bases/{kb_id}/processing",
+    "method": "PUT",
+    "operation_id": "processing_api_v1_knowledge_bases__kb_id__processing_put",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/knowledge-bases/{knowledge_base_id}",
+    "method": "DELETE",
+    "operation_id": "delete_knowledge_base_api_v1_knowledge_bases__knowledge_base_id__delete",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/knowledge-bases/{knowledge_base_id}",
+    "method": "PUT",
+    "operation_id": "update_knowledge_base_api_v1_knowledge_bases__knowledge_base_id__put",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/knowledge-bases/{knowledge_base_id}/acl",
+    "method": "PUT",
+    "operation_id": "update_knowledge_base_acl_api_v1_knowledge_bases__knowledge_base_id__acl_put",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/messages/{message_id}/feedback",
+    "method": "POST",
+    "operation_id": "feedback_api_v1_messages__message_id__feedback_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/model-gateway/profiles",
+    "method": "GET",
+    "operation_id": "list_model_profiles_api_v1_model_gateway_profiles_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/model-gateway/profiles",
+    "method": "POST",
+    "operation_id": "create_model_profile_api_v1_model_gateway_profiles_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/model-gateway/profiles/{profile_id}",
+    "method": "PUT",
+    "operation_id": "update_model_profile_api_v1_model_gateway_profiles__profile_id__put",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/prompt-templates",
+    "method": "GET",
+    "operation_id": "list_prompt_templates_api_v1_prompt_templates_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/prompt-templates",
+    "method": "POST",
+    "operation_id": "create_prompt_template_api_v1_prompt_templates_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/prompt-templates/{template_id}",
+    "method": "DELETE",
+    "operation_id": "delete_prompt_template_api_v1_prompt_templates__template_id__delete",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/prompt-templates/{template_id}",
+    "method": "PUT",
+    "operation_id": "update_prompt_template_api_v1_prompt_templates__template_id__put",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/studio/agents",
+    "method": "GET",
+    "operation_id": "agents_api_v1_studio_agents_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/studio/agents",
+    "method": "POST",
+    "operation_id": "create_api_v1_studio_agents_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/studio/agents/{agent_id}",
+    "method": "PUT",
+    "operation_id": "update_api_v1_studio_agents__agent_id__put",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/studio/agents/{agent_id}/cases",
+    "method": "GET",
+    "operation_id": "cases_api_v1_studio_agents__agent_id__cases_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/studio/agents/{agent_id}/cases",
+    "method": "POST",
+    "operation_id": "add_case_api_v1_studio_agents__agent_id__cases_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/studio/agents/{agent_id}/evaluations",
+    "method": "GET",
+    "operation_id": "evaluations_api_v1_studio_agents__agent_id__evaluations_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/studio/agents/{agent_id}/evaluations",
+    "method": "POST",
+    "operation_id": "evaluate_api_v1_studio_agents__agent_id__evaluations_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/studio/agents/{agent_id}/revisions",
+    "method": "GET",
+    "operation_id": "revisions_api_v1_studio_agents__agent_id__revisions_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/studio/agents/{agent_id}/test",
+    "method": "POST",
+    "operation_id": "test_api_v1_studio_agents__agent_id__test_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/studio/cases/{case_id}",
+    "method": "DELETE",
+    "operation_id": "delete_case_api_v1_studio_cases__case_id__delete",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/studio/feedback",
+    "method": "GET",
+    "operation_id": "feedback_list_api_v1_studio_feedback_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/tasks/{task_id}/cancel",
+    "method": "POST",
+    "operation_id": "cancel_api_v1_tasks__task_id__cancel_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/users",
+    "method": "GET",
+    "operation_id": "list_users_api_v1_users_get",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/users",
+    "method": "POST",
+    "operation_id": "create_user_api_v1_users_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/users/{user_id}",
+    "method": "DELETE",
+    "operation_id": "delete_user_api_v1_users__user_id__delete",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/users/{user_id}",
+    "method": "PUT",
+    "operation_id": "update_user_api_v1_users__user_id__put",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/users/{user_id}/reset-password",
+    "method": "POST",
+    "operation_id": "reset_password_api_v1_users__user_id__reset_password_post",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/users/{user_id}/status",
+    "method": "PATCH",
+    "operation_id": "update_user_status_api_v1_users__user_id__status_patch",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/workflow-runs/{run_id}/{action}",
+    "method": "POST",
+    "operation_id": "control_flow_api_v1_workflow_runs__run_id___action__post",
+    "deprecated": false
+  }
+]

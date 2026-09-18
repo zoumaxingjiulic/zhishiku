@@ -2,7 +2,7 @@
 
 import uuid
 
-from app.database import connect
+from app.core.database import connect
 
 
 with connect() as connection, connection.cursor() as cursor:

@@ -6,7 +6,7 @@ from collections import defaultdict
 import httpx
 from pymilvus import Collection, connections, utility
 
-from .config import settings
+from .core.config import settings
 
 
 def local_hash_embedding(text: str, dimension: int | None = None) -> list[float]:

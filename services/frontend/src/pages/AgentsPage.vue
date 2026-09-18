@@ -2,7 +2,7 @@
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue";
 import { useRoute, useRouter } from "vue-router";
 import { api } from "../api";
-import { formatPageRange } from "../utils";
+import { formatPageRange, isActiveChatTaskStatus } from "../utils";
 import WorkflowRun from '../components/WorkflowRun.vue';
 
 const emit = defineEmits<{ toast: [message: string, bad?: boolean] }>();
@@ -25,7 +25,8 @@ const modeMeta: Record<string, { label: string; icon: string; hint: string }> = 
 };
 const welcomeMessage = { role: "assistant", text: "您好，我会使用该智能体获授权的企业知识与只读系统工具协助您。" };
 const isAwaitingAnswer = computed(() => Boolean(
-  sessionId.value && (pendingSessionIds.value.has(sessionId.value) || (task.value?.session_id===sessionId.value && ['queued','running'].includes(task.value?.status)))
+  sessionId.value && (pendingSessionIds.value.has(sessionId.value)
+    || (task.value?.session_id===sessionId.value && isActiveChatTaskStatus(task.value?.status)))
 ));
 let pollTimer: number | undefined;
 let routeSyncVersion = 0;
@@ -65,7 +66,7 @@ function schedulePendingPoll(id: string) {
       messages.value = history.messages?.length ? history.messages : [welcomeMessage];
       task.value = currentTask;
       await loadSessions();
-      if (currentTask && ['queued','running'].includes(currentTask.status)) schedulePendingPoll(id);
+      if (currentTask && isActiveChatTaskStatus(currentTask.status)) schedulePendingPoll(id);
       else {
         stopPolling();
         await scrollToBottom(true);
@@ -175,7 +176,7 @@ async function newConversation() {
 }
 async function deleteConversation(event: Event, item: any) {
   event.stopPropagation();
-  if (item.last_role === "user" || pendingSessionIds.value.has(item.id)) {
+  if (isActiveChatTaskStatus(item.latest_task_status) || pendingSessionIds.value.has(item.id)) {
     emit("toast", "该对话正在生成回答，请完成后再删除", true);
     return;
   }
@@ -218,9 +219,6 @@ async function send() {
     }
     if (selected.value?.id === targetAgentId) await loadSessions();
   } catch (error: any) {
-    if (selected.value?.id === targetAgentId && sessionId.value === targetSessionId) {
-      messages.value.push({ role: "assistant", text: `请求失败：${error.message}` });
-    }
     emit("toast", error.message, true);
   } finally {
     pendingSessionIds.value.delete(targetSessionId);
@@ -250,13 +248,12 @@ async function feedback(message:any,rating:number){try{await api(`/api/v1/messag
       <div class="agent-card">
         <div class="agent-identity"><div class="agent-symbol light">✦</div><span class="eyebrow">CHAT AGENT</span><h2>{{selected.name}}</h2><p>{{selected.description}}</p><div class="agent-scope dark"><small>授权知识 / 工具</small><strong>{{selected.knowledge_bases || selected.tools || '未配置'}}</strong></div></div>
         <div class="conversation-head"><strong>我的对话</strong><button class="new-chat" @click="newConversation">＋ 新建</button></div>
-        <div class="conversation-list"><button v-for="item in sessions" :key="item.id" class="conversation-item" :class="{active:sessionId===item.id}" @click="loadSession(item.id)"><span><strong>{{item.title||'新对话'}}</strong><small>{{item.last_role==='user'||pendingSessionIds.has(item.id)?'回答中…':item.message_count+' 条消息'}}</small></span><i title="删除对话" @click="deleteConversation($event,item)">×</i></button></div>
+        <div class="conversation-list"><div v-for="item in sessions" :key="item.id" class="conversation-item" :class="{active:sessionId===item.id}"><button class="conversation-select" @click="loadSession(item.id)"><span><strong>{{item.title||'新对话'}}</strong><small>{{isActiveChatTaskStatus(item.latest_task_status)||pendingSessionIds.has(item.id)?'回答中…':item.message_count+' 条消息'}}</small></span></button><button class="conversation-delete" title="删除对话" :disabled="isActiveChatTaskStatus(item.latest_task_status)||pendingSessionIds.has(item.id)" @click="deleteConversation($event,item)">×</button></div></div>
       </div>
       <div class="card chat-box">
         <div v-if="isAwaitingAnswer" class="actions"><span class="badge">{{task?.stage||'提交中'}}</span><button class="danger" @click="cancelTask">停止回答</button></div>
         <div class="chat-scope fixed"><span>授权范围</span><strong>智能体知识库与企业系统工具</strong><small>由管理员统一配置，并在后端再次校验权限</small></div>
         <div class="messages"><div v-for="(message,index) in messages" :key="message.id||index" class="message" :class="message.role">{{message.content||message.text}}<div v-if="message.tool_calls?.length" class="tool-call-note"><span v-for="(event,i) in message.tool_calls" :key="i">{{event.success?'✓':'!'}} {{event.connector_name||event.connector}} / {{event.tool}}{{i<message.tool_calls.length-1?'；':''}}</span></div><div v-if="message.citations?.length" class="citation">参考资料：<span v-for="(citation,i) in message.citations" :key="i"><a :href="'/api/v1/documents/'+citation.document_id+'/download'">《{{citation.title}}》</a>{{formatPageRange(citation.page,citation.page_end)}}{{i<message.citations.length-1?'；':''}}</span></div><div v-if="message.role==='assistant'&&message.id" class="actions"><button class="ghost" :disabled="message.rating===1" @click="feedback(message,1)">有帮助</button><button class="ghost" :disabled="message.rating===-1" @click="feedback(message,-1)">需改进</button></div></div></div>
-        <div v-if="isAwaitingAnswer&&task?.partial_answer" class="message assistant preserve-text" aria-live="polite">{{task.partial_answer}}</div>
         <form class="chat-input" @submit.prevent="send"><textarea v-model="question" :disabled="isAwaitingAnswer" placeholder="请输入您想查询的问题…" required></textarea><button class="primary" :disabled="isAwaitingAnswer">{{isAwaitingAnswer?"回答中…":"发送"}}</button></form>
       </div>
     </div>

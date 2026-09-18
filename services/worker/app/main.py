@@ -7,20 +7,24 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from urllib.parse import unquote, urlparse
 
 import httpx
 import pymysql
 from minio import Minio
 from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, connections, utility
+from enterprise_kb.config import load_runtime_config, mysql_connection_params
 
 from .parsing import PARSER_VERSION, Chunk, extract, split_blocks, configured_chunks
+from .external_stores import ExternalDeleteStores, build_external_delete_stores
+
+runtime_config = load_runtime_config(os.environ)
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("kb-worker")
 COLLECTION = os.getenv("MILVUS_COLLECTION", "kb_content_units_v1")
 INDEX = os.getenv("OPENSEARCH_INDEX", "kb-content-units-v1")
 LOCAL_DIM = int(os.getenv("LOCAL_EMBEDDING_DIM", "384"))
+INGESTION_ERROR_CODES = {"INGESTION_FAILED", "WORKER_RESTARTED"}
 
 
 def value(name: str, mandatory: bool = False) -> str | None:
@@ -31,9 +35,7 @@ def value(name: str, mandatory: bool = False) -> str | None:
 
 
 def db() -> pymysql.connections.Connection:
-    parsed = urlparse(value("MYSQL_DSN", True))
-    return pymysql.connect(host=parsed.hostname, port=parsed.port or 3306, user=unquote(parsed.username or ""),
-        password=unquote(parsed.password or ""), database=parsed.path.lstrip("/"), charset="utf8mb4",
+    return pymysql.connect(**mysql_connection_params(os.environ), charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor, autocommit=False)
 
 
@@ -59,7 +61,19 @@ def claim() -> dict | None:
         return job
 
 
-def finish(job: dict, ok: bool, error: str | None = None) -> None:
+def recover_abandoned_jobs() -> int:
+    """Recover jobs owned by the previous instance in the single-worker deployment."""
+    with db() as conn, conn.cursor() as cur:
+        cur.execute(
+            "UPDATE ingestion_job SET status='queued',started_at=NULL "
+            "WHERE status='running' AND job_type IN ('extract','reindex','delete')"
+        )
+        recovered = int(cur.rowcount)
+        conn.commit()
+    return recovered
+
+
+def finish(job: dict, ok: bool, error_code: str | None = None) -> None:
     with db() as conn, conn.cursor() as cur:
         if ok:
             cur.execute("UPDATE ingestion_job SET status='succeeded',finished_at=NOW(3),error_message=NULL WHERE id=%s", (job["job_id"],))
@@ -67,7 +81,8 @@ def finish(job: dict, ok: bool, error: str | None = None) -> None:
                 cur.execute("UPDATE document_version SET extraction_status='succeeded',extracted_at=NOW(3),"
                     "parser_name='builtin-structured',parser_version=%s WHERE id=%s", (PARSER_VERSION, job["document_version_id"]))
         else:
-            cur.execute("UPDATE ingestion_job SET status='failed',finished_at=NOW(3),error_message=%s WHERE id=%s", ((error or "")[:4000], job["job_id"]))
+            safe_code = error_code if error_code in INGESTION_ERROR_CODES else "INGESTION_FAILED"
+            cur.execute("UPDATE ingestion_job SET status='failed',finished_at=NOW(3),error_message=%s WHERE id=%s", (safe_code, job["job_id"]))
             if job["job_type"] != "delete":
                 cur.execute("UPDATE document_version SET extraction_status='failed' WHERE id=%s", (job["document_version_id"],))
         conn.commit()
@@ -88,23 +103,21 @@ def download(job: dict) -> Path:
     return path
 
 
-def cleanup_indexes(document_id: int) -> None:
-    try:
-        connections.connect(alias="default", uri=value("MILVUS_URI", True))
-        if utility.has_collection(COLLECTION):
-            collection = Collection(COLLECTION)
-            collection.delete(f"document_id == {document_id}")
-            collection.flush()
-    except Exception as exc:
-        log.warning("清理 Milvus 文档 %s 失败：%s", document_id, exc)
-    try:
-        response = httpx.post(f"{value('OPENSEARCH_URL', True).rstrip('/')}/{INDEX}/_delete_by_query?refresh=true",
-            auth=(value("OPENSEARCH_USERNAME", True), value("OPENSEARCH_PASSWORD", True)), verify=False,
-            json={"query": {"term": {"document_id": document_id}}}, timeout=30)
-        if response.status_code != 404:
-            response.raise_for_status()
-    except Exception as exc:
-        log.warning("清理 OpenSearch 文档 %s 失败：%s", document_id, exc)
+def cleanup_indexes(
+    document_id: int,
+    strict: bool = False,
+    external_stores: ExternalDeleteStores | None = None,
+) -> None:
+    stores = external_stores or build_external_delete_stores()
+    errors: list[Exception] = []
+    for source, adapter in (("Milvus", stores.milvus), ("OpenSearch", stores.opensearch)):
+        try:
+            adapter.delete_document(document_id)
+        except Exception as exc:
+            log.warning("清理 %s 文档 %s 失败：%s", source, document_id, exc)
+            errors.append(exc)
+    if strict and errors:
+        raise RuntimeError("外部索引清理失败") from errors[0]
 
 
 def save_units(job: dict, chunks: list[Chunk]) -> list[dict]:
@@ -142,7 +155,7 @@ def local_hash_embedding(text: str) -> list[float]:
 
 
 def embed(text: str) -> list[float] | None:
-    if (value("EMBEDDING_PROVIDER") or "local_hash") == "local_hash":
+    if runtime_config.embedding_provider == "local_hash":
         return local_hash_embedding(text)
     base, model = value("EMBEDDING_BASE_URL"), value("EMBEDDING_MODEL")
     if not base or not model:
@@ -219,12 +232,12 @@ def index_units(job: dict, units: list[dict]) -> None:
         conn.commit()
 
 
-def delete_document(job: dict) -> None:
-    cleanup_indexes(job["document_id"])
-    try:
-        minio().remove_object(value("MINIO_BUCKET", True), job["object_key"])
-    except Exception as exc:
-        log.warning("删除 MinIO 原文件失败：%s", exc)
+def delete_document(
+    job: dict,
+    external_stores: ExternalDeleteStores | None = None,
+) -> None:
+    stores = external_stores or build_external_delete_stores()
+    stores.delete_document(job["document_id"], job["object_key"])
     with db() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM content_unit WHERE document_version_id=%s", (job["document_version_id"],))
         conn.commit()
@@ -259,6 +272,9 @@ def run(job: dict) -> None:
 
 def main() -> None:
     log.info("knowledge-base worker started")
+    recovered = recover_abandoned_jobs()
+    if recovered:
+        log.warning("recovered %s abandoned ingestion jobs", recovered)
     while True:
         job = None
         try:
@@ -268,9 +284,13 @@ def main() -> None:
             else:
                 run(job)
         except Exception as exc:
-            log.exception("任务处理失败")
+            log.error(
+                "ingestion job failed job_id=%s error_type=%s",
+                job.get("job_id") if job else None,
+                type(exc).__name__,
+            )
             if job:
-                finish(job, False, str(exc))
+                finish(job, False, "INGESTION_FAILED")
             time.sleep(2)
 
 

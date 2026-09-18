@@ -6,7 +6,9 @@ from pydantic import ValidationError
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'services/api'))
 from app.quality import RetrievalPolicy, score_retrieval, retrieval_query
-from app.platform import AgentWrite, Processing, resolve_arguments
+from app.domains.agents.schemas import AgentWrite
+from app.domains.studio.schemas import Processing
+from app.runtime.workflows import resolve_arguments
 from app import quality, agent_runtime
 
 
@@ -53,7 +55,7 @@ def test_parallel_retrieval_degrades_visibly(monkeypatch):
 
 
 def test_tool_budget_and_schema_validation(monkeypatch):
-    tool={'connector_code':'ERP','connector_name':'ERP','tool_name':'read','input_schema':{'type':'object','required':['code'],'properties':{'code':{'type':'string'}}},'annotations':{'readOnlyHint':True}}
+    tool={'id':31,'connector_code':'ERP','connector_name':'ERP','tool_name':'read','input_schema':{'type':'object','required':['code'],'properties':{'code':{'type':'string'}}},'annotations':{'readOnlyHint':True}}
     requests=[]
     responses=iter([{'tool_calls':[{'id':str(i),'type':'function','function':{'name':'ERP__read','arguments':json.dumps({'code':3 if i==0 else 'x'})}} for i in range(3)]}, {'content':'done'}])
     def chat(url,key,body):
@@ -68,3 +70,6 @@ def test_tool_budget_and_schema_validation(monkeypatch):
     assert executed==[{'code':'x'}]
     assert len([m for m in requests[1]['messages'] if m['role']=='tool'])==3
     assert result[2][0]['error_code']=='INVALID_ARGUMENT'
+    assert result[2][0]['connector_tool_id']==31
+    assert result[2][1]['connector_tool_id']==31
+    assert 'connector_tool_id' not in result[2][2]

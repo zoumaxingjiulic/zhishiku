@@ -6,6 +6,8 @@
 
 平台正在从知识问答 MVP 演进为统一企业智能体平台；全局模块、权限边界、智能体运行形态、大模型网关与系统连接器路线见 [企业智能体平台全局设计](docs/enterprise-agent-platform-design.md)。知识库内部设计仍保持独立演进。
 
+后端当前采用模块化单体：各业务域在一个 FastAPI 进程内独立组织 Router、Service、Repository 与 Schema，聊天、工作流和 MCP 等长流程放在 Runtime 层，数据库、对象存储和出站网络放在 Core/Infrastructure 边界。详细依赖方向、事务约束和扩展方式见 [后端架构说明](docs/architecture.md)。
+
 办公网入口：<http://192.168.1.33:18080>
 
 > 本仓库不保存 .env、密码、API Key、模型缓存、数据库数据或用户上传文件；它们仅保存在服务器受控目录。
@@ -63,6 +65,10 @@ Worker：从 MySQL ingestion_job 领取任务，执行解析/OCR、切片、向�
 ## MCP 企业系统连接
 
 平台支持 MCP Streamable HTTP + Bearer Token。Token 使用与大模型网关相同的 `MODEL_CREDENTIAL_KEY` 做 Fernet 加密，数据库和 API 均不返回明文。连接流程为：
+
+所有 MCP 和模型网关出站访问默认拒绝。部署时必须配置精确主机允许列表；私网 MCP 还必须同时配置允许网段。例如当前 ERP/OA 可配置 `MCP_ALLOWED_HOSTS=192.168.1.33` 与 `MCP_ALLOWED_CIDRS=192.168.1.0/24`，DashScope 可配置 `MODEL_ALLOWED_HOSTS=dashscope.aliyuncs.com`。平台会在实际建立 TCP 连接时重新解析并校验全部 DNS 地址，只连接本次校验通过的具体 IP，同时保留原主机名用于 HTTP Host 与 TLS SNI/证书验证；连接不跨解析结果复用，并拒绝 loopback、link-local、multicast、unspecified、reserved、云 metadata 地址及重定向。应用层策略仍应配合容器/宿主机防火墙或云 NSG 的出站 ACL，形成纵深防御。
+
+安全传输层显式锁定 `httpcore==1.0.9`，因为 DNS pinning 使用其 `NetworkBackend`/`ConnectionPool` 接口。升级 HTTPX/httpcore 前必须先运行出站策略、IPv4/IPv6、Host/SNI 和总时限兼容测试。
 
 ~~~text
 配置连接地址和 Token
@@ -128,15 +134,38 @@ Worker：从 MySQL ingestion_job 领取任务，执行解析/OCR、切片、向�
 deploy/
   docker-compose.yml              基础服务 Compose
   docker-compose.models.yml       本地模型覆盖文件（服务器创建）
-  smoke-test.sh                   全流程/权限隔离验收
-  upgrade-v05.sh                  既有环境升级
+  verify-platform-v11.py          平台 1.1 集成与权限隔离验收
   apply-mysql-migration.sh        单个迁移执行器
   queue-reindex.py                既有文档重建索引任务
 database/mysql/                   001~012 MySQL 初始化与增量迁移
 services/api/                     FastAPI 管理、检索、问答、审计
+  app/application.py              应用工厂、生命周期、异常处理和路由装配
+  app/core/                       配置、事务、安全、审计和出站策略
+  app/domains/                    按业务域拆分的 Router/Service/Repository/Schema
+  app/infrastructure/             对象存储等基础设施适配器
+  app/runtime/                    聊天、工作流、评测和 MCP 运行时
 services/worker/                  解析、OCR、切片、Embedding、索引
 services/frontend/                管理与问答前端
 ~~~
+
+## 本地开发与质量门禁
+
+后端测试使用仓库根目录依赖，前端命令在 `services/frontend` 执行：
+
+~~~bash
+python -m pip install -r requirements-test.txt
+python -m pytest -q
+npm --prefix services/frontend ci
+npm --prefix services/frontend run lint
+npm --prefix services/frontend run typecheck
+npm --prefix services/frontend run test -- --run
+npm --prefix services/frontend run build
+docker compose --env-file .env.example -f deploy/docker-compose.yml config
+docker compose --env-file .env.example -f deploy/docker-compose.yml -f deploy/docker-compose.models.yml config
+python tools/check_repository_hygiene.py
+~~~
+
+Docker Compose 的 `config` 只验证配置展开；只有守护进程可用、使用隔离测试数据目录完成 build/up、健康检查和故障注入后，才算完成容器运行验收。
 
 ## 服务器、数据与网络
 
@@ -241,6 +270,8 @@ RERANK_MODEL=BAAI/bge-reranker-v2-m3
 
 ## 日常运维
 
+Compose 会在 MinIO healthy 后运行一次性 `minio-init`，按 `MINIO_BUCKET` 幂等创建桶；API 等待初始化成功退出，readiness 保持只读。加载本地模型覆盖文件时，API 还会等待 Infinity healthy，再由 Frontend 等待 API healthy 后启动。
+
 本地模型在独立 Compose 文件中定义。因此 .env 配置为 Infinity 后，**整套服务启动、停止、更新都必须带上两个 Compose 文件**：
 
 ~~~bash
@@ -301,21 +332,26 @@ PY
 
 ## 数据库迁移、验收和排查
 
-全新 MySQL 数据目录自动执行 001_initial_schema.sql。既有环境的后续迁移每个文件只能执行一次：
+全新 MySQL 数据目录会由官方 MySQL 镜像按文件名顺序自动执行挂载目录中的全部 SQL，即当前的 `001_initial_schema.sql` 至 `012_platform_quality_runtime.sql`；数据目录初始化后不会再次自动执行。既有环境的后续迁移每个文件只能执行一次：
 
 ~~~bash
-bash deploy/apply-mysql-migration.sh database/mysql/011_mcp_agent_runtime_observability.sql
+bash deploy/apply-mysql-migration.sh database/mysql/012_platform_quality_runtime.sql
 ~~~
 
 历史迁移见 [database/mysql/README.md](database/mysql/README.md)。已执行过的迁移绝不能修改或重写。
 
-完整验收：
+完成迁移后，在已确认的验收环境运行当前平台集成验收（会创建并清理临时业务数据）：
 
 ~~~bash
-bash deploy/smoke-test.sh
+docker compose --env-file .env \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.models.yml \
+  exec -T api python - < deploy/verify-platform-v11.py
 ~~~
 
-它验证账号、软删除、部门隔离、跨部门 403、上传、解析、切片、Milvus、OpenSearch、RRF、rerank、LLM 回答、文件夹范围检索、文档移动不重索引，并清理临时资料和账号。MCP 连接发现与工具授权另在系统连接页面验证，验收时不要调用会产生业务副作用的工具。
+它验证部门与文档权限、上传和父子切片、双路索引、混合检索与 rerank、配置版本、评测、持久化对话与幂等、模型回答与引用、反馈所有权、任务取消和工作流审批。脚本清理本次创建的资料与智能体，停用临时账号和部门、归档临时知识库并保留审计记录；覆盖边界见 [平台 1.1 验收记录](docs/verification-v11.md)。MCP 连接发现与工具授权另在系统连接页面验证，验收时不要调用会产生业务副作用的工具。
+
+本地质量门禁与容器构建检查见 [部署说明](deploy/README.md#本地质量门禁与镜像构建)。API 与 chat-runner 复用 `enterprise-kb-api:${APP_IMAGE_TAG:-local}` 镜像，更新时一起重建、重建容器以保持版本一致。
 
 | 现象 | 优先检查 |
 | --- | --- |

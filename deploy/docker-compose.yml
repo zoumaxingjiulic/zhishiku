@@ -18,6 +18,26 @@ services:
       retries: 12
     networks: [kb-internal]
 
+  minio-init:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: "no"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mc alias set local "$${MINIO_ENDPOINT}" "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" >/dev/null 2>&1 &&
+        mc mb --ignore-existing "local/$${MINIO_BUCKET}" >/dev/null 2>&1 || {
+          echo "MinIO bucket initialization failed" >&2
+          exit 1
+        }
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+    depends_on:
+      minio: {condition: service_healthy}
+    networks: [kb-internal]
+
   mysql:
     image: mysql:8.4.11
     restart: unless-stopped
@@ -99,15 +119,21 @@ services:
     networks: [kb-internal]
 
   api:
+    image: enterprise-kb-api:${APP_IMAGE_TAG:-local}
     build:
-      context: ../services/api
+      context: ..
+      dockerfile: services/api/Dockerfile
     restart: unless-stopped
     environment: &api_environment
       TZ: ${TZ}
       APP_ENV: ${APP_ENV}
       LOG_LEVEL: ${LOG_LEVEL}
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS}
-      MYSQL_DSN: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: minio:9000
       MINIO_BUCKET: ${MINIO_BUCKET}
@@ -133,41 +159,62 @@ services:
       LLM_API_KEY: ${LLM_API_KEY}
       LLM_MODEL: ${LLM_MODEL}
       MODEL_CREDENTIAL_KEY: ${MODEL_CREDENTIAL_KEY:-}
+      MCP_ALLOWED_HOSTS: ${MCP_ALLOWED_HOSTS:-}
+      MCP_ALLOWED_CIDRS: ${MCP_ALLOWED_CIDRS:-}
+      MODEL_ALLOWED_HOSTS: ${MODEL_ALLOWED_HOSTS:-}
+      MODEL_ALLOWED_CIDRS: ${MODEL_ALLOWED_CIDRS:-}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL}
       RERANK_BASE_URL: ${RERANK_BASE_URL:-}
       RERANK_API_KEY: ${RERANK_API_KEY:-}
       RERANK_MODEL: ${RERANK_MODEL:-}
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/readyz', timeout=40).close()"]
+      interval: 30s
+      timeout: 45s
+      start_period: 60s
+      retries: 3
     depends_on:
       mysql: {condition: service_healthy}
       redis: {condition: service_healthy}
       milvus: {condition: service_healthy}
       opensearch: {condition: service_healthy}
       minio: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
     ports:
       - "${HOST_BIND_IP}:${API_PORT}:8000"
     networks: [kb-internal]
 
   chat-runner:
-    build:
-      context: ../services/api
+    image: enterprise-kb-api:${APP_IMAGE_TAG:-local}
     restart: unless-stopped
     command: ["python", "-m", "app.chat_worker"]
     environment: *api_environment
+    healthcheck:
+      test: ["CMD", "python", "-m", "enterprise_kb.health"]
+      interval: 30s
+      timeout: 15s
+      start_period: 30s
+      retries: 3
     depends_on:
       mysql: {condition: service_healthy}
     networks: [kb-internal]
 
   worker:
     build:
-      context: ../services/worker
+      context: ..
+      dockerfile: services/worker/Dockerfile
     restart: unless-stopped
     environment:
       TZ: ${TZ}
       APP_ENV: ${APP_ENV}
       LOG_LEVEL: ${LOG_LEVEL}
-      MYSQL_DSN: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: minio:9000
       MINIO_BUCKET: ${MINIO_BUCKET}
@@ -181,9 +228,16 @@ services:
       MILVUS_COLLECTION: ${MILVUS_COLLECTION}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER}
       LOCAL_EMBEDDING_DIM: ${LOCAL_EMBEDDING_DIM}
+      LOCAL_TEST_MODE: ${LOCAL_TEST_MODE}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL}
+    healthcheck:
+      test: ["CMD", "python", "-m", "enterprise_kb.health"]
+      interval: 30s
+      timeout: 15s
+      start_period: 30s
+      retries: 3
     depends_on:
       mysql: {condition: service_healthy}
       redis: {condition: service_healthy}
@@ -196,9 +250,15 @@ services:
     build:
       context: ../services/frontend
     restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "wget", "-q", "-O", "/dev/null", "http://localhost/healthz"]
+      interval: 30s
+      timeout: 5s
+      start_period: 10s
+      retries: 3
     depends_on:
       api:
-        condition: service_started
+        condition: service_healthy
     ports:
       - "${FRONTEND_BIND_IP:-127.0.0.1}:${FRONTEND_PORT:-18080}:80"
     networks: [kb-internal]

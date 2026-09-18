@@ -283,13 +283,15 @@ tr:last-child td { border-bottom: 0; }
 .conversation-head strong { font-size: 13px; }
 .new-chat { border: 1px solid rgba(255,255,255,.22); border-radius: 7px; padding: 6px 9px; background: rgba(255,255,255,.1); color: #fff; font-size: 11px; }
 .conversation-list { max-height: 220px; overflow-y: auto; display: grid; gap: 6px; }
-.conversation-item { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; border: 1px solid transparent; border-radius: 8px; padding: 9px 8px 9px 10px; background: transparent; color: #dbe7f8; text-align: left; }
+.conversation-item { width: 100%; min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) auto; align-items: center; gap: 8px; border: 1px solid transparent; border-radius: 8px; padding: 4px 6px 4px 8px; background: transparent; color: #dbe7f8; text-align: left; }
 .conversation-item:hover,.conversation-item.active { border-color: rgba(125,174,255,.42); background: rgba(96,150,232,.18); }
+.conversation-select { min-width: 0; padding: 5px 2px; background: transparent; color: inherit; text-align: left; }
 .conversation-item span { min-width: 0; display: grid; gap: 3px; }
 .conversation-item strong { overflow: hidden; font-size: 12px; text-overflow: ellipsis; white-space: nowrap; }
 .conversation-item small { color: #8fa9cb; font-size: 10px; }
-.conversation-item i { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 6px; color: #9fb5d3; font-size: 17px; font-style: normal; }
-.conversation-item i:hover { background: rgba(255,100,100,.18); color: #ffd0d0; }
+.conversation-delete { width: 22px; height: 22px; display: grid; place-items: center; border-radius: 6px; background: transparent; color: #9fb5d3; font-size: 17px; }
+.conversation-delete:not(:disabled):hover { background: rgba(255,100,100,.18); color: #ffd0d0; }
+.conversation-delete:disabled { cursor: not-allowed; opacity: .35; }
 
 .connector-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 16px; }
 .connector { padding: 24px; }

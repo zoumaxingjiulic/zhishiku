@@ -1,0 +1,5 @@
+# Install both services' runtime imports in a clean Python 3.12 test runner.
+-r services/api/requirements.txt
+-r services/worker/requirements.txt
+pytest==8.3.5
+pypdf==5.5.0

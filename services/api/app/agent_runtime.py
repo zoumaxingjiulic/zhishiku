@@ -8,10 +8,17 @@ import time
 from typing import Callable
 
 import httpx
-from jsonschema import validate as validate_json, ValidationError
+from jsonschema import validate as validate_json, ValidationError as JsonSchemaValidationError
 
-from .config import settings
+from .core.config import settings
+from .core.errors import ValidationError as OutboundValidationError
+from .core.outbound import OutboundPolicy, pinned_client
+from .core.redaction import redact_values
 from .retrieval import source_location
+
+
+class ModelRuntimeError(RuntimeError):
+    """Normalized model-provider failure without destination or credential data."""
 
 
 def public_tool_name(connector_code: str, tool_name: str) -> str:
@@ -58,40 +65,58 @@ def openai_tools(bound_tools: list[dict]) -> tuple[list[dict], dict[str, dict]]:
 
 
 def _chat(base_url: str, api_key: str, body: dict) -> dict:
-    headers = {"Content-Type": "application/json"}
-    if api_key:
-        headers["Authorization"] = f"Bearer {api_key}"
-    response = httpx.post(base_url.rstrip("/") + "/chat/completions", headers=headers, json=body, timeout=120)
-    response.raise_for_status()
-    return response.json()["choices"][0]["message"]
+    policy = OutboundPolicy(settings.model_allowed_hosts, settings.model_allowed_cidrs)
+    deadline = time.monotonic() + 120
+    try:
+        policy.validate(base_url, deadline=deadline)
+        headers = {"Content-Type": "application/json"}
+        if api_key:
+            headers["Authorization"] = f"Bearer {api_key}"
+        with pinned_client(policy, timeout=max(0.001, deadline - time.monotonic())) as client:
+            response = client.post(base_url.rstrip("/") + "/chat/completions", headers=headers, json=body)
+            response.raise_for_status()
+            return response.json()["choices"][0]["message"]
+    except (httpx.HTTPError, OutboundValidationError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        raise ModelRuntimeError("模型服务调用失败") from None
 
 
 def _stream_chat(base_url, api_key, body, emit):
+    policy = OutboundPolicy(settings.model_allowed_hosts, settings.model_allowed_cidrs)
+    deadline = time.monotonic() + 120
     headers = {'Authorization': f'Bearer {api_key}'} if api_key else {}
     result = {'content': '', 'tool_calls': []}
     calls = {}
-    with httpx.stream('POST', base_url.rstrip('/') + '/chat/completions', headers=headers,
-                      json={**body, 'stream': True}, timeout=120) as response:
-        response.raise_for_status()
-        for line in response.iter_lines():
-            if not line.startswith('data:'):
-                continue
-            raw = line[5:].strip()
-            if raw == '[DONE]':
-                break
-            chunk = json.loads(raw)
-            if not chunk.get('choices'):
-                continue
-            delta = chunk['choices'][0].get('delta') or {}
-            if delta.get('content'):
-                result['content'] += delta['content']
-                emit('answer', result['content'])
-            for call in delta.get('tool_calls') or []:
-                target = calls.setdefault(call['index'], {'id': '', 'type': 'function', 'function': {'name': '', 'arguments': ''}})
-                if call.get('id'):
-                    target['id'] = call['id']
-                for key in ('name', 'arguments'):
-                    target['function'][key] += (call.get('function') or {}).get(key) or ''
+    try:
+        policy.validate(base_url, deadline=deadline)
+        with pinned_client(policy, timeout=max(0.001, deadline - time.monotonic())) as client:
+            with client.stream('POST', base_url.rstrip('/') + '/chat/completions', headers=headers,
+                               json={**body, 'stream': True}) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if time.monotonic() >= deadline:
+                        raise ModelRuntimeError("模型服务调用失败")
+                    if not line.startswith('data:'):
+                        continue
+                    raw = line[5:].strip()
+                    if raw == '[DONE]':
+                        break
+                    chunk = json.loads(raw)
+                    if not chunk.get('choices'):
+                        continue
+                    delta = chunk['choices'][0].get('delta') or {}
+                    if delta.get('content'):
+                        result['content'] += delta['content']
+                        emit('answer', redact_values(result['content'], [api_key]))
+                    for call in delta.get('tool_calls') or []:
+                        target = calls.setdefault(call['index'], {'id': '', 'type': 'function', 'function': {'name': '', 'arguments': ''}})
+                        if call.get('id'):
+                            target['id'] = call['id']
+                        for key in ('name', 'arguments'):
+                            target['function'][key] += (call.get('function') or {}).get(key) or ''
+    except ModelRuntimeError:
+        raise
+    except (httpx.HTTPError, OutboundValidationError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        raise ModelRuntimeError("模型服务调用失败") from None
     result['tool_calls'] = [calls[i] for i in sorted(calls)]
     return result
 
@@ -149,7 +174,10 @@ def generate_agent_answer(
         if round_index == max_tool_rounds or used >= max_tool_calls:
             current.pop('tools', None)
             current.pop('tool_choice', None)
-        reply = _stream_chat(base_url, api_key, current, emit) if emit else _chat(base_url, api_key, current)
+        reply = redact_values(
+            _stream_chat(base_url, api_key, current, emit) if emit else _chat(base_url, api_key, current),
+            [api_key],
+        )
         requested = reply.get('tool_calls') or []
         if not requested:
             return reply.get('content') or '模型未返回有效内容。', 'llm_tools' if events else 'llm', events, selected_units
@@ -163,13 +191,20 @@ def generate_agent_answer(
             result = {'error': '工具未授权或超出执行预算'}
             if tool and used < max_tool_calls and round_index < max_tool_rounds:
                 used += 1
+                event.update(
+                    connector=tool['connector_code'],
+                    tool=tool['tool_name'],
+                    connector_tool_id=tool.get('id'),
+                    _binding_version=tool.get('_binding_version'),
+                )
                 if emit:
                     emit('stage', '查询 ' + tool['connector_name'])
                 try:
                     arguments = json.loads(function.get('arguments') or '{}')
                     validate_json(arguments, tool.get('input_schema') or {'type': 'object'})
-                    result, event = tool_executor(tool, arguments)
-                except (json.JSONDecodeError, ValidationError, ValueError):
+                    result, executed_event = tool_executor(tool, arguments)
+                    event.update(executed_event)
+                except (json.JSONDecodeError, JsonSchemaValidationError, ValueError):
                     event['error_code'] = 'INVALID_ARGUMENT'
                     result = {'error': '参数不符合工具结构要求，请补充或修正参数，不要猜测。'}
                 except Exception as exc:
@@ -177,7 +212,11 @@ def generate_agent_answer(
                         raise
                     event['error_code'] = type(exc).__name__
                     result = {'error': '企业系统暂时不可用，请稍后重试。'}
-                event.update(connector=tool['connector_code'], tool=tool['tool_name'])
+                event.update(
+                    connector=tool['connector_code'],
+                    tool=tool['tool_name'],
+                    connector_tool_id=tool.get('id'),
+                )
             else:
                 event['error_code'] = 'NOT_AUTHORIZED_OR_BUDGET'
             event['duration_ms'] = round((time.perf_counter() - started) * 1000, 1)
