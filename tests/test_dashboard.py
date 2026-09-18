@@ -1,9 +1,32 @@
 import sys
+from contextlib import nullcontext
 from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from fastapi.testclient import TestClient
 
 
 ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT / "shared" / "python"))
 sys.path.insert(0, str(ROOT / "services" / "api"))
+
+
+@pytest.fixture
+def ordinary_user():
+    # Match load_user's current multi-department authentication payload.
+    return {
+        "id": 42,
+        "username": "operator",
+        "display_name": "Operations user",
+        "email": "operator@example.test",
+        "status": 1,
+        "last_login_at": None,
+        "password_changed_at": None,
+        "departments": [{"id": 17, "code": "OPERATIONS", "name": "Operations", "is_primary": 1}],
+        "department_ids": [17],
+        "is_platform_admin": False,
+    }
 
 
 class DashboardCursor:
@@ -18,7 +41,7 @@ class DashboardCursor:
         return self.row
 
 
-def test_load_dashboard_stats_aggregates_accessible_department_data() -> None:
+def test_load_dashboard_stats_aggregates_accessible_department_data(ordinary_user) -> None:
     from app.dashboard import load_dashboard_stats
 
     cursor = DashboardCursor(
@@ -34,7 +57,7 @@ def test_load_dashboard_stats_aggregates_accessible_department_data() -> None:
 
     result = load_dashboard_stats(
         cursor,
-        {"department_id": 17, "department_code": "OPERATIONS"},
+        ordinary_user,
     )
 
     assert result == {
@@ -78,3 +101,23 @@ def test_load_dashboard_stats_uses_unrestricted_admin_aggregation() -> None:
     }
     assert len(cursor.calls) == 1
     assert cursor.calls[0][1] == ()
+
+
+def test_dashboard_stats_http_contract(monkeypatch, ordinary_user):
+    from app import main
+
+    cursor = DashboardCursor({
+        "knowledge_bases": 3, "documents": 25, "agents": 2,
+        "processing": 4, "succeeded": 19, "failed": 2,
+    })
+    connection = SimpleNamespace(cursor=lambda: nullcontext(cursor))
+    monkeypatch.setattr(main, "connect", lambda: nullcontext(connection))
+    monkeypatch.setitem(main.app.dependency_overrides, main.current_user, lambda: ordinary_user)
+    # No context manager: avoid the application's database-writing startup hook.
+    response = TestClient(main.app).get("/api/v1/dashboard/stats")
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "knowledge_bases": 3, "documents": 25, "agents": 2,
+        "processing": 4, "succeeded": 19, "failed": 2,
+    }

@@ -240,6 +240,8 @@ RERANK_MODEL=BAAI/bge-reranker-v2-m3
 
 ## 日常运维
 
+Compose 会在 MinIO healthy 后运行一次性 `minio-init`，按 `MINIO_BUCKET` 幂等创建桶；API 等待初始化成功退出，readiness 保持只读。加载本地模型覆盖文件时，API 还会等待 Infinity healthy，再由 Frontend 等待 API healthy 后启动。
+
 本地模型在独立 Compose 文件中定义。因此 .env 配置为 Infinity 后，**整套服务启动、停止、更新都必须带上两个 Compose 文件**：
 
 ~~~bash

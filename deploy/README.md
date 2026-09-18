@@ -38,7 +38,7 @@ docker compose --env-file .env \
 
 验收脚本会创建临时业务数据并在结束时清理或停用，仅在已确认的验收环境运行。初始管理员密码通过 `.env` 的 `ADMIN_PASSWORD` 配置；该文件不得提交。首次登录后修改密码。办公网正式开放前应增加 HTTPS 反向代理，将 `AUTH_COOKIE_SECURE` 改为 `true`，并配置备份与监控。
 
-MinIO 桶在基础设施启动后由管理员执行初始化命令创建；后续 API 也会在启动检查中确保该桶存在。
+Compose 的一次性 `minio-init` 服务等待 MinIO healthy 后，使用同一固定版本镜像中的 `mc`，按 `MINIO_BUCKET` 幂等创建桶（`mc mb --ignore-existing`）；桶已存在时也成功退出。API 等待初始化成功退出后才启动，Worker 仍只等待 MinIO healthy。初始化失败时检查 `.env` 中的 MinIO 凭据和桶名后重新启动服务；初始化命令不输出凭据。API 启动和 readiness 探针都不创建桶。
 
 ## 健康检查与前端缓存
 
@@ -46,7 +46,7 @@ API `/healthz` 只表示进程存活，不访问外部依赖。`/readyz` 逐项�
 
 任一必需项失败时 `/readyz` 返回 HTTP 503，成功返回 200；响应仅含 `status` 和 `checks`，不会回传异常或连接凭据。rerank 完全未配置时返回 `not_configured` 且不阻塞；填写任一 rerank 配置后即要求 URL、模型 ID 完整且模型可用。探针不执行 DDL、不创建桶或集合。
 
-Compose 用 `/readyz` 检查 API，Frontend 等待 API `service_healthy` 后启动。使用本地模型时同时加载 `deploy/docker-compose.models.yml`，Infinity 的 `/models` 健康检查预留 180 秒模型加载时间；更慢的硬件可调整 `start_period`。仅启动基础 Compose 时须配置可访问的外部模型服务。
+Compose 用 `/readyz` 检查 API，Frontend 等待 API `service_healthy` 后启动。使用本地模型时同时加载 `deploy/docker-compose.models.yml`，覆盖配置让 API 等待 Infinity `service_healthy`，保留基础设施及 MinIO 初始化依赖。Infinity 的 `/models` 健康检查预留 180 秒模型加载时间；更慢的硬件可调整 `start_period`。仅启动基础 Compose 时须配置可访问的外部模型服务。
 
 Worker 和 chat-runner 执行 `python -m enterprise_kb.health`，只运行 MySQL `SELECT 1`；失败退出 1 且仅输出异常类型。该探针表示数据库可访问，不代表后台任务持续取得进展。Docker 不会因 unhealthy 自动重启服务；主进程退出由现有 `unless-stopped` 策略处理。
 

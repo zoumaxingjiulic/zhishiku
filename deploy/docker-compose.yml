@@ -18,6 +18,26 @@ services:
       retries: 12
     networks: [kb-internal]
 
+  minio-init:
+    image: minio/minio:RELEASE.2025-09-07T16-13-09Z
+    restart: "no"
+    entrypoint: ["/bin/sh", "-ec"]
+    command:
+      - |
+        mc alias set local "$${MINIO_ENDPOINT}" "$${MINIO_ROOT_USER}" "$${MINIO_ROOT_PASSWORD}" >/dev/null 2>&1 &&
+        mc mb --ignore-existing "local/$${MINIO_BUCKET}" >/dev/null 2>&1 || {
+          echo "MinIO bucket initialization failed" >&2
+          exit 1
+        }
+    environment:
+      MINIO_ENDPOINT: http://minio:9000
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET}
+    depends_on:
+      minio: {condition: service_healthy}
+    networks: [kb-internal]
+
   mysql:
     image: mysql:8.4.11
     restart: unless-stopped
@@ -157,6 +177,7 @@ services:
       milvus: {condition: service_healthy}
       opensearch: {condition: service_healthy}
       minio: {condition: service_healthy}
+      minio-init: {condition: service_completed_successfully}
     ports:
       - "${HOST_BIND_IP}:${API_PORT}:8000"
     networks: [kb-internal]

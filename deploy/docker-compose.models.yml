@@ -1,4 +1,8 @@
 services:
+  api:
+    depends_on:
+      infinity: {condition: service_healthy}
+
   infinity:
     image: michaelf34/infinity:latest-cpu
     restart: unless-stopped
