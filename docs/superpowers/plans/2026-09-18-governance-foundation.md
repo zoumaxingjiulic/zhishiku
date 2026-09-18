@@ -310,7 +310,9 @@ git commit -m "refactor: centralize safe runtime configuration"
 
 **文件：**
 - 创建：`services/api/app/readiness.py`
+- 创建：`shared/python/enterprise_kb/health.py`
 - 创建：`tests/test_readiness.py`
+- 创建：`tests/test_process_health.py`
 - 修改：`services/api/app/main.py`
 - 修改：`services/api/Dockerfile`
 - 修改：`services/worker/Dockerfile`
@@ -332,7 +334,7 @@ git commit -m "refactor: centralize safe runtime configuration"
 
 - [ ] **步骤 3：实现检查器与路由状态码**
 
-`readiness.py` 分别检查 MySQL、MinIO、Milvus、OpenSearch、embedding 和 rerank；若 rerank 未配置则结果为 `not_configured` 且不阻塞，已配置但不可用则阻塞。路由使用：
+`readiness.py` 分别检查 MySQL、MinIO、Milvus、OpenSearch、embedding 和 rerank；Milvus 检查连接与列举集合能力，不要求空环境预先存在集合；embedding/rerank 通过 OpenAI 兼容 `/models` 验证配置的模型 ID。若 rerank 未配置则结果为 `not_configured` 且不阻塞，已配置但不可用则阻塞。路由使用：
 
 ```python
 result = check_readiness()
@@ -343,7 +345,7 @@ return JSONResponse(status_code=200 if result.ready else 503, content=result.mod
 
 - [ ] **步骤 4：增加 Compose 健康检查与 Nginx 策略**
 
-API 健康检查调用容器内 `http://localhost:8000/readyz`；Frontend 调用 `http://localhost/healthz`；Infinity 调用 `/models`；Worker 与 chat-runner 使用进程级健康脚本而非只检查 PID。Frontend `depends_on.api.condition` 改为 `service_healthy`。
+API 健康检查调用容器内 `http://localhost:8000/readyz`；Frontend 调用 `http://localhost/healthz`；Infinity 调用 `/models`。`enterprise_kb.health` 提供 `probe_mysql(connect_factory)` 和命令行入口：使用任务 3 的安全连接参数执行 `SELECT 1`，成功退出 0、失败只记录异常类型并退出 1，不输出连接参数。Worker 与 chat-runner 的 Compose healthcheck 调用 `python -m enterprise_kb.health`；容器主进程退出仍由 Docker restart policy 处理。Frontend `depends_on.api.condition` 改为 `service_healthy`。
 
 Nginx 为动态 HTML 设置 `Cache-Control: no-store`，哈希静态资源设置一年 immutable 缓存，并添加 `X-Content-Type-Options`、`X-Frame-Options`、`Referrer-Policy` 和 gzip。
 
@@ -352,14 +354,14 @@ Nginx 为动态 HTML 设置 `Cache-Control: no-store`，哈希静态资源设置
 运行：
 
 ```powershell
-E:\zhishiku\.venv\Scripts\python.exe -m pytest tests/test_readiness.py -q
+E:\zhishiku\.venv\Scripts\python.exe -m pytest tests/test_readiness.py tests/test_process_health.py -q
 docker compose --env-file .env.example -f deploy/docker-compose.yml -f deploy/docker-compose.models.yml config --quiet
 ```
 
 提交：
 
 ```powershell
-git add services/api/app/readiness.py services/api/app/main.py tests/test_readiness.py services/api/Dockerfile services/worker/Dockerfile services/frontend/Dockerfile deploy/docker-compose.yml deploy/docker-compose.models.yml services/frontend/nginx.conf deploy/README.md
+git add services/api/app/readiness.py services/api/app/main.py shared/python/enterprise_kb/health.py tests/test_readiness.py tests/test_process_health.py services/api/Dockerfile services/worker/Dockerfile services/frontend/Dockerfile deploy/docker-compose.yml deploy/docker-compose.models.yml services/frontend/nginx.conf deploy/README.md
 git commit -m "fix: enforce dependency-aware readiness"
 ```
 
