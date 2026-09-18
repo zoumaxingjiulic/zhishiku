@@ -24,3 +24,6 @@ dist/
 .idea/
 .DS_Store
 Thumbs.db
+
+# Isolated development worktrees
+.worktrees/
