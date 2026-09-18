@@ -8,7 +8,7 @@ from typing import Any, Callable
 
 import httpx
 
-from ..config import settings
+from ..core.config import settings
 from ..core.errors import ValidationError
 from ..core.outbound import OutboundPolicy, pinned_client
 

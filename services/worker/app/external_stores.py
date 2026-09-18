@@ -119,4 +119,3 @@ def build_external_delete_stores() -> ExternalDeleteStores:
             _required("MINIO_BUCKET"),
         ),
     )
-

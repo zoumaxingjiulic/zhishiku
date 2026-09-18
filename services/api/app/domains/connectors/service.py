@@ -6,7 +6,7 @@ from urllib.parse import urlsplit
 
 import pymysql
 
-from ...config import settings
+from ...core.config import settings
 from ...core.credentials import decrypt_credential, encrypt_credential
 from ...core.database import UnitOfWork
 from ...core.errors import (

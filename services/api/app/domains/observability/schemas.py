@@ -15,4 +15,3 @@ class DashboardStats(BaseModel):
     processing: int
     succeeded: int
     failed: int
-

@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "services" / "api"))
 
 from app import agent_runtime  # noqa: E402
-from app.mcp_client import _response_payload  # noqa: E402
+from app.runtime.mcp import _response_payload  # noqa: E402
 
 
 def tool(read_only=True):

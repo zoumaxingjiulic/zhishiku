@@ -279,7 +279,7 @@ class FinalizationRepository(AuthorizationRepository):
 
     def has_agent_department_access(self, agent_id, department_ids, for_update=False):
         self.events.append(("agent_acl", for_update))
-        return True
+        return self.race != "agent_acl"
 
     def get_session(self, session_id, agent_id, user_id, for_update=False):
         self.events.append(("session", for_update))
@@ -287,7 +287,9 @@ class FinalizationRepository(AuthorizationRepository):
 
     def citation_document(self, document_id, knowledge_base_ids, department_ids, for_update=False):
         self.events.append(("document", for_update))
-        return None if self.race == "document" else {"id": document_id, "knowledge_base_id": 2}
+        return None if self.race in {"document_status", "document_acl"} else {
+            "id": document_id, "knowledge_base_id": 2
+        }
 
     def bound_tools(self, agent_id, for_update=False):
         self.events.append(("tools", for_update))
@@ -353,11 +355,12 @@ class FinalizationAuthService:
 
 
 @pytest.mark.parametrize("race", [
-    "agent", "kb", "binding", "document", "tool", "tool_config",
+    "agent", "agent_acl", "kb", "binding", "document_status", "document_acl", "tool", "tool_config",
     "tool_description", "connector_name", "cancel",
 ])
 def test_finalization_rechecks_every_acl_and_discards_generated_answer(monkeypatch, race):
     """Revocation during generation must win before any generated answer is persisted."""
+    from app.domains.agents.service import task_view
     from app.runtime import chat
 
     repository = FinalizationRepository(race=race)
@@ -391,6 +394,11 @@ def test_finalization_rechecks_every_acl_and_discards_generated_answer(monkeypat
     assert repository.inserted_messages == []
     assert uow.commits == 0
     assert auth.for_update is True
+    assert task_view({
+        "id": "task-1", "session_id": "mine", "status": "running",
+        "stage": "生成回答", "partial_answer": "敏感回答", "error_code": None,
+        "updated_at": None,
+    })["partial_answer"] is None
 
 
 def test_finalization_locks_all_current_authorization_reads_and_commits_result_atomically():

@@ -2,11 +2,10 @@ import time
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
-from ...config import settings
+from ...core.config import settings
 from ...core.database import UnitOfWork
-from ...core.dependencies import as_http_exception, get_uow
-from ...core.errors import ApplicationError, AuthenticationError
-from .repository import AuthRepository
+from ...core.dependencies import get_uow
+from ...core.errors import AuthenticationError
 from .schemas import AuthenticatedUser, LoginRequest, LoginResponse, PasswordChange
 from .service import AuthService
 
@@ -34,18 +33,7 @@ def current_user(
     request: Request,
     service: AuthService = Depends(get_auth_service),
 ) -> dict:
-    try:
-        return service.authenticate(_request_token(request))
-    except ApplicationError as exc:
-        raise as_http_exception(exc) from exc
-
-
-def load_user(user_id: int) -> dict:
-    """Temporary compatibility entry point for runtime modules migrated in later tasks."""
-    from ...core.database import UnitOfWork
-
-    with UnitOfWork() as uow:
-        return AuthService(uow, AuthRepository(uow.cursor)).load_user(user_id)
+    return service.authenticate(_request_token(request))
 
 
 def is_admin(user: dict) -> bool:
@@ -77,12 +65,10 @@ def login(
         raise HTTPException(429, "登录尝试过多，请 5 分钟后再试")
     try:
         user, token = service.login(payload.username, payload.password, ip_address)
-    except AuthenticationError as exc:
+    except AuthenticationError:
         attempts.append(now)
         LOGIN_ATTEMPTS[ip_address] = attempts
-        raise as_http_exception(exc) from exc
-    except ApplicationError as exc:
-        raise as_http_exception(exc) from exc
+        raise
     LOGIN_ATTEMPTS.pop(ip_address, None)
     response.set_cookie(
         COOKIE_NAME,
@@ -127,9 +113,6 @@ def change_password(
     user: dict = Depends(current_user),
     service: AuthService = Depends(get_auth_service),
 ) -> dict:
-    try:
-        service.change_password(user["id"], payload.current_password, payload.new_password)
-    except ApplicationError as exc:
-        raise as_http_exception(exc) from exc
+    service.change_password(user["id"], payload.current_password, payload.new_password)
     response.delete_cookie(COOKIE_NAME, path="/")
     return {"status": "ok", "message": "密码已修改，请重新登录"}

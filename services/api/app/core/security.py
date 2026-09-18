@@ -7,7 +7,7 @@ from typing import Any
 import bcrypt
 import jwt
 
-from ..config import settings
+from .config import settings
 from .errors import AuthenticationError, ValidationError
 
 

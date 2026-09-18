@@ -83,6 +83,18 @@ def test_example_file_does_not_exempt_real_secret_patterns(hygiene, monkeypatch,
     assert "api-key" in capsys.readouterr().out
 
 
+def test_ignores_tracked_files_deleted_in_the_current_change(hygiene, monkeypatch, tmp_path, capsys):
+    """Catch scanners that make a legitimate staged deletion fail the quality gate."""
+    monkeypatch.setattr(
+        hygiene.subprocess,
+        "check_output",
+        lambda command, **kwargs: b"removed-module.py\0",
+    )
+
+    assert hygiene.main(tmp_path) == 0
+    assert capsys.readouterr().out == ""
+
+
 def test_git_failure_fails_closed_without_echoing_command_output(hygiene, monkeypatch, tmp_path, capsys):
     def failed_git(*args, **kwargs):
         raise subprocess.CalledProcessError(128, "git", output=b"sensitive diagnostic")

@@ -1,11 +1,7 @@
-from collections.abc import Callable
-from typing import Any
-
 from fastapi import APIRouter, Depends, Request
 
 from ...core.database import UnitOfWork
-from ...core.dependencies import as_http_exception, get_uow
-from ...core.errors import ApplicationError
+from ...core.dependencies import get_uow
 from ..auth.router import platform_admin
 from .schemas import AgentModelBinding, ModelGatewayWrite
 from .service import ModelGatewayService
@@ -18,13 +14,6 @@ def get_model_gateway_service(uow: UnitOfWork = Depends(get_uow)) -> ModelGatewa
     return ModelGatewayService(uow)
 
 
-def _execute(call: Callable[[], Any]) -> Any:
-    try:
-        return call()
-    except ApplicationError as exc:
-        raise as_http_exception(exc) from exc
-
-
 def _ip(request: Request) -> str:
     return request.client.host if request.client else "unknown"
 
@@ -33,7 +22,7 @@ def _ip(request: Request) -> str:
             operation_id="list_model_profiles_api_v1_model_gateway_profiles_get")
 def list_model_profiles(user: dict = Depends(platform_admin),
                         service: ModelGatewayService = Depends(get_model_gateway_service)) -> list[dict]:
-    return _execute(lambda: service.list_profiles(user))
+    return service.list_profiles(user)
 
 
 @router.post("/api/v1/model-gateway/profiles", tags=["model-gateway"],
@@ -41,7 +30,7 @@ def list_model_profiles(user: dict = Depends(platform_admin),
 def create_model_profile(payload: ModelGatewayWrite, request: Request,
                          user: dict = Depends(platform_admin),
                          service: ModelGatewayService = Depends(get_model_gateway_service)) -> dict:
-    return _execute(lambda: service.create_profile(user, payload, _ip(request)))
+    return service.create_profile(user, payload, _ip(request))
 
 
 @router.put("/api/v1/model-gateway/profiles/{profile_id}", tags=["model-gateway"],
@@ -49,7 +38,7 @@ def create_model_profile(payload: ModelGatewayWrite, request: Request,
 def update_model_profile(profile_id: int, payload: ModelGatewayWrite, request: Request,
                          user: dict = Depends(platform_admin),
                          service: ModelGatewayService = Depends(get_model_gateway_service)) -> dict:
-    return _execute(lambda: service.update_profile(user, profile_id, payload, _ip(request)))
+    return service.update_profile(user, profile_id, payload, _ip(request))
 
 
 @router.put("/api/v1/agents/{agent_id}/model-profile", tags=["model-gateway"],
@@ -57,6 +46,6 @@ def update_model_profile(profile_id: int, payload: ModelGatewayWrite, request: R
 def bind_agent_model_profile(agent_id: int, payload: AgentModelBinding, request: Request,
                              user: dict = Depends(platform_admin),
                              service: ModelGatewayService = Depends(get_model_gateway_service)) -> dict:
-    return _execute(lambda: service.bind_agent_profile(
+    return service.bind_agent_profile(
         user, agent_id, payload.model_gateway_profile_id, _ip(request)
-    ))
+    )

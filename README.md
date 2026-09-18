@@ -6,6 +6,8 @@
 
 平台正在从知识问答 MVP 演进为统一企业智能体平台；全局模块、权限边界、智能体运行形态、大模型网关与系统连接器路线见 [企业智能体平台全局设计](docs/enterprise-agent-platform-design.md)。知识库内部设计仍保持独立演进。
 
+后端当前采用模块化单体：各业务域在一个 FastAPI 进程内独立组织 Router、Service、Repository 与 Schema，聊天、工作流和 MCP 等长流程放在 Runtime 层，数据库、对象存储和出站网络放在 Core/Infrastructure 边界。详细依赖方向、事务约束和扩展方式见 [后端架构说明](docs/architecture.md)。
+
 办公网入口：<http://192.168.1.33:18080>
 
 > 本仓库不保存 .env、密码、API Key、模型缓存、数据库数据或用户上传文件；它们仅保存在服务器受控目录。
@@ -137,9 +139,33 @@ deploy/
   queue-reindex.py                既有文档重建索引任务
 database/mysql/                   001~012 MySQL 初始化与增量迁移
 services/api/                     FastAPI 管理、检索、问答、审计
+  app/application.py              应用工厂、生命周期、异常处理和路由装配
+  app/core/                       配置、事务、安全、审计和出站策略
+  app/domains/                    按业务域拆分的 Router/Service/Repository/Schema
+  app/infrastructure/             对象存储等基础设施适配器
+  app/runtime/                    聊天、工作流、评测和 MCP 运行时
 services/worker/                  解析、OCR、切片、Embedding、索引
 services/frontend/                管理与问答前端
 ~~~
+
+## 本地开发与质量门禁
+
+后端测试使用仓库根目录依赖，前端命令在 `services/frontend` 执行：
+
+~~~bash
+python -m pip install -r requirements-test.txt
+python -m pytest -q
+npm --prefix services/frontend ci
+npm --prefix services/frontend run lint
+npm --prefix services/frontend run typecheck
+npm --prefix services/frontend run test -- --run
+npm --prefix services/frontend run build
+docker compose --env-file .env.example -f deploy/docker-compose.yml config
+docker compose --env-file .env.example -f deploy/docker-compose.yml -f deploy/docker-compose.models.yml config
+python tools/check_repository_hygiene.py
+~~~
+
+Docker Compose 的 `config` 只验证配置展开；只有守护进程可用、使用隔离测试数据目录完成 build/up、健康检查和故障注入后，才算完成容器运行验收。
 
 ## 服务器、数据与网络
 
@@ -306,7 +332,7 @@ PY
 
 ## 数据库迁移、验收和排查
 
-全新 MySQL 数据目录自动执行 001_initial_schema.sql。既有环境的后续迁移每个文件只能执行一次：
+全新 MySQL 数据目录会由官方 MySQL 镜像按文件名顺序自动执行挂载目录中的全部 SQL，即当前的 `001_initial_schema.sql` 至 `012_platform_quality_runtime.sql`；数据目录初始化后不会再次自动执行。既有环境的后续迁移每个文件只能执行一次：
 
 ~~~bash
 bash deploy/apply-mysql-migration.sh database/mysql/012_platform_quality_runtime.sql

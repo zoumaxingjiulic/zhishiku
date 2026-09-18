@@ -462,15 +462,3 @@ class DocumentService:
             type(error).__name__,
         )
         raise CompensationRequiredError(operation_id) from error
-
-
-def load_accessible_document(user: dict, document_id: int, manage: bool = False) -> dict:
-    """Compatibility entry point for domains migrated in later tasks."""
-    from ...infrastructure.object_store import MinioObjectStore
-
-    with UnitOfWork() as uow:
-        return DocumentService(uow, object_store=MinioObjectStore())._require_document(
-            user,
-            document_id,
-            manage=manage,
-        )

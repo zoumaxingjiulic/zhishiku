@@ -1,16 +1,13 @@
 import mimetypes
-from collections.abc import Callable
 from pathlib import Path
-from typing import Any
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from fastapi.responses import StreamingResponse
 
-from ...config import settings
+from ...core.config import settings
 from ...core.database import UnitOfWork
-from ...core.dependencies import as_http_exception, get_uow
-from ...core.errors import ApplicationError
+from ...core.dependencies import get_uow
 from ...infrastructure.object_store import MinioObjectStore, UploadTooLargeError, stage_upload
 from ..auth.router import current_user
 from .schemas import DocumentFolderUpdate, SECURITY_LEVELS, SUPPORTED_EXTENSIONS
@@ -22,13 +19,6 @@ router = APIRouter()
 
 def get_document_service(uow: UnitOfWork = Depends(get_uow)) -> DocumentService:
     return DocumentService(uow, object_store=MinioObjectStore())
-
-
-def _execute(call: Callable[[], Any]) -> Any:
-    try:
-        return call()
-    except ApplicationError as exc:
-        raise as_http_exception(exc) from exc
 
 
 def _ip_address(request: Request) -> str:
@@ -48,15 +38,13 @@ def list_documents(
     user: dict = Depends(current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> list[dict]:
-    return _execute(
-        lambda: service.list_documents(
+    return service.list_documents(
             user,
             knowledge_base_id,
             folder_id,
             include_subfolders,
             limit,
         )
-    )
 
 
 @router.post(
@@ -88,8 +76,7 @@ def upload_document(
     except UploadTooLargeError as exc:
         raise HTTPException(413, str(exc)) from exc
     try:
-        return _execute(
-            lambda: service.upload_document(
+        return service.upload_document(
                 user,
                 staged,
                 knowledge_base_id,
@@ -98,7 +85,6 @@ def upload_document(
                 security_level,
                 _ip_address(request),
             )
-        )
     finally:
         staged.path.unlink(missing_ok=True)
 
@@ -113,7 +99,7 @@ def document_detail(
     user: dict = Depends(current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> dict:
-    return _execute(lambda: service.document_detail(user, document_id))
+    return service.document_detail(user, document_id)
 
 
 @router.get(
@@ -126,7 +112,7 @@ def download_document(
     user: dict = Depends(current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> StreamingResponse:
-    artifact = _execute(lambda: service.download_document(user, document_id))
+    artifact = service.download_document(user, document_id)
 
     def stream():
         try:
@@ -155,7 +141,7 @@ def document_chunks(
     user: dict = Depends(current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> list[dict]:
-    return _execute(lambda: service.document_chunks(user, document_id))
+    return service.document_chunks(user, document_id)
 
 
 @router.post(
@@ -168,7 +154,7 @@ def reindex_document(
     user: dict = Depends(current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> dict:
-    return _execute(lambda: service.reindex_document(user, document_id))
+    return service.reindex_document(user, document_id)
 
 
 @router.put(
@@ -183,14 +169,12 @@ def move_document(
     user: dict = Depends(current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> dict:
-    return _execute(
-        lambda: service.move_document(
+    return service.move_document(
             user,
             document_id,
             payload,
             _ip_address(request),
         )
-    )
 
 
 @router.delete(
@@ -203,7 +187,7 @@ def delete_document(
     user: dict = Depends(current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> dict:
-    return _execute(lambda: service.delete_document(user, document_id))
+    return service.delete_document(user, document_id)
 
 
 @router.get(
@@ -217,7 +201,7 @@ def list_jobs(
     user: dict = Depends(current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> list[dict]:
-    return _execute(lambda: service.list_jobs(user, knowledge_base_id, limit))
+    return service.list_jobs(user, knowledge_base_id, limit)
 
 
 @router.post(
@@ -230,4 +214,4 @@ def retry_job(
     user: dict = Depends(current_user),
     service: DocumentService = Depends(get_document_service),
 ) -> dict:
-    return _execute(lambda: service.retry_job(user, job_id))
+    return service.retry_job(user, job_id)

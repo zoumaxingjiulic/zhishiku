@@ -35,4 +35,3 @@ class AuthenticatedUser(BaseModel):
 
 class LoginResponse(BaseModel):
     user: AuthenticatedUser
-

@@ -27,9 +27,10 @@ def progress(kind: str, value: str) -> None:
     task["_tick"] = now
     with UnitOfWork() as uow:
         repository = AgentRepository(uow.cursor)
+        # Generated text is not durable or observable until the final
+        # authorization recheck and assistant-message commit succeed.
         active = repository.update_task_progress(
-            task["id"], answer=value if kind == "answer" else None,
-            stage=value if kind != "answer" else None,
+            task["id"], stage=value if kind != "answer" else None,
         )
         if not active:
             raise TaskCancelled()
@@ -52,11 +53,6 @@ def run_chat_task(task: dict) -> None:
         with UnitOfWork() as uow:
             repository = AgentRepository(uow.cursor)
             repository.mark_task_failed(task["id"], state, type(exc).__name__)
-            if repository.last_message_role(task["session_id"]) == "user":
-                repository.insert_message(
-                    task["session_id"], "assistant",
-                    "任务已停止。" if state == "cancelled" else "任务失败，请稍后重试。",
-                )
             repository.write_audit(
                 task["user_id"],
                 "agent.chat.task_cancelled" if state == "cancelled" else "agent.chat.task_failed",
@@ -66,12 +62,7 @@ def run_chat_task(task: dict) -> None:
                 "background",
             )
             uow.commit()
-        log.exception(
-            "chat task failed task_id=%s error_type=%s",
-            task["id"],
-            type(exc).__name__,
-            exc_info=(type(exc), RuntimeError(), exc.__traceback__),
-        )
+        log.error("chat task failed task_id=%s error_type=%s", task["id"], type(exc).__name__)
     finally:
         active_task.reset(token)
 
@@ -96,12 +87,6 @@ def recover_interrupted_runs() -> None:
             "UPDATE agent_run r JOIN chat_task t ON t.id=r.id SET r.status='failed',"
             "r.error_type='WORKER_RESTARTED',r.finished_at=NOW(3) "
             "WHERE t.error_code='WORKER_RESTARTED' AND r.status='running'"
-        )
-        cursor.execute(
-            "INSERT INTO chat_message(session_id,role,content) "
-            "SELECT t.session_id,'assistant','任务因服务重启中断，请重新提交。' FROM chat_task t "
-            "WHERE t.error_code='WORKER_RESTARTED' AND t.user_message_id="
-            "(SELECT MAX(id) FROM chat_message WHERE session_id=t.session_id)"
         )
         uow.commit()
 

@@ -10,7 +10,7 @@ from typing import Callable
 import httpx
 from jsonschema import validate as validate_json, ValidationError as JsonSchemaValidationError
 
-from .config import settings
+from .core.config import settings
 from .core.errors import ValidationError as OutboundValidationError
 from .core.outbound import OutboundPolicy, pinned_client
 from .core.redaction import redact_values

@@ -27,6 +27,7 @@ from .chat import (
     checked_executor,
     sanitize_bound_tool,
 )
+from .retrieval import retrieve_for_agent
 
 
 log = logging.getLogger("kb-api.workflow-worker")
@@ -134,8 +135,7 @@ class WorkflowDependencies:
 
 
 def _default_retrieve(user: dict, agent: dict, question: str, policy: dict) -> dict:
-    from ..domains.studio.service import _retrieval_adapter
-    return _retrieval_adapter(user, agent, question, policy)
+    return retrieve_for_agent(user, agent, question, policy)
 
 
 def _default_validate_tool(user: dict, agent_id: int, expected: dict, uow: UnitOfWork) -> None:

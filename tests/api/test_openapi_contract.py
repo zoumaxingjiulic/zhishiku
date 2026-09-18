@@ -37,4 +37,3 @@ def test_api_v1_route_contract_matches_baseline() -> None:
     expected = json.loads(expected_path.read_text(encoding="utf-8"))
 
     assert route_contract(app.openapi()) == expected
-

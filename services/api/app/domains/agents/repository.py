@@ -208,7 +208,11 @@ class AgentRepository:
     def list_sessions(self, agent_id: int, user_id: int) -> list[dict]:
         self.cursor.execute(
             "SELECT s.id,s.title,s.created_at,s.updated_at,COUNT(m.id) message_count,"
-            "(SELECT lm.role FROM chat_message lm WHERE lm.session_id=s.id ORDER BY lm.id DESC LIMIT 1) last_role "
+            "(SELECT lm.role FROM chat_message lm WHERE lm.session_id=s.id ORDER BY lm.id DESC LIMIT 1) last_role,"
+            "(SELECT CASE WHEN lt.cancel_requested=TRUE AND lt.status IN ('queued','running') "
+            "THEN 'cancel_requested' ELSE lt.status END FROM chat_task lt "
+            "WHERE lt.session_id=s.id AND lt.agent_id=s.agent_id AND lt.user_id=s.user_id "
+            "ORDER BY lt.created_at DESC,lt.id DESC LIMIT 1) latest_task_status "
             "FROM chat_session s LEFT JOIN chat_message m ON m.session_id=s.id "
             "WHERE s.agent_id=%s AND s.user_id=%s AND s.status='active' "
             "GROUP BY s.id ORDER BY s.updated_at DESC,s.id DESC",
@@ -227,8 +231,12 @@ class AgentRepository:
     def get_session(self, session_id: str, agent_id: int, user_id: int, for_update: bool = False) -> dict | None:
         lock = " FOR UPDATE" if for_update else ""
         self.cursor.execute(
-            "SELECT id,title,agent_id,user_id,status FROM chat_session "
-            "WHERE id=%s AND agent_id=%s AND user_id=%s AND status='active'" + lock,
+            "SELECT s.id,s.title,s.agent_id,s.user_id,s.status,"
+            "(SELECT CASE WHEN lt.cancel_requested=TRUE AND lt.status IN ('queued','running') "
+            "THEN 'cancel_requested' ELSE lt.status END FROM chat_task lt "
+            "WHERE lt.session_id=s.id AND lt.agent_id=s.agent_id AND lt.user_id=s.user_id "
+            "ORDER BY lt.created_at DESC,lt.id DESC LIMIT 1) latest_task_status "
+            "FROM chat_session s WHERE s.id=%s AND s.agent_id=%s AND s.user_id=%s AND s.status='active'" + lock,
             (session_id, agent_id, user_id),
         )
         return self.cursor.fetchone()
@@ -491,17 +499,20 @@ class AgentRepository:
             (task_id,),
         )
 
-    def update_task_progress(self, task_id: str, answer: str | None = None, stage: str | None = None) -> bool:
+    def update_task_progress(self, task_id: str, stage: str | None = None) -> bool:
         self.cursor.execute("SELECT cancel_requested,status FROM chat_task WHERE id=%s FOR UPDATE", (task_id,))
         row = self.cursor.fetchone()
         if not row or row["cancel_requested"] or row["status"] != "running":
             return False
-        if answer is not None:
-            self.cursor.execute("UPDATE chat_task SET partial_answer=%s WHERE id=%s", (answer, task_id))
-        else:
+        if stage is not None:
             self.cursor.execute(
                 "UPDATE chat_task SET stage=%s,partial_answer=NULL WHERE id=%s",
                 ((stage or "")[:64], task_id),
+            )
+        else:
+            self.cursor.execute(
+                "UPDATE chat_task SET partial_answer=NULL WHERE id=%s",
+                (task_id,),
             )
         return True
 

@@ -24,6 +24,7 @@ log = logging.getLogger("kb-worker")
 COLLECTION = os.getenv("MILVUS_COLLECTION", "kb_content_units_v1")
 INDEX = os.getenv("OPENSEARCH_INDEX", "kb-content-units-v1")
 LOCAL_DIM = int(os.getenv("LOCAL_EMBEDDING_DIM", "384"))
+INGESTION_ERROR_CODES = {"INGESTION_FAILED", "WORKER_RESTARTED"}
 
 
 def value(name: str, mandatory: bool = False) -> str | None:
@@ -72,7 +73,7 @@ def recover_abandoned_jobs() -> int:
     return recovered
 
 
-def finish(job: dict, ok: bool, error: str | None = None) -> None:
+def finish(job: dict, ok: bool, error_code: str | None = None) -> None:
     with db() as conn, conn.cursor() as cur:
         if ok:
             cur.execute("UPDATE ingestion_job SET status='succeeded',finished_at=NOW(3),error_message=NULL WHERE id=%s", (job["job_id"],))
@@ -80,7 +81,8 @@ def finish(job: dict, ok: bool, error: str | None = None) -> None:
                 cur.execute("UPDATE document_version SET extraction_status='succeeded',extracted_at=NOW(3),"
                     "parser_name='builtin-structured',parser_version=%s WHERE id=%s", (PARSER_VERSION, job["document_version_id"]))
         else:
-            cur.execute("UPDATE ingestion_job SET status='failed',finished_at=NOW(3),error_message=%s WHERE id=%s", ((error or "")[:4000], job["job_id"]))
+            safe_code = error_code if error_code in INGESTION_ERROR_CODES else "INGESTION_FAILED"
+            cur.execute("UPDATE ingestion_job SET status='failed',finished_at=NOW(3),error_message=%s WHERE id=%s", (safe_code, job["job_id"]))
             if job["job_type"] != "delete":
                 cur.execute("UPDATE document_version SET extraction_status='failed' WHERE id=%s", (job["document_version_id"],))
         conn.commit()
@@ -282,9 +284,13 @@ def main() -> None:
             else:
                 run(job)
         except Exception as exc:
-            log.exception("任务处理失败")
+            log.error(
+                "ingestion job failed job_id=%s error_type=%s",
+                job.get("job_id") if job else None,
+                type(exc).__name__,
+            )
             if job:
-                finish(job, False, str(exc))
+                finish(job, False, "INGESTION_FAILED")
             time.sleep(2)
 
 

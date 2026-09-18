@@ -9,7 +9,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, model_validator
 
 from .retrieval import keyword_candidates, vector_candidates, reciprocal_rank_fusion, rerank
-from .database import connect
+from .core.database import connect
 
 
 class RetrievalPolicy(BaseModel):

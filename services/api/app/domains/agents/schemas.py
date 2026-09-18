@@ -1,5 +1,6 @@
 import json
 import re
+from datetime import datetime
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
@@ -120,6 +121,29 @@ class ChatTaskSubmit(BaseModel):
     question: str = Field(min_length=1, max_length=4000)
     session_id: str
     request_key: str = Field(min_length=8, max_length=64)
+
+
+class ChatSessionSummary(BaseModel):
+    id: str
+    title: str | None = None
+    message_count: int = 0
+    last_role: str | None = None
+    latest_task_status: str | None = None
+    created_at: datetime | None = None
+    updated_at: datetime | None = None
+
+
+class ChatSessionCreated(BaseModel):
+    id: str
+    title: str
+    message_count: int = 0
+
+
+class ChatSessionDetail(BaseModel):
+    id: str
+    title: str | None = None
+    latest_task_status: str | None = None
+    messages: list[dict] = Field(default_factory=list)
 
 
 class AgentStep(BaseModel):

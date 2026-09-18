@@ -35,10 +35,13 @@ class StubAgentService:
 
 
 def agent_client(identity=ADMIN):
+    from app.application import application_error_handler
+    from app.core.errors import ApplicationError
     from app.domains.agents.router import get_agent_service, router
     from app.domains.auth.router import current_user, platform_admin
 
     application = FastAPI()
+    application.add_exception_handler(ApplicationError, application_error_handler)
     application.include_router(router)
     application.dependency_overrides[current_user] = lambda: identity
     application.dependency_overrides[platform_admin] = lambda: identity
@@ -128,7 +131,11 @@ def test_runtime_unavailability_keeps_the_503_boundary():
         def synchronous_chat(self, *args, **kwargs):
             raise ServiceUnavailableError("智能体绑定的模型配置不可用")
 
+    from app.application import application_error_handler
+    from app.core.errors import ApplicationError
+
     application = FastAPI()
+    application.add_exception_handler(ApplicationError, application_error_handler)
     application.include_router(router)
     application.dependency_overrides[current_user] = lambda: EMPLOYEE
     application.dependency_overrides[get_agent_service] = lambda: UnavailableService()

@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from pymilvus import MilvusClient
 
 from enterprise_kb.health import probe_mysql
-from .config import Settings, settings
+from .core.config import Settings, settings
 
 TIMEOUT = 3
 REQUIRED = ("mysql", "minio", "milvus", "opensearch", "embedding")

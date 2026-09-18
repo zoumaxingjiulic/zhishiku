@@ -8,8 +8,8 @@ import time
 import uuid
 import httpx
 sys.path.insert(0, '/app')
-from app.database import connect
-from app.security import create_token
+from app.core.database import connect
+from app.core.security import create_token
 from app.quality import RetrievalPolicy
 
 tag = 'QA_' + uuid.uuid4().hex[:10].upper()

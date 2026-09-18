@@ -25,4 +25,3 @@ def write_audit(
             ip_address,
         ),
     )
-

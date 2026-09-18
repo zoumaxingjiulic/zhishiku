@@ -1,3 +1,5 @@
+"""Immutable application configuration loaded from the process environment."""
+
 import os
 from dataclasses import dataclass
 

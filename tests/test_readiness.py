@@ -27,15 +27,13 @@ def checks():
 
 
 def test_failed_readiness_route_returns_503(monkeypatch):
-    main = importlib.import_module("app.main")
-    def unavailable(*args, **kwargs):
-        raise ConnectionError("private connection details")
-    monkeypatch.setattr(main, "connect", unavailable)
-    if importlib.util.find_spec("app.readiness"):
-        readiness = importlib.import_module("app.readiness")
-        result = readiness.check_readiness(checks={}, config=configured(readiness))
-        monkeypatch.setattr(main, "check_readiness", lambda: result)
-    response = TestClient(main.app).get("/readyz")
+    from app.application import create_app
+
+    readiness = importlib.import_module("app.readiness")
+    result = readiness.check_readiness(checks={}, config=configured(readiness))
+    response = TestClient(
+        create_app(bootstrap=lambda: None, readiness_checker=lambda: result)
+    ).get("/readyz")
     assert response.status_code == 503
 
 
@@ -53,10 +51,12 @@ def test_dependency_result_controls_http_status(readiness, monkeypatch, failure)
     assert isinstance(result, readiness.ReadinessResult)
     assert result.ready is (failure is None)
     expected = {name: name != failure for name in (*REQUIRED, "rerank")}
-    main = importlib.import_module("app.main")
-    monkeypatch.setattr(main, "check_readiness", lambda: result, raising=False)
+    from app.application import create_app
+
     # No TestClient context: do not execute the database-writing startup hook.
-    response = TestClient(main.app).get("/readyz")
+    response = TestClient(
+        create_app(bootstrap=lambda: None, readiness_checker=lambda: result)
+    ).get("/readyz")
     assert response.status_code == (503 if failure else 200)
     assert response.json() == {"status": "degraded" if failure else "ready", "checks": expected}
 
@@ -91,12 +91,13 @@ def test_exceptions_are_redacted_and_remaining_checks_still_run(readiness, caplo
 
 
 def test_liveness_never_calls_dependencies(monkeypatch):
-    main = importlib.import_module("app.main")
+    from app.application import create_app
+
     def forbidden():
         pytest.fail("liveness contacted dependencies")
-    for name in ("check_readiness", "connect", "object_store"):
-        monkeypatch.setattr(main, name, forbidden, raising=False)
-    response = TestClient(main.app).get("/healthz")
+    response = TestClient(
+        create_app(bootstrap=lambda: None, readiness_checker=forbidden)
+    ).get("/healthz")
     assert response.status_code == 200
     assert response.json()["status"] == "ok"
 

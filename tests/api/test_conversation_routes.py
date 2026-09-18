@@ -17,13 +17,15 @@ class StubConversationService:
         return {"session_id": "s-1", "messages": [{"id": 1, "role": "user", "content": "你好"}]}
 
     def list_conversations(self, user, agent_id):
-        return [{"id": "s-1", "title": "你好", "message_count": 2, "last_role": "assistant"}]
+        return [{"id": "s-1", "title": "你好", "message_count": 2, "last_role": "assistant",
+                 "latest_task_status": "failed"}]
 
     def create_conversation(self, user, agent_id, ip_address):
         return {"id": "s-2", "title": "新对话", "message_count": 0}
 
     def get_conversation(self, user, agent_id, session_id):
-        return {"id": session_id, "title": "你好", "messages": [{"id": 1, "role": "user", "content": "你好"}]}
+        return {"id": session_id, "title": "你好", "latest_task_status": "cancelled",
+                "messages": [{"id": 1, "role": "user", "content": "你好"}]}
 
     def delete_conversation(self, user, agent_id, session_id, ip_address):
         return {"status": "deleted"}
@@ -51,7 +53,8 @@ def test_conversation_create_list_messages_latest_and_delete_contracts():
 
     assert latest.json()["messages"][0]["content"] == "你好"
     assert listed.json()[0]["last_role"] == "assistant"
+    assert listed.json()[0]["latest_task_status"] == "failed"
     assert created.json() == {"id": "s-2", "title": "新对话", "message_count": 0}
     assert detail.json()["messages"][0]["role"] == "user"
+    assert detail.json()["latest_task_status"] == "cancelled"
     assert deleted.json() == {"status": "deleted"}
-

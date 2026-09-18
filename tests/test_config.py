@@ -123,7 +123,7 @@ def test_runtime_defaults_are_safe_and_immutable():
         config.local_test_mode = True
 
 
-@pytest.mark.parametrize("module_name, connect_name", [("app.database", "connect"),
+@pytest.mark.parametrize("module_name, connect_name", [("app.core.database", "connect"),
                                                       ("services.worker.app.main", "db")])
 def test_service_database_boundary_preserves_connection_parameters(monkeypatch, module_name, connect_name):
     import importlib

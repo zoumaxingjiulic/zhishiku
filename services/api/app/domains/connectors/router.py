@@ -1,11 +1,7 @@
-from collections.abc import Callable
-from typing import Any
-
 from fastapi import APIRouter, Depends, Request
 
 from ...core.database import UnitOfWork
-from ...core.dependencies import as_http_exception, get_uow
-from ...core.errors import ApplicationError
+from ...core.dependencies import get_uow
 from ..auth.repository import AuthRepository
 from ..auth.router import _request_token, current_user, platform_admin
 from ..auth.service import AuthService
@@ -22,22 +18,12 @@ def get_connector_service(uow: UnitOfWork = Depends(get_uow)) -> ConnectorServic
 
 def discover_identity(request: Request) -> dict:
     """Authenticate in a short UoW that is closed before any MCP network I/O."""
-    try:
-        with UnitOfWork() as uow:
-            return AuthService(uow, AuthRepository(uow.cursor)).authenticate(_request_token(request))
-    except ApplicationError as exc:
-        raise as_http_exception(exc) from exc
+    with UnitOfWork() as uow:
+        return AuthService(uow, AuthRepository(uow.cursor)).authenticate(_request_token(request))
 
 
 def get_discovery_connector_service() -> ConnectorService:
     return ConnectorService(None)
-
-
-def _execute(call: Callable[[], Any]) -> Any:
-    try:
-        return call()
-    except ApplicationError as exc:
-        raise as_http_exception(exc) from exc
 
 
 def _ip(request: Request) -> str:
@@ -48,7 +34,7 @@ def _ip(request: Request) -> str:
             operation_id="list_connectors_api_v1_connectors_get")
 def list_connectors(user: dict = Depends(current_user),
                     service: ConnectorService = Depends(get_connector_service)) -> dict:
-    return _execute(lambda: service.list_connectors(user))
+    return service.list_connectors(user)
 
 
 @router.post("/api/v1/connectors", tags=["connectors"],
@@ -56,7 +42,7 @@ def list_connectors(user: dict = Depends(current_user),
 def create_connector(payload: ConnectorWrite, request: Request,
                      user: dict = Depends(platform_admin),
                      service: ConnectorService = Depends(get_connector_service)) -> dict:
-    return _execute(lambda: service.create_connector(user, payload, _ip(request)))
+    return service.create_connector(user, payload, _ip(request))
 
 
 @router.put("/api/v1/connectors/{connector_id}", tags=["connectors"],
@@ -64,7 +50,7 @@ def create_connector(payload: ConnectorWrite, request: Request,
 def update_connector(connector_id: int, payload: ConnectorWrite, request: Request,
                      user: dict = Depends(platform_admin),
                      service: ConnectorService = Depends(get_connector_service)) -> dict:
-    return _execute(lambda: service.update_connector(user, connector_id, payload, _ip(request)))
+    return service.update_connector(user, connector_id, payload, _ip(request))
 
 
 @router.post("/api/v1/connectors/{connector_id}/discover", tags=["connectors"],
@@ -72,14 +58,14 @@ def update_connector(connector_id: int, payload: ConnectorWrite, request: Reques
 def discover_connector_tools(connector_id: int, request: Request,
                              user: dict = Depends(discover_identity),
                              service: ConnectorService = Depends(get_discovery_connector_service)) -> dict:
-    return _execute(lambda: service.discover_tools(user, connector_id, _ip(request)))
+    return service.discover_tools(user, connector_id, _ip(request))
 
 
 @router.get("/api/v1/connectors/admin/bindings", tags=["connectors"],
             operation_id="connector_bindings_api_v1_connectors_admin_bindings_get")
 def connector_bindings(user: dict = Depends(platform_admin),
                        service: ConnectorService = Depends(get_connector_service)) -> dict:
-    return _execute(lambda: service.bindings(user))
+    return service.bindings(user)
 
 
 @router.put("/api/v1/agents/{agent_id}/connector-tools", tags=["connectors"],
@@ -87,6 +73,6 @@ def connector_bindings(user: dict = Depends(platform_admin),
 def bind_agent_connector_tools(agent_id: int, payload: AgentToolBinding, request: Request,
                                user: dict = Depends(platform_admin),
                                service: ConnectorService = Depends(get_connector_service)) -> dict:
-    return _execute(lambda: service.bind_agent_tools(
+    return service.bind_agent_tools(
         user, agent_id, payload.connector_tool_ids, _ip(request)
-    ))
+    )

@@ -110,7 +110,12 @@ class AgentService:
         session = self.repository.get_session(session_id, agent_id, user["id"])
         if not session:
             raise NotFoundError("对话不存在")
-        return {"id": session["id"], "title": session.get("title"), "messages": self._messages(session_id)}
+        return {
+            "id": session["id"],
+            "title": session.get("title"),
+            "latest_task_status": session.get("latest_task_status"),
+            "messages": self._messages(session_id),
+        }
 
     def delete_conversation(self, user: dict, agent_id: int, session_id: str, ip_address: str) -> dict:
         self._chat_agent(user, agent_id)
@@ -127,11 +132,10 @@ class AgentService:
 
     def synchronous_chat(self, user: dict, agent_id: int, payload: Any, ip_address: str) -> dict:
         if self._chat_executor is None:
-            from ...runtime.chat import execute_chat
-            executor = execute_chat
-        else:
-            executor = self._chat_executor
-        return executor(agent_id, payload, user, ip_address=ip_address, deprecated_sync=True)
+            raise RuntimeError("chat executor is not configured")
+        return self._chat_executor(
+            agent_id, payload, user, ip_address=ip_address, deprecated_sync=True
+        )
 
     def _messages(self, session_id: str) -> list[dict]:
         messages = self.repository.list_messages(session_id)
@@ -265,5 +269,7 @@ class ChatTaskService:
 def task_view(row: dict | None) -> dict | None:
     if not row:
         return None
-    keys = ("id", "session_id", "status", "stage", "partial_answer", "error_code", "updated_at")
-    return {key: row.get(key) for key in keys}
+    keys = ("id", "session_id", "status", "stage", "error_code", "updated_at")
+    view = {key: row.get(key) for key in keys}
+    view["partial_answer"] = None
+    return view

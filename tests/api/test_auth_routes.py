@@ -13,7 +13,8 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "shared" / "python"))
 sys.path.insert(0, str(ROOT / "services" / "api"))
 
-from app.core.errors import AuthenticationError, ValidationError
+from app.application import application_error_handler
+from app.core.errors import ApplicationError, AuthenticationError, ValidationError
 from app.domains.auth.service import AuthService
 from app.domains.auth.router import get_auth_service, router
 
@@ -50,6 +51,7 @@ class StubAuthService:
 
 def auth_client() -> TestClient:
     app = FastAPI()
+    app.add_exception_handler(ApplicationError, application_error_handler)
     app.include_router(router)
     app.dependency_overrides[get_auth_service] = lambda: StubAuthService()
     return TestClient(app)

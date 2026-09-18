@@ -1,6 +1,10 @@
 # MySQL migrations
 
-001_initial_schema.sql runs automatically only when MySQL starts with an empty data directory.
+When MySQL starts with an empty data directory, the official image executes every
+`*.sql` file mounted in `/docker-entrypoint-initdb.d` in filename order. With this
+repository's Compose file that means `001_initial_schema.sql` through
+`012_platform_quality_runtime.sql`, in order. These files are not rerun after the
+data directory has been initialized.
 
 For an already running environment, apply each later numbered migration exactly once from the project root:
 

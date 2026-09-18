@@ -30,4 +30,3 @@ def test_dashboard_uses_one_bounded_department_scoped_aggregate_query():
     assert "document_department_acl" in sql
     assert "agent_department_acl" in sql
     assert parameters == [2, 3, 2, 3, 2, 3]
-

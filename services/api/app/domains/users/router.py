@@ -1,11 +1,7 @@
-from collections.abc import Callable
-from typing import Any
-
 from fastapi import APIRouter, Depends, Request
 
 from ...core.database import UnitOfWork
-from ...core.dependencies import as_http_exception, get_uow
-from ...core.errors import ApplicationError
+from ...core.dependencies import get_uow
 from ..auth.router import current_user, platform_admin
 from .schemas import (
     DepartmentCreate,
@@ -27,13 +23,6 @@ def get_user_service(uow: UnitOfWork = Depends(get_uow)) -> UsersService:
     return UsersService(uow)
 
 
-def _execute(call: Callable[[], Any]) -> Any:
-    try:
-        return call()
-    except ApplicationError as exc:
-        raise as_http_exception(exc) from exc
-
-
 @router.get(
     "/api/v1/departments",
     tags=["administration"],
@@ -44,7 +33,7 @@ def list_departments(
     user: dict = Depends(current_user),
     service: UsersService = Depends(get_user_service),
 ) -> list[dict]:
-    return _execute(service.list_departments)
+    return service.list_departments()
 
 
 @router.post(
@@ -59,7 +48,7 @@ def create_department(
     service: UsersService = Depends(get_user_service),
 ) -> dict:
     ip_address = request.client.host if request.client else "unknown"
-    return _execute(lambda: service.create_department(user["id"], payload, ip_address))
+    return service.create_department(user["id"], payload, ip_address)
 
 
 @router.get(
@@ -72,7 +61,7 @@ def list_users(
     user: dict = Depends(platform_admin),
     service: UsersService = Depends(get_user_service),
 ) -> list[dict]:
-    return _execute(lambda: service.list_users(user["id"]))
+    return service.list_users(user["id"])
 
 
 @router.post(
@@ -88,7 +77,7 @@ def create_user(
     service: UsersService = Depends(get_user_service),
 ) -> dict:
     ip_address = request.client.host if request.client else "unknown"
-    return _execute(lambda: service.create_user(user["id"], payload, ip_address))
+    return service.create_user(user["id"], payload, ip_address)
 
 
 @router.put(
@@ -104,7 +93,7 @@ def update_user(
     service: UsersService = Depends(get_user_service),
 ) -> dict:
     ip_address = request.client.host if request.client else "unknown"
-    _execute(lambda: service.update_user(user["id"], user_id, payload, ip_address))
+    service.update_user(user["id"], user_id, payload, ip_address)
     return {"status": "ok"}
 
 
@@ -119,7 +108,7 @@ def update_user_status(
     user: dict = Depends(platform_admin),
     service: UsersService = Depends(get_user_service),
 ) -> dict:
-    _execute(lambda: service.update_user_status(user["id"], user_id, payload.status))
+    service.update_user_status(user["id"], user_id, payload.status)
     return {"status": "ok"}
 
 
@@ -134,7 +123,7 @@ def reset_password(
     user: dict = Depends(platform_admin),
     service: UsersService = Depends(get_user_service),
 ) -> dict:
-    temporary_password = _execute(lambda: service.reset_password(user["id"], user_id))
+    temporary_password = service.reset_password(user["id"], user_id)
     return {"status": "ok", "temporary_password": temporary_password}
 
 
@@ -148,5 +137,5 @@ def delete_user(
     user: dict = Depends(platform_admin),
     service: UsersService = Depends(get_user_service),
 ) -> dict:
-    _execute(lambda: service.delete_user(user["id"], user_id))
+    service.delete_user(user["id"], user_id)
     return {"status": "ok"}

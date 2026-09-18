@@ -12,6 +12,12 @@ export function formatSize(bytes?: number | null) {
   return bytes < 1024 * 1024 ? `${(bytes / 1024).toFixed(1)} KB` : `${(bytes / 1024 / 1024).toFixed(1)} MB`;
 }
 
+const ACTIVE_CHAT_TASK_STATUSES = new Set(["queued", "running", "cancel_requested"]);
+
+export function isActiveChatTaskStatus(status?: string | null) {
+  return Boolean(status && ACTIVE_CHAT_TASK_STATUSES.has(status));
+}
+
 export const statusMap: Record<string, [string, string]> = {
   succeeded: ["已完成", "success"], active: ["启用", "success"], indexed: ["已索引", "success"],
   queued: ["排队中", "pending"], running: ["处理中", "pending"], processing: ["处理中", "pending"],

@@ -2,7 +2,7 @@
 
 from cryptography.fernet import Fernet, InvalidToken
 
-from ..config import settings
+from .config import settings
 from .errors import ServiceUnavailableError
 
 

@@ -27,6 +27,11 @@ def main(root: Path | None = None) -> int:
             continue
         name = raw_name.decode("utf-8", errors="surrogateescape")
         path = root / name
+        # ``git ls-files`` includes paths deleted by the current change until
+        # the index is updated.  A deletion has no content to scan and should
+        # not make this pre-commit quality gate fail.
+        if not path.exists() and not path.is_symlink():
+            continue
         basename = path.name.lower()
         rules = []
         if basename != ".env.example" and (basename == ".env" or basename.startswith(".env.")):

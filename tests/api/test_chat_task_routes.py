@@ -17,7 +17,7 @@ class StubTaskService:
         return {"id": "t-1", "session_id": payload.session_id, "status": "queued", "stage": "排队中", "partial_answer": None, "error_code": None, "updated_at": None}
 
     def latest_chat_task(self, user, agent_id, session_id):
-        return {"id": "t-1", "session_id": session_id, "status": "running", "stage": "生成回答", "partial_answer": "正在", "error_code": None, "updated_at": None}
+        return {"id": "t-1", "session_id": session_id, "status": "running", "stage": "生成回答", "partial_answer": None, "error_code": None, "updated_at": None}
 
     def cancel_chat_task(self, user, task_id):
         return {"status": "cancel_requested"}
@@ -47,6 +47,5 @@ def test_async_submit_poll_and_cancel_are_server_backed():
     assert submitted.status_code == 202
     assert submitted.json()["status"] == "queued"
     assert polled.json()["status"] == "running"
-    assert polled.json()["partial_answer"] == "正在"
+    assert polled.json()["partial_answer"] is None
     assert cancelled.json() == {"status": "cancel_requested"}
-

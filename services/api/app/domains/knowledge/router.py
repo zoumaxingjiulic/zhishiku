@@ -1,11 +1,7 @@
-from collections.abc import Callable
-from typing import Any
-
 from fastapi import APIRouter, Depends, Query, Request
 
 from ...core.database import UnitOfWork
-from ...core.dependencies import as_http_exception, get_uow
-from ...core.errors import ApplicationError
+from ...core.dependencies import get_uow
 from ..auth.router import current_user, platform_admin
 from .schemas import FolderCreate, FolderUpdate, KnowledgeBaseAclUpdate, KnowledgeBaseCreate, KnowledgeBaseUpdate
 from .service import KnowledgeService
@@ -16,13 +12,6 @@ router = APIRouter()
 
 def get_knowledge_service(uow: UnitOfWork = Depends(get_uow)) -> KnowledgeService:
     return KnowledgeService(uow)
-
-
-def _execute(call: Callable[[], Any]) -> Any:
-    try:
-        return call()
-    except ApplicationError as exc:
-        raise as_http_exception(exc) from exc
 
 
 def _ip_address(request: Request) -> str:
@@ -38,7 +27,7 @@ def list_knowledge_bases(
     user: dict = Depends(current_user),
     service: KnowledgeService = Depends(get_knowledge_service),
 ) -> list[dict]:
-    return _execute(lambda: service.list_knowledge_bases(user))
+    return service.list_knowledge_bases(user)
 
 
 @router.post(
@@ -52,9 +41,7 @@ def create_knowledge_base(
     user: dict = Depends(current_user),
     service: KnowledgeService = Depends(get_knowledge_service),
 ) -> dict:
-    return _execute(
-        lambda: service.create_knowledge_base(user, payload, _ip_address(request))
-    )
+    return service.create_knowledge_base(user, payload, _ip_address(request))
 
 
 @router.put(
@@ -69,14 +56,12 @@ def update_knowledge_base(
     user: dict = Depends(current_user),
     service: KnowledgeService = Depends(get_knowledge_service),
 ) -> dict:
-    return _execute(
-        lambda: service.update_knowledge_base(
+    return service.update_knowledge_base(
             user,
             knowledge_base_id,
             payload,
             _ip_address(request),
         )
-    )
 
 
 @router.put(
@@ -90,9 +75,7 @@ def update_knowledge_base_acl(
     user: dict = Depends(platform_admin),
     service: KnowledgeService = Depends(get_knowledge_service),
 ) -> dict:
-    return _execute(
-        lambda: service.update_knowledge_base_acl(user, knowledge_base_id, payload)
-    )
+    return service.update_knowledge_base_acl(user, knowledge_base_id, payload)
 
 
 @router.delete(
@@ -105,7 +88,7 @@ def delete_knowledge_base(
     user: dict = Depends(current_user),
     service: KnowledgeService = Depends(get_knowledge_service),
 ) -> dict:
-    return _execute(lambda: service.archive_knowledge_base(user, knowledge_base_id))
+    return service.archive_knowledge_base(user, knowledge_base_id)
 
 
 @router.get(
@@ -118,7 +101,7 @@ def list_folders(
     user: dict = Depends(current_user),
     service: KnowledgeService = Depends(get_knowledge_service),
 ) -> list[dict]:
-    return _execute(lambda: service.list_folders(user, knowledge_base_id))
+    return service.list_folders(user, knowledge_base_id)
 
 
 @router.post(
@@ -132,7 +115,7 @@ def create_folder(
     user: dict = Depends(current_user),
     service: KnowledgeService = Depends(get_knowledge_service),
 ) -> dict:
-    return _execute(lambda: service.create_folder(user, payload, _ip_address(request)))
+    return service.create_folder(user, payload, _ip_address(request))
 
 
 @router.put(
@@ -147,9 +130,7 @@ def update_folder(
     user: dict = Depends(current_user),
     service: KnowledgeService = Depends(get_knowledge_service),
 ) -> dict:
-    return _execute(
-        lambda: service.update_folder(user, folder_id, payload, _ip_address(request))
-    )
+    return service.update_folder(user, folder_id, payload, _ip_address(request))
 
 
 @router.delete(
@@ -163,4 +144,4 @@ def delete_folder(
     user: dict = Depends(current_user),
     service: KnowledgeService = Depends(get_knowledge_service),
 ) -> dict:
-    return _execute(lambda: service.delete_folder(user, folder_id, row_version))
+    return service.delete_folder(user, folder_id, row_version)

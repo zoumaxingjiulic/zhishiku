@@ -9,7 +9,7 @@ import uuid
 from jsonschema import SchemaError, ValidationError as JsonSchemaValidationError, validate
 
 from ..agent_runtime import generate_agent_answer
-from ..config import settings
+from ..core.config import settings
 from ..core.credentials import decrypt_credential
 from ..core.database import UnitOfWork
 from ..core.errors import AuthorizationError, NotFoundError, ServiceUnavailableError, ValidationError
@@ -20,6 +20,7 @@ from ..domains.agents.service import AgentService
 from ..domains.auth.repository import AuthRepository
 from ..domains.auth.service import AuthService
 from .mcp import McpError, StreamableHttpMcpClient
+from .retrieval import effective_departments, hydrate_units
 from ..quality import RetrievalPolicy, retrieve, retrieval_query
 
 
@@ -174,11 +175,11 @@ def execute_bound_tool(
 
 def checked_executor(
     user: dict, agent_id: int, redaction_secrets: list[str] | tuple[str, ...] = (),
+    progress_callback=None,
 ):
     def execute(tool: dict, arguments: dict) -> tuple[dict, dict]:
-        from .chat_tasks import progress
-
-        progress("stage", "校验工具权限")
+        if progress_callback:
+            progress_callback("stage", "校验工具权限")
         with UnitOfWork() as uow:
             repository = AgentRepository(uow.cursor)
             fresh_user = AuthService(uow, AuthRepository(uow.cursor)).load_user(user["id"])
@@ -255,20 +256,6 @@ def agent_model_gateway(profile_id: int | None) -> dict | None:
     if not row:
         raise ServiceUnavailableError("智能体绑定的模型配置不可用")
     return sanitize_model_gateway_row(row)
-
-
-def effective_departments(user: dict) -> list[int]:
-    if not user.get("is_platform_admin"):
-        return list(user.get("department_ids") or [])
-    with UnitOfWork() as uow:
-        return AgentRepository(uow.cursor).active_department_ids()
-
-
-def hydrate_units(unit_ids: list[int], knowledge_base_ids: list[int], user: dict,
-                  document_ids: list[int] | None = None) -> list[dict]:
-    departments = [] if user.get("is_platform_admin") else list(user.get("department_ids") or [])
-    with UnitOfWork() as uow:
-        return AgentRepository(uow.cursor).hydrate_units(unit_ids, knowledge_base_ids, departments)
 
 
 def persist_successful_chat(
@@ -458,7 +445,10 @@ def execute_chat(agent_id: int, payload, user: dict, *, ip_address: str,
         try:
             answer, answer_method, tool_events, cited_units = generate_agent_answer(
                 agent["system_prompt"], payload.question, units, history, tools,
-                checked_executor(user, agent_id, [gateway.get("api_key", "")] if gateway else []),
+                checked_executor(
+                    user, agent_id, [gateway.get("api_key", "")] if gateway else [],
+                    progress_callback=emit,
+                ),
                 agent.get("llm_model"), gateway,
                 config["context_max_chars"], emit=emit,
                 max_tool_rounds=config["max_tool_rounds"], max_tool_calls=config["max_tool_calls"],
@@ -515,17 +505,18 @@ def execute_chat(agent_id: int, payload, user: dict, *, ip_address: str,
         return result
     except Exception as exc:
         timings = {"total_ms": round((time.perf_counter() - started) * 1000, 1)}
-        cancelled = isinstance(exc, TaskCancelled)
         with UnitOfWork() as uow:
             repository = AgentRepository(uow.cursor)
-            repository.insert_message(session_id, "assistant",
-                                      "任务已停止。" if cancelled else "回答生成失败，请稍后重试。",
-                                      model_name="error")
             repository.update_session_title(session_id, payload.question)
             repository.update_run_failed(run_id, counts, timings, tool_events, type(exc).__name__)
             repository.write_audit(user["id"], "agent.chat.failed", "agent", agent_id,
                                    {"session_id": session_id, "trace_id": run_id,
                                     "error_type": type(exc).__name__}, ip_address)
             uow.commit()
-        log.exception("Agent response generation failed for session %s", session_id)
+        log.error(
+            "agent response generation failed trace_id=%s session_id=%s error_type=%s",
+            run_id,
+            session_id,
+            type(exc).__name__,
+        )
         raise

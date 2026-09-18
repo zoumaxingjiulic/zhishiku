@@ -1,14 +1,13 @@
 """Studio use cases with short, explicit transaction boundaries."""
 
-import time
 import uuid
 from contextlib import contextmanager
 from typing import Any, Callable
 
 from ...core.database import UnitOfWork
 from ...core.errors import ConflictError, NotFoundError, RateLimitError, ValidationError
-from ...quality import RetrievalPolicy, retrieve
-from ...runtime.chat import effective_departments, hydrate_units
+from ...quality import RetrievalPolicy
+from ...runtime.retrieval import retrieve_for_agent
 from ..agents.repository import AgentRepository, parse_json
 from ..agents.schemas import validate_workflow_definition, validate_workflow_payload
 from ..agents.service import AgentService
@@ -19,26 +18,6 @@ from ..users.repository import UsersRepository
 from ..users.service import require_current_platform_admin
 from .repository import StudioRepository
 from .schemas import Processing
-
-
-def _retrieval_adapter(user: dict, agent: dict, question: str, policy: dict) -> dict:
-    started = time.perf_counter()
-    units, counts, method, warnings = retrieve(
-        question,
-        agent["knowledge_base_ids"],
-        effective_departments(user),
-        None,
-        user,
-        policy,
-        hydrate_units,
-    )
-    return {
-        "units": units,
-        "counts": counts,
-        "rerank": method,
-        "warnings": warnings,
-        "latency_ms": round((time.perf_counter() - started) * 1000, 1),
-    }
 
 
 class StudioService:
@@ -52,7 +31,7 @@ class StudioService:
         admin_repository: UsersRepository | None = None,
         uow_factory=UnitOfWork,
         repository_factory=StudioRepository,
-        retrieval: Callable[[dict, dict, str, dict], dict] = _retrieval_adapter,
+        retrieval: Callable[[dict, dict, str, dict], dict] = retrieve_for_agent,
     ) -> None:
         self.uow = uow
         self.repository = repository

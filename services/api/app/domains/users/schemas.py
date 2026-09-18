@@ -60,4 +60,3 @@ class UserCreated(BaseModel):
 class TemporaryPasswordResponse(BaseModel):
     status: str
     temporary_password: str
-

@@ -144,3 +144,48 @@ def test_worker_recovers_before_attempting_the_next_claim(monkeypatch) -> None:
     with pytest.raises(StopWorker):
         worker.main()
     assert events == ["recover", "claim"]
+
+
+def test_worker_failure_persists_stable_code_and_never_logs_external_error(monkeypatch, caplog) -> None:
+    """External parser/model errors must not become durable or logged secret-bearing text."""
+    secret = "Bearer SECRET-UPSTREAM-BODY"
+    job = {"job_id": 9, "job_type": "extract"}
+    finished = []
+
+    class StopWorker(BaseException):
+        pass
+
+    claims = iter([job])
+    monkeypatch.setattr(worker, "recover_abandoned_jobs", lambda: 0)
+    monkeypatch.setattr(worker, "claim", lambda: next(claims, None))
+    monkeypatch.setattr(worker, "run", lambda current: (_ for _ in ()).throw(RuntimeError(secret)))
+    monkeypatch.setattr(worker, "finish", lambda current, ok, error=None: finished.append((current, ok, error)))
+    monkeypatch.setattr(worker.time, "sleep", lambda seconds: (_ for _ in ()).throw(StopWorker()))
+
+    with caplog.at_level("ERROR"), pytest.raises(StopWorker):
+        worker.main()
+
+    assert finished == [(job, False, "INGESTION_FAILED")]
+    assert "RuntimeError" in caplog.text
+    assert secret not in caplog.text
+
+
+def test_finish_rejects_secret_bearing_error_text_before_database_write(monkeypatch) -> None:
+    parameters = []
+
+    class Cursor(RecoveryCursor):
+        def execute(self, statement, values=()):
+            parameters.append(values)
+
+    class Connection(RecoveryConnection):
+        def cursor(self):
+            return Cursor(self.events)
+
+    monkeypatch.setattr(worker, "db", lambda: Connection([]))
+    worker.finish(
+        {"job_id": 9, "job_type": "extract", "document_version_id": 11},
+        False,
+        "Bearer SECRET-UPSTREAM-BODY",
+    )
+
+    assert parameters[0] == ("INGESTION_FAILED", 9)

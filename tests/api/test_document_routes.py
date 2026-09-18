@@ -89,10 +89,13 @@ class StubDocumentService:
 
 
 def document_client(service=None) -> TestClient:
+    from app.application import application_error_handler
+    from app.core.errors import ApplicationError
     from app.domains.auth.router import current_user
     from app.domains.documents.router import get_document_service, router
 
     application = FastAPI()
+    application.add_exception_handler(ApplicationError, application_error_handler)
     application.include_router(router)
     application.dependency_overrides[current_user] = lambda: USER
     application.dependency_overrides[get_document_service] = lambda: service or StubDocumentService()

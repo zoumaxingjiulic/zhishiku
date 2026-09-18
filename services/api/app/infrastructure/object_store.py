@@ -5,7 +5,7 @@ from typing import BinaryIO, Protocol
 
 from minio import Minio
 
-from ..config import settings
+from ..core.config import settings
 from ..domains.documents.schemas import StagedUpload
 
 
