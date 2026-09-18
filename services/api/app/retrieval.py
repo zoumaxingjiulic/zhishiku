@@ -45,13 +45,14 @@ def vector_candidates(
     knowledge_base_ids: list[int],
     document_ids: list[int] | None = None,
     limit: int = 40,
+    strict: bool = False,
 ) -> list[int]:
     if document_ids == []:
         return []
-    vector = embedding(question)
-    if vector is None:
-        return []
     try:
+        vector = embedding(question)
+        if vector is None:
+            raise RuntimeError('Embedding 未配置')
         connections.connect(alias="api", uri=settings.milvus_uri)
         if not utility.has_collection(settings.milvus_collection, using="api"):
             return []
@@ -70,6 +71,8 @@ def vector_candidates(
         )
         return [int(hit.entity.get("content_unit_id")) for hit in hits[0]]
     except Exception:
+        if strict:
+            raise
         return []
 
 
@@ -79,6 +82,7 @@ def keyword_candidates(
     department_ids: list[int],
     document_ids: list[int] | None = None,
     limit: int = 40,
+    strict: bool = False,
 ) -> list[int]:
     if document_ids == []:
         return []
@@ -109,6 +113,8 @@ def keyword_candidates(
         response.raise_for_status()
         return [int(hit["_source"]["content_unit_id"]) for hit in response.json()["hits"]["hits"]]
     except Exception:
+        if strict:
+            raise
         return []
 
 
@@ -157,14 +163,15 @@ def rerank(
             for item in results:
                 index = int(item["index"])
                 score = float(item.get("relevance_score", item.get("score", 0.0)))
-                if index >= len(units) or (score_threshold is not None and score < score_threshold):
+                if index < 0 or index >= len(units) or (score_threshold is not None and score < score_threshold):
                     continue
                 unit = dict(units[index])
                 unit["_rerank_score"] = score
                 ranked.append(unit)
             return ranked, "model"
         except Exception:
-            pass
+            # Model scores and lexical overlap do not share a threshold scale.
+            return units[:top_n], 'rrf_fallback'
     ranked = []
     for index, unit in enumerate(units):
         score = local_relevance(question, unit["content_text"])

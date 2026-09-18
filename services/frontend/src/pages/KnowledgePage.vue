@@ -3,6 +3,7 @@ import { computed, onMounted, reactive, ref } from "vue";
 import { api } from "../api";
 import AppModal from "../components/AppModal.vue";
 import StatusBadge from "../components/StatusBadge.vue";
+import ProcessingSettings from '../components/ProcessingSettings.vue';
 import { formatDate, formatSize, formatPageRange } from "../utils";
 const props=defineProps<{user:any}>(),emit=defineEmits<{toast:[message:string,bad?:boolean]}>();
 const kbs=ref<any[]>([]),folders=ref<any[]>([]),docs=ref<any[]>([]),departments=ref<any[]>([]),selectedKb=ref<any>(null),folderId=ref(0),modal=ref(""),editingKb=ref<any>(null),editingFolder=ref<any>(null),movingDoc=ref<any>(null),chunks=ref<any[]>([]),files=ref<File[]>([]),uploading=ref(false);
@@ -31,6 +32,7 @@ async function moveDoc(){try{await api(`/api/v1/documents/${movingDoc.value.id}/
 async function archive(){if(!confirm("确定归档整个知识库？"))return;try{await api(`/api/v1/knowledge-bases/${selectedKb.value.id}`,{method:"DELETE"});selectedKb.value=null;await loadKbs();emit("toast","知识库已归档");}catch(e:any){emit("toast",e.message,true);}}
 </script>
 <template>
+  <div v-if="selectedKb&&manage" class="actions" style="justify-content:flex-end;margin-bottom:12px"><ProcessingSettings :key="selectedKb.id" :kb-id="selectedKb.id" /></div>
   <div class="section-head"><div><h2>知识库空间</h2><p>不同部门的数据在服务端强制隔离</p></div><button v-if="canCreate" class="primary" @click="openKb">＋ 新建知识库</button></div>
   <div class="kb-layout"><div class="card"><div class="kb-list"><button v-for="kb in kbs" :key="kb.id" class="kb-item" :class="{active:selectedKb?.id===kb.id}" @click="selectKb(kb)"><strong>{{kb.name}}</strong><small>{{kb.owner_department_name}} · {{kb.document_count}} 份资料</small></button><div v-if="!kbs.length" class="empty">暂无可访问知识库</div></div></div>
   <div v-if="selectedKb" class="card"><div class="card-header"><div><h2>{{selectedKb.name}}</h2><p class="muted">{{selectedKb.description||"暂无描述"}} · {{selectedKb.code}}</p></div><div v-if="manage" class="actions"><button class="secondary" @click="openEditKb">编辑知识库</button><button class="danger" @click="archive">归档知识库</button></div></div><div class="folder-workspace"><aside class="folder-pane"><div class="folder-pane-head"><div><strong>文件夹</strong><small>{{folders.length}} 个目录</small></div><button v-if="manage" class="secondary" @click="openFolder()">＋ 新建</button></div><div class="folder-tree"><button class="folder-item root-folder" :class="{active:folderId===0}" @click="folderId=0;loadDetail()"><span class="folder-icon">⌂</span><strong>根目录</strong></button><div v-if="folders.length" class="folder-children"><button v-for="folder in folders" :key="folder.id" class="folder-item child-folder" :class="{active:folderId===folder.id}" :style="{'--indent':6+folder.depth*18+'px'}" @click="folderId=folder.id;loadDetail()"><span class="tree-branch">└</span><span class="folder-icon">▱</span><strong>{{folder.name}}</strong><small>{{folder.document_count}}</small></button></div></div><div v-if="manage&&selectedFolder" class="folder-actions"><button class="ghost" @click="openFolder(selectedFolder)">重命名/移动</button><button class="danger" @click="deleteFolder">删除</button></div></aside>

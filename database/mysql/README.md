@@ -36,3 +36,5 @@ Apply a single migration from the project root with `bash deploy/apply-mysql-mig
 `010_enterprise_agent_platform.sql` adds encrypted model-gateway profiles, per-agent model binding, explicit agent department ACLs, personal prompt templates, agent application records, and launch metadata for chat, form, workflow, dashboard, and external agents.
 
 `011_mcp_agent_runtime_observability.sql` adds encrypted MCP connector credentials, discovered tool schemas, per-agent read-only tool grants, assistant tool-call metadata, and privacy-preserving agent run traces. It seeds ERP/OA connector metadata only; bearer tokens must be configured at deployment time and are never committed.
+
+`012_platform_quality_runtime.sql` adds versioned agent configurations, durable chat/workflow tasks, retrieval evaluation sets/results, user feedback and optional parent text/knowledge-base processing settings. Back up first; apply exactly once before deploying 1.1 services. It does not rebuild or delete existing documents/vectors.

@@ -13,6 +13,31 @@ spec.loader.exec_module(parsing)
 Block, PdfPage = parsing.Block, parsing.PdfPage
 
 
+def test_parent_child_keeps_parent_and_locations():
+    chunks = parsing.configured_chunks([Block('这是连续段落。'*100,page_start=2,page_end=3)],{'mode':'parent_child','chunk_size':800,'child_size':200,'overlap':30})
+    assert len(chunks)>2
+    assert all(len(c.text)<=200 and c.parent_text and c.text in c.parent_text for c in chunks)
+    assert all(c.page_start==2 and c.page_end==3 for c in chunks)
+
+
+def test_pptx_text_extraction(tmp_path):
+    from pptx import Presentation
+    from pptx.util import Inches
+    prs=Presentation();slide=prs.slides.add_slide(prs.slide_layouts[6])
+    slide.shapes.add_textbox(Inches(1),Inches(1),Inches(4),Inches(1)).text='安全培训'
+    path=tmp_path/'a.pptx';prs.save(str(path))
+    blocks=parsing.extract(path,'a.pptx')
+    assert blocks[0].text=='安全培训' and blocks[0].page_start==1
+
+
+def test_dxf_text_and_layer(tmp_path):
+    import ezdxf
+    doc=ezdxf.new();doc.modelspace().add_text('PART-001',dxfattribs={'layer':'TITLE'})
+    path=tmp_path/'a.dxf';doc.saveas(str(path))
+    blocks=parsing.extract(path,'a.dxf')
+    assert blocks[0].text=='PART-001' and blocks[0].metadata['layer']=='TITLE'
+
+
 def line(text, top, bottom=None, **extra):
     return dict(kind="text", text=text, top=top, bottom=bottom or top + 12, x0=50, x1=550, **extra)
 
@@ -282,7 +307,8 @@ def test_worker_persists_page_span_and_metadata(monkeypatch):
     units = main.save_units({"document_id": 10, "document_version_id": 20}, chunks)
     params = calls[-1][1]
     assert params[2:4] == (2, 3)
-    assert json.loads(params[-1])["parser_version"] == parsing.PARSER_VERSION
+    assert json.loads(params[-2])["parser_version"] == parsing.PARSER_VERSION
+    assert params[-1] is None
     assert units[0]["id"] == 123
 
 

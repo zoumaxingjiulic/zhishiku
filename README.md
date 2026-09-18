@@ -1,5 +1,7 @@
 # 企业智能体平台与部门知识库
 
+1.1 升级内容：智能体工作室、配置版本、检索调试与评测、后台回答任务、步骤式工作流、父子分段及 PPTX/DXF 解析。使用方法、数据库变化和限制见 [平台 1.1 说明](docs/platform-v11.md)。
+
 面向企业内网的单机部署知识库与企业智能体平台。当前已具备部门隔离、资料管理、文件夹、异步入库、混合检索、多轮 AI 问答、MCP 企业系统工具、账号管理、运行追踪及审计能力。
 
 平台正在从知识问答 MVP 演进为统一企业智能体平台；全局模块、权限边界、智能体运行形态、大模型网关与系统连接器路线见 [企业智能体平台全局设计](docs/enterprise-agent-platform-design.md)。知识库内部设计仍保持独立演进。
@@ -15,7 +17,7 @@
   → 前端 Nginx
   → FastAPI API
        ├─ MySQL：部门、账号、权限、知识库、文件夹、文档、任务、审计
-       ├─ Redis：异步任务队列
+       ├─ Redis：预留缓存基础服务（当前任务队列使用 MySQL）
        ├─ MinIO：原始文件对象存储
        ├─ Milvus：语义向量检索
        ├─ OpenSearch：关键词/全文检索
@@ -23,7 +25,7 @@
        ├─ DeepSeek API：最终回答与工具选择
        └─ MCP：按智能体授权的 ERP、OA、PLM、MOM 只读工具
 
-Worker：从 Redis 取任务，执行解析/OCR、切片、向量化和全文索引。
+Worker：从 MySQL ingestion_job 领取任务，执行解析/OCR、切片、向量化和全文索引。chat-runner 从 MySQL 领取对话、工作流和评测任务。
 ~~~
 
 | 组件 | 版本/用途 |
@@ -32,7 +34,7 @@ Worker：从 Redis 取任务，执行解析/OCR、切片、向量化和全文索
 | MySQL 8.4 | 元数据、权限、事务、审计 |
 | Milvus 2.6 | 稠密向量及 document_id 等过滤字段 |
 | OpenSearch 3 | 关键词召回、全文索引 |
-| Redis 7 | 异步任务与重试 |
+| Redis 7 | 预留缓存基础设施；当前任务持久化在 MySQL |
 | Infinity CPU | BAAI/bge-m3、BAAI/bge-reranker-v2-m3 |
 | DeepSeek | 当前阶段的外部 LLM 生成服务 |
 
@@ -130,7 +132,7 @@ deploy/
   upgrade-v05.sh                  既有环境升级
   apply-mysql-migration.sh        单个迁移执行器
   queue-reindex.py                既有文档重建索引任务
-database/mysql/                   001~011 MySQL 初始化与增量迁移
+database/mysql/                   001~012 MySQL 初始化与增量迁移
 services/api/                     FastAPI 管理、检索、问答、审计
 services/worker/                  解析、OCR、切片、Embedding、索引
 services/frontend/                管理与问答前端
@@ -318,7 +320,7 @@ bash deploy/smoke-test.sh
 | 现象 | 优先检查 |
 | --- | --- |
 | 页面不可访问 | docker compose ps；前端是否监听 192.168.1.33:18080 |
-| 上传持续处理中 | logs worker；检查 Redis、MinIO、文件类型、OCR |
+| 上传持续处理中 | logs worker；检查 MySQL ingestion_job、MinIO、文件类型、OCR |
 | 问答无结果 | logs api；检查 embedding/rerank 地址与 Milvus 集合 |
 | 本地模型不可达 | logs infinity；请求 http://infinity:7997/models |
 | OpenSearch 起不来 | 检查 vm.max_map_count 是否至少 262144 |

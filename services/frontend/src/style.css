@@ -36,3 +36,19 @@
   font-size: 11px;
   font-weight: 700;
 }
+/* Authoring surfaces: bounded columns, readable step outputs and keyboard-native controls. */
+.studio-shell{display:grid;grid-template-columns:240px minmax(0,1fr);gap:20px;align-items:start}
+.studio-list{display:flex;flex-direction:column;gap:8px}
+.studio-list button{text-align:left;display:grid;gap:8px;padding:14px;border:1px solid #dce4f1;border-radius:10px;background:#fff}
+.studio-list button.active{background:#eff4ff;border-color:#2563eb}
+.studio-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px;margin:14px 0}
+.studio-grid fieldset{min-width:0;border:1px solid #dce4f1;border-radius:12px;padding:16px}
+.checkline{display:flex!important;flex-direction:row!important;align-items:center;gap:10px;margin:10px 0}
+.checkline input{width:18px!important;min-height:18px!important;height:18px;flex-shrink:0}
+.flow-step{border:1px solid #dce4f1;border-radius:12px;padding:18px;margin:12px 0;background:#f9fbff;min-width:0}
+.flow-step textarea,.flow-step select{margin-top:10px}.flow-step .actions{flex-wrap:wrap}
+.flow-step pre{white-space:pre-wrap;overflow-wrap:anywhere;max-height:420px;overflow:auto;font-size:13px}
+.preserve-text{white-space:pre-wrap;max-height:240px;overflow:auto;overflow-wrap:anywhere}
+.metric-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(100px,1fr));gap:12px;margin:16px 0}
+.metric-grid div{display:grid;gap:8px;background:#fff;padding:12px;border-radius:8px}
+@media(max-width:1000px){.studio-shell{grid-template-columns:1fr}.studio-list{flex-direction:row;overflow:auto}.studio-list button{min-width:180px}.studio-grid{grid-template-columns:1fr}}

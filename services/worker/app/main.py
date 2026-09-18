@@ -14,7 +14,7 @@ import pymysql
 from minio import Minio
 from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, connections, utility
 
-from .parsing import PARSER_VERSION, Chunk, extract, split_blocks
+from .parsing import PARSER_VERSION, Chunk, extract, split_blocks, configured_chunks
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("kb-worker")
@@ -112,13 +112,18 @@ def save_units(job: dict, chunks: list[Chunk]) -> list[dict]:
     with db() as conn, conn.cursor() as cur:
         cur.execute("DELETE FROM content_unit WHERE document_version_id=%s", (job["document_version_id"],))
         units = []
+        seen = set()
         for sequence, chunk in enumerate(chunks, 1):
             text = chunk.text
-            cur.execute("INSERT INTO content_unit (document_version_id,unit_type,sequence_no,page_start,page_end,content_text,content_hash,token_count,metadata_json) "
-                "VALUES (%s,'chunk',%s,%s,%s,%s,%s,%s,%s)",
+            digest = hashlib.sha256((text + (chunk.parent_text or '')).encode()).hexdigest()
+            if digest in seen:
+                continue
+            seen.add(digest)
+            cur.execute("INSERT INTO content_unit (document_version_id,unit_type,sequence_no,page_start,page_end,content_text,content_hash,token_count,metadata_json,parent_text) "
+                "VALUES (%s,'chunk',%s,%s,%s,%s,%s,%s,%s,%s)",
                 (job["document_version_id"], sequence, chunk.page_start, chunk.page_end, text,
-                 hashlib.sha256(text.encode()).hexdigest(), max(1, len(text) // 3),
-                 json.dumps(chunk.metadata, ensure_ascii=False)))
+                 digest, max(1, len(text) // 3),
+                 json.dumps(chunk.metadata, ensure_ascii=False), chunk.parent_text))
             units.append({"id": cur.lastrowid, "page": chunk.page_start, "text": text})
         conn.commit()
         return units
@@ -233,7 +238,14 @@ def run(job: dict) -> None:
         return
     source = download(job)
     try:
-        chunks = split_blocks(extract(source, job["original_filename"]))
+        blocks = extract(source, job["original_filename"])
+        if not any(block.text.strip() for block in blocks):
+            raise ValueError('未提取到可用文本')
+        with db() as conn, conn.cursor() as cur:
+            cur.execute('SELECT processing_config_json FROM knowledge_base WHERE id=%s', (job['knowledge_base_id'],))
+            raw = cur.fetchone()['processing_config_json']
+            config = json.loads(raw) if isinstance(raw, str) else (raw or {})
+        chunks = configured_chunks(blocks, config)
         if not chunks:
             raise ValueError("未提取到可用文本")
         # Validate extraction before cleaning up an existing document's indexes.

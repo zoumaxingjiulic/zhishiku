@@ -36,6 +36,7 @@ const navItems = computed(() => [
   { section: "agent-requests", to: { name: "agent-requests" }, icon: "✎", label: "智能体申请" },
   { section: "connections", to: { name: "connections" }, icon: "⌘", label: "系统连接" },
   ...(isAdmin.value ? [
+    { section: 'studio', to: { name: 'studio' }, icon: '⌬', label: '智能体工作室' },
     { section: "model-gateway", to: { name: "model-gateway" }, icon: "◈", label: "大模型网关" },
     { section: "users", to: { name: "users" }, icon: "♟", label: "用户与部门" },
     { section: "observability", to: { name: "observability" }, icon: "◎", label: "运行监控" },

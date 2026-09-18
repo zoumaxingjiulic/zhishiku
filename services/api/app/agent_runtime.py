@@ -8,6 +8,7 @@ import time
 from typing import Callable
 
 import httpx
+from jsonschema import validate as validate_json, ValidationError
 
 from .config import settings
 from .retrieval import source_location
@@ -65,6 +66,36 @@ def _chat(base_url: str, api_key: str, body: dict) -> dict:
     return response.json()["choices"][0]["message"]
 
 
+def _stream_chat(base_url, api_key, body, emit):
+    headers = {'Authorization': f'Bearer {api_key}'} if api_key else {}
+    result = {'content': '', 'tool_calls': []}
+    calls = {}
+    with httpx.stream('POST', base_url.rstrip('/') + '/chat/completions', headers=headers,
+                      json={**body, 'stream': True}, timeout=120) as response:
+        response.raise_for_status()
+        for line in response.iter_lines():
+            if not line.startswith('data:'):
+                continue
+            raw = line[5:].strip()
+            if raw == '[DONE]':
+                break
+            chunk = json.loads(raw)
+            if not chunk.get('choices'):
+                continue
+            delta = chunk['choices'][0].get('delta') or {}
+            if delta.get('content'):
+                result['content'] += delta['content']
+                emit('answer', result['content'])
+            for call in delta.get('tool_calls') or []:
+                target = calls.setdefault(call['index'], {'id': '', 'type': 'function', 'function': {'name': '', 'arguments': ''}})
+                if call.get('id'):
+                    target['id'] = call['id']
+                for key in ('name', 'arguments'):
+                    target['function'][key] += (call.get('function') or {}).get(key) or ''
+    result['tool_calls'] = [calls[i] for i in sorted(calls)]
+    return result
+
+
 def generate_agent_answer(
     system_prompt: str,
     question: str,
@@ -75,6 +106,9 @@ def generate_agent_answer(
     model_override: str | None = None,
     gateway: dict | None = None,
     context_max_chars: int = 12000,
+    emit: Callable | None = None,
+    max_tool_rounds: int = 3,
+    max_tool_calls: int = 6,
 ) -> tuple[str, str, list[dict], list[dict]]:
     context, selected_units = prepare_context(units, context_max_chars)
     tools, mapping = openai_tools(bound_tools)
@@ -99,45 +133,57 @@ def generate_agent_answer(
         instructions += "\n\n当前没有知识资料或系统工具可用。不要编造企业数据。"
 
     messages = [{"role": "system", "content": instructions}]
-    for message in history[-12:]:
+    for message in history:
         if message.get("role") in {"user", "assistant"} and message.get("content"):
             messages.append({"role": message["role"], "content": message["content"][:4000]})
     messages.append({"role": "user", "content": question})
     body = {"model": model_name, "messages": messages, "temperature": 0.1}
     if tools:
         body.update({"tools": tools, "tool_choice": "auto"})
-    first = _chat(base_url, api_key, body)
-    requested = first.get("tool_calls") or []
-    if not requested:
-        return first.get("content") or "模型未返回有效内容。", "llm", [], selected_units
-
-    messages.append({"role": "assistant", "content": first.get("content"), "tool_calls": requested})
     events = []
-    for call in requested[:4]:
-        started = time.perf_counter()
-        function = call.get("function") or {}
-        exposed_name = function.get("name", "")
-        tool = mapping.get(exposed_name)
-        if not tool:
-            result = {"error": "工具未授权或不存在"}
-            event = {"tool": exposed_name, "success": False, "error_code": "NOT_AUTHORIZED"}
-        else:
-            try:
-                arguments = json.loads(function.get("arguments") or "{}")
-                if not isinstance(arguments, dict):
-                    raise ValueError("参数必须是对象")
-                result, event = tool_executor(tool, arguments)
-            except (json.JSONDecodeError, ValueError) as exc:
-                result = {"error": f"工具参数无效：{exc}"}
-                event = {"connector": tool.get("connector_code"), "tool": tool.get("tool_name"),
-                         "success": False, "error_code": "INVALID_ARGUMENT"}
-            except Exception as exc:
-                result = {"error": "企业系统工具暂时不可用，请稍后重试。"}
-                event = {"connector": tool.get("connector_code"), "tool": tool.get("tool_name"),
-                         "success": False, "error_code": type(exc).__name__}
-        event["duration_ms"] = round((time.perf_counter() - started) * 1000, 1)
-        events.append(event)
-        messages.append({"role": "tool", "tool_call_id": call.get("id"),
-                         "content": json.dumps(result, ensure_ascii=False)[:40000]})
-    final = _chat(base_url, api_key, {"model": model_name, "messages": messages, "temperature": 0.1})
-    return final.get("content") or "模型未返回有效内容。", "llm_tools", events, selected_units
+    used = 0
+    for round_index in range(max_tool_rounds + 1):
+        if emit:
+            emit('stage', '生成回答' if round_index == 0 else '分析工具结果')
+        current = dict(body)
+        if round_index == max_tool_rounds or used >= max_tool_calls:
+            current.pop('tools', None)
+            current.pop('tool_choice', None)
+        reply = _stream_chat(base_url, api_key, current, emit) if emit else _chat(base_url, api_key, current)
+        requested = reply.get('tool_calls') or []
+        if not requested:
+            return reply.get('content') or '模型未返回有效内容。', 'llm_tools' if events else 'llm', events, selected_units
+        messages.append({'role': 'assistant', 'content': reply.get('content'), 'tool_calls': requested})
+        # Every requested call gets a response, including calls beyond the execution budget.
+        for call in requested:
+            started = time.perf_counter()
+            function = call.get('function') or {}
+            tool = mapping.get(function.get('name', ''))
+            event = {'tool': function.get('name'), 'success': False}
+            result = {'error': '工具未授权或超出执行预算'}
+            if tool and used < max_tool_calls and round_index < max_tool_rounds:
+                used += 1
+                if emit:
+                    emit('stage', '查询 ' + tool['connector_name'])
+                try:
+                    arguments = json.loads(function.get('arguments') or '{}')
+                    validate_json(arguments, tool.get('input_schema') or {'type': 'object'})
+                    result, event = tool_executor(tool, arguments)
+                except (json.JSONDecodeError, ValidationError, ValueError):
+                    event['error_code'] = 'INVALID_ARGUMENT'
+                    result = {'error': '参数不符合工具结构要求，请补充或修正参数，不要猜测。'}
+                except Exception as exc:
+                    if type(exc).__name__ == 'TaskCancelled':
+                        raise
+                    event['error_code'] = type(exc).__name__
+                    result = {'error': '企业系统暂时不可用，请稍后重试。'}
+                event.update(connector=tool['connector_code'], tool=tool['tool_name'])
+            else:
+                event['error_code'] = 'NOT_AUTHORIZED_OR_BUDGET'
+            event['duration_ms'] = round((time.perf_counter() - started) * 1000, 1)
+            events.append(event)
+            encoded = json.dumps(result, ensure_ascii=False)
+            if len(encoded) > 24000:
+                encoded = json.dumps({'truncated': True, 'excerpt': encoded[:23000]}, ensure_ascii=False)
+            messages.append({'role': 'tool', 'tool_call_id': call.get('id'), 'content': encoded})
+    return '本次工具执行已达到预算，请缩小查询范围后重试。', 'tool_budget', events, selected_units

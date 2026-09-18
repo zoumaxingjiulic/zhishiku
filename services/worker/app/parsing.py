@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 import re
 
-PARSER_VERSION = "0.8.0"
+PARSER_VERSION = "1.1.0"
 HEADING = re.compile(r"^(?:第[一二三四五六七八九十百零\d]+[章节条]|[一二三四五六七八九十]+[、．]|\d+(?:\.\d+)*[、．\s]|#{1,6}\s)")
 PAGE_NUMBER = re.compile(r"^(?:[-—–]\s*)?(?:第\s*)?\d+\s*(?:页(?:\s*[/／共]\s*\d+\s*页?)?|[/／]\s*\d+)?(?:\s*[-—–])?$|^Page\s+\d+(?:\s+of\s+\d+)?$", re.I)
 
@@ -31,6 +31,7 @@ class Chunk:
     page_start: int | None
     page_end: int | None
     metadata: dict
+    parent_text: str | None = None
 
 
 def clean(value) -> str:
@@ -334,6 +335,29 @@ def extract(path: Path, filename: str) -> list[Block]:
         return extract_docx(path)
     if extension in {".xlsx", ".xlsm"}:
         return extract_excel(path)
+    if extension == '.pptx':
+        from pptx import Presentation
+        result = []
+        for page, slide in enumerate(Presentation(str(path)).slides, 1):
+            context = f'幻灯片 {page}'
+            for shape in sorted(slide.shapes, key=lambda s: (s.top, s.left)):
+                if shape.has_table:
+                    result.extend(table_blocks([(i+1,[cell.text for cell in row.cells]) for i,row in enumerate(shape.table.rows)], context=context, metadata={'format':'pptx'}, page=page))
+                elif shape.has_text_frame and shape.text.strip():
+                    result.append(Block(shape.text, page_start=page, page_end=page, context=context, metadata={'format':'pptx'}))
+        return result
+    if extension == '.dxf':
+        import ezdxf
+        drawing = ezdxf.readfile(str(path))
+        result = []
+        for layout in drawing.layouts:
+            for entity in layout.query('TEXT MTEXT ATTRIB INSERT'):
+                items = entity.attribs if entity.dxftype() == 'INSERT' else [entity]
+                for item in items:
+                    text = item.plain_text() if item.dxftype() == 'MTEXT' else item.dxf.get('text', '')
+                    if text.strip():
+                        result.append(Block(text, context=f'布局：{layout.name}；图层：{item.dxf.layer}', metadata={'format':'dxf','layer':item.dxf.layer,'layout':layout.name,'handle':item.dxf.handle,'extraction':'cad_text'}))
+        return result
     if extension in {".txt", ".md", ".csv"}:
         return [Block(path.read_text(encoding="utf-8", errors="replace"), metadata={"format": extension[1:]})]
     if extension in {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp"}:
@@ -341,6 +365,26 @@ def extract(path: Path, filename: str) -> list[Block]:
         return [Block(pytesseract.image_to_string(str(path), lang="chi_sim+eng").strip(),
                       page_start=1, page_end=1, metadata={"format": "image", "extraction": "ocr"})]
     raise ValueError(f"暂不支持的文件类型：{extension}")
+
+
+def configured_chunks(blocks: list[Block], config: dict) -> list[Chunk]:
+    size, overlap = config.get('chunk_size', 1200), config.get('overlap', 150)
+    parents = split_blocks(blocks, size, overlap)
+    if config.get('mode') != 'parent_child':
+        return parents
+    child_size = config.get('child_size', 450)
+    if child_size < 128 or child_size >= size:
+        raise ValueError('子切片长度必须 >= 128 且小于父切片长度')
+    result = []
+    for parent_index, parent in enumerate(parents):
+        context = parent.metadata.get('context', '')
+        body = parent.text[len(context)+1:] if context and parent.text.startswith(context+'\n') else parent.text
+        children = split_blocks([Block(body, page_start=parent.page_start, page_end=parent.page_end, context=context, metadata=parent.metadata)], child_size, min(overlap, child_size//5))
+        for child in children:
+            child.parent_text = parent.text
+            child.metadata.update(mode='parent_child',parent_index=parent_index,parent_page_start=parent.page_start,parent_page_end=parent.page_end)
+            result.append(child)
+    return result
 
 
 def split_blocks(blocks: list[Block], size: int = 1200, overlap: int = 150) -> list[Chunk]:
@@ -377,6 +421,7 @@ def split_blocks(blocks: list[Block], size: int = 1200, overlap: int = 150) -> l
             selected = [block for left, right, block in spans if left < end and right > start]
             pages = [p for b in selected for p in (b.page_start, b.page_end) if p is not None]
             metadata = {**selected[0].metadata, "source": "worker", "parser_version": PARSER_VERSION,
+                        "context": context,
                         "kind": selected[0].kind, "chunk_size": size, "overlap": effective_overlap,
                         "sources": [{"page_start": b.page_start, "page_end": b.page_end, **b.metadata} for b in selected]}
             row_numbers = [b.metadata["row_start"] for b in selected if "row_start" in b.metadata]

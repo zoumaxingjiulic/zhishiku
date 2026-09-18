@@ -102,7 +102,7 @@ services:
     build:
       context: ../services/api
     restart: unless-stopped
-    environment:
+    environment: &api_environment
       TZ: ${TZ}
       APP_ENV: ${APP_ENV}
       LOG_LEVEL: ${LOG_LEVEL}
@@ -147,6 +147,16 @@ services:
       minio: {condition: service_healthy}
     ports:
       - "${HOST_BIND_IP}:${API_PORT}:8000"
+    networks: [kb-internal]
+
+  chat-runner:
+    build:
+      context: ../services/api
+    restart: unless-stopped
+    command: ["python", "-m", "app.chat_worker"]
+    environment: *api_environment
+    depends_on:
+      mysql: {condition: service_healthy}
     networks: [kb-internal]
 
   worker:

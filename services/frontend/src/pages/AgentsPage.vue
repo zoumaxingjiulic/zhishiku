@@ -3,6 +3,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router";
 import { api } from "../api";
 import { formatPageRange } from "../utils";
+import WorkflowRun from '../components/WorkflowRun.vue';
 
 const emit = defineEmits<{ toast: [message: string, bad?: boolean] }>();
 const route = useRoute();
@@ -14,6 +15,7 @@ const sessionId = ref<string | null>(null);
 const pendingSessionIds = ref(new Set<string>());
 const messages = ref<any[]>([]);
 const sessions = ref<any[]>([]);
+const task = ref<any>(null);
 const modeMeta: Record<string, { label: string; icon: string; hint: string }> = {
   chat: { label: "问答", icon: "✦", hint: "对话查询与知识检索" },
   form: { label: "任务", icon: "▣", hint: "填写参数后执行任务" },
@@ -23,7 +25,7 @@ const modeMeta: Record<string, { label: string; icon: string; hint: string }> = 
 };
 const welcomeMessage = { role: "assistant", text: "您好，我会使用该智能体获授权的企业知识与只读系统工具协助您。" };
 const isAwaitingAnswer = computed(() => Boolean(
-  sessionId.value && (pendingSessionIds.value.has(sessionId.value) || messages.value.at(-1)?.role === "user")
+  sessionId.value && (pendingSessionIds.value.has(sessionId.value) || (task.value?.session_id===sessionId.value && ['queued','running'].includes(task.value?.status)))
 ));
 let pollTimer: number | undefined;
 let routeSyncVersion = 0;
@@ -55,21 +57,21 @@ async function scrollToBottom(smooth = false) {
 }
 function schedulePendingPoll(id: string) {
   stopPolling();
-  if (messages.value.at(-1)?.role !== "user") return;
   pollTimer = window.setTimeout(async () => {
     if (sessionId.value !== id || !selected.value) return;
     try {
-      const history = await api<any>(`/api/v1/agents/${selected.value.id}/chat/sessions/${id}`);
+      const [history,currentTask] = await Promise.all([api<any>(`/api/v1/agents/${selected.value.id}/chat/sessions/${id}`),api<any>(`/api/v1/agents/${selected.value.id}/chat/sessions/${id}/task`)]);
       if (sessionId.value !== id) return;
       messages.value = history.messages?.length ? history.messages : [welcomeMessage];
+      task.value = currentTask;
       await loadSessions();
-      if (messages.value.at(-1)?.role === "user") schedulePendingPoll(id);
+      if (currentTask && ['queued','running'].includes(currentTask.status)) schedulePendingPoll(id);
       else {
         stopPolling();
         await scrollToBottom(true);
       }
-    } catch { stopPolling(); }
-  }, 2000);
+    } catch { if(sessionId.value===id)schedulePendingPoll(id); }
+  }, 1000);
 }
 async function loadSessions() {
   if (!selected.value) return;
@@ -78,6 +80,9 @@ async function loadSessions() {
 async function fetchSession(id: string) {
   stopPolling();
   const history = await api<any>(`/api/v1/agents/${selected.value.id}/chat/sessions/${id}`);
+  const currentTask = await api<any>(`/api/v1/agents/${selected.value.id}/chat/sessions/${id}/task`);
+  if (route.params.sessionId !== id) return;
+  task.value = currentTask;
   sessionId.value = id;
   sessionStorage.setItem(sessionKey(selected.value.id), id);
   sessionStorage.setItem("kb.lastAgentRoute", route.fullPath);
@@ -203,12 +208,13 @@ async function send() {
   question.value = "";
   pendingSessionIds.value.add(targetSessionId);
   try {
-    const result = await api<any>(`/api/v1/agents/${targetAgentId}/chat`, {
+    const result = await api<any>(`/api/v1/agents/${targetAgentId}/runs`, {
       method: "POST",
-      body: JSON.stringify({ question: text, session_id: targetSessionId }),
+      body: JSON.stringify({ question: text, session_id: targetSessionId, request_key: globalThis.crypto?.randomUUID?.() || `${Date.now()}-${Math.random().toString(36).slice(2)}` }),
     });
     if (selected.value?.id === targetAgentId && sessionId.value === targetSessionId) {
-      messages.value.push({ role: "assistant", text: result.answer, citations: result.citations, tool_calls: result.tool_calls, method: result.retrieval_method, trace_id: result.trace_id });
+      task.value = result;
+      schedulePendingPoll(targetSessionId);
     }
     if (selected.value?.id === targetAgentId) await loadSessions();
   } catch (error: any) {
@@ -222,6 +228,8 @@ async function send() {
     if (sessionId.value === targetSessionId) await scrollToBottom(true);
   }
 }
+async function cancelTask(){if(!task.value)return;try{await api(`/api/v1/tasks/${task.value.id}/cancel`,{method:'POST'});emit('toast','已请求停止，正在结束当前调用');}catch(e:any){emit('toast',e.message,true);}}
+async function feedback(message:any,rating:number){try{await api(`/api/v1/messages/${message.id}/feedback`,{method:'POST',body:JSON.stringify({rating})});message.rating=rating;emit('toast','反馈已记录');}catch(e:any){emit('toast',e.message,true);}}
 </script>
 
 <template>
@@ -245,11 +253,14 @@ async function send() {
         <div class="conversation-list"><button v-for="item in sessions" :key="item.id" class="conversation-item" :class="{active:sessionId===item.id}" @click="loadSession(item.id)"><span><strong>{{item.title||'新对话'}}</strong><small>{{item.last_role==='user'||pendingSessionIds.has(item.id)?'回答中…':item.message_count+' 条消息'}}</small></span><i title="删除对话" @click="deleteConversation($event,item)">×</i></button></div>
       </div>
       <div class="card chat-box">
+        <div v-if="isAwaitingAnswer" class="actions"><span class="badge">{{task?.stage||'提交中'}}</span><button class="danger" @click="cancelTask">停止回答</button></div>
         <div class="chat-scope fixed"><span>授权范围</span><strong>智能体知识库与企业系统工具</strong><small>由管理员统一配置，并在后端再次校验权限</small></div>
-        <div class="messages"><div v-for="(message,index) in messages" :key="index" class="message" :class="message.role">{{message.content||message.text}}<div v-if="message.tool_calls?.length" class="tool-call-note"><span v-for="(event,i) in message.tool_calls" :key="i">{{event.success?'✓':'!'}} {{event.connector_name||event.connector}} / {{event.tool}}{{i<message.tool_calls.length-1?'；':''}}</span></div><div v-if="message.citations?.length" class="citation">引用：<span v-for="(citation,i) in message.citations" :key="i">《{{citation.title}}》{{formatPageRange(citation.page,citation.page_end)}}{{i<message.citations.length-1?'；':''}}</span><br>检索：向量 + 关键词 / RRF / {{message.method?.rerank==="model"?"模型":"本地"}}重排序</div></div></div>
+        <div class="messages"><div v-for="(message,index) in messages" :key="message.id||index" class="message" :class="message.role">{{message.content||message.text}}<div v-if="message.tool_calls?.length" class="tool-call-note"><span v-for="(event,i) in message.tool_calls" :key="i">{{event.success?'✓':'!'}} {{event.connector_name||event.connector}} / {{event.tool}}{{i<message.tool_calls.length-1?'；':''}}</span></div><div v-if="message.citations?.length" class="citation">参考资料：<span v-for="(citation,i) in message.citations" :key="i"><a :href="'/api/v1/documents/'+citation.document_id+'/download'">《{{citation.title}}》</a>{{formatPageRange(citation.page,citation.page_end)}}{{i<message.citations.length-1?'；':''}}</span></div><div v-if="message.role==='assistant'&&message.id" class="actions"><button class="ghost" :disabled="message.rating===1" @click="feedback(message,1)">有帮助</button><button class="ghost" :disabled="message.rating===-1" @click="feedback(message,-1)">需改进</button></div></div></div>
+        <div v-if="isAwaitingAnswer&&task?.partial_answer" class="message assistant preserve-text" aria-live="polite">{{task.partial_answer}}</div>
         <form class="chat-input" @submit.prevent="send"><textarea v-model="question" :disabled="isAwaitingAnswer" placeholder="请输入您想查询的问题…" required></textarea><button class="primary" :disabled="isAwaitingAnswer">{{isAwaitingAnswer?"回答中…":"发送"}}</button></form>
       </div>
     </div>
-    <div v-else class="card agent-runtime-placeholder"><div class="agent-symbol">{{selected.icon||modeMeta[selected.launch_mode]?.icon}}</div><h2>{{modeMeta[selected.launch_mode]?.label}}型智能体运行区</h2><p>{{selected.description}}</p><div class="runtime-flow"><span>输入业务参数</span><i>→</i><span>调用授权系统与工具</span><i>→</i><span>人工确认关键动作</span><i>→</i><span>输出结果并留痕</span></div><p class="muted">该入口已支持独立运行形态；具体表单、流程步骤和系统工具将在智能体实施时按申请配置。</p></div>
+    <WorkflowRun v-else-if="selected.launch_mode==='workflow'" :key="selected.id" :agent-id="selected.id" />
+    <div v-else class="card empty">该类型尚未配置运行器，请联系管理员。</div>
   </template>
 </template>
