@@ -61,7 +61,7 @@ function schedulePendingPoll(id: string) {
     if (sessionId.value !== id || !selected.value) return;
     try {
       const [history,currentTask] = await Promise.all([api<any>(`/api/v1/agents/${selected.value.id}/chat/sessions/${id}`),api<any>(`/api/v1/agents/${selected.value.id}/chat/sessions/${id}/task`)]);
-      if (sessionId.value !== id) return;
+      if (sessionId.value !== id || route.params.sessionId !== id) return;
       messages.value = history.messages?.length ? history.messages : [welcomeMessage];
       task.value = currentTask;
       await loadSessions();

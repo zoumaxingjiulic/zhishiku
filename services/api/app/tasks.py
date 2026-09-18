@@ -51,7 +51,7 @@ def checked_executor(user_id, agent_id):
         progress('stage', '校验工具权限')
         m.agent_for_user(m.load_user(user_id), agent_id)
         fresh = next((t for t in m.bound_agent_tools(agent_id) if t['id'] == tool['id']), None)
-        if not fresh:
+        if not fresh or fresh.get('annotations', {}).get('readOnlyHint') is not True:
             raise HTTPException(403, '工具授权已撤销')
         validate(arguments, fresh['input_schema'])
         return m.execute_bound_tool(fresh, arguments)

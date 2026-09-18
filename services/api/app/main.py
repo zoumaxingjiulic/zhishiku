@@ -1899,12 +1899,13 @@ def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict
         ]
     except Exception as exc:
         log.exception("Agent response generation failed for session %s", session_id)
+        cancelled = type(exc).__name__ == 'TaskCancelled'
         timings["total_ms"] = round((time.perf_counter() - started) * 1000, 1)
         with connect() as conn, conn.cursor() as cursor:
             cursor.execute(
                 "INSERT INTO chat_message (session_id,role,content,model_name) "
-                "VALUES (%s,'assistant','回答生成失败，请稍后重试。','error')",
-                (session_id,),
+                "VALUES (%s,'assistant',%s,'error')",
+                (session_id, '任务已停止。' if cancelled else '回答生成失败，请稍后重试。'),
             )
             cursor.execute("UPDATE chat_session SET updated_at=NOW(3) WHERE id=%s", (session_id,))
             cursor.execute(
