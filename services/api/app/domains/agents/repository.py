@@ -122,6 +122,7 @@ class AgentRepository:
         result = dict(row)
         config = parse_json(result.pop("settings_json", None), {})
         result["retrieval"] = config.get("retrieval", {})
+        result["inputs"] = config.get("inputs", ["question"])
         result["steps"] = config.get("steps", [])
         for table, field, output in (
             ("agent_department_acl", "department_id", "department_ids"),

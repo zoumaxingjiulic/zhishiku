@@ -166,6 +166,7 @@ class AgentService:
         settings = parse_json((current_row or {}).get("settings_json"), {})
         settings.update(
             retrieval=payload.retrieval.model_dump(),
+            inputs=payload.inputs,
             steps=[step.model_dump() for step in payload.steps],
             explicit_acl=True,
         )

@@ -6,7 +6,9 @@ from pydantic import ValidationError
 
 sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'services/api'))
 from app.quality import RetrievalPolicy, score_retrieval, retrieval_query
-from app.platform import AgentWrite, Processing, resolve_arguments
+from app.domains.agents.schemas import AgentWrite
+from app.domains.studio.schemas import Processing
+from app.runtime.workflows import resolve_arguments
 from app import quality, agent_runtime
 
 

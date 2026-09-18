@@ -1,7 +1,5 @@
 import sys
-from contextlib import nullcontext
 from pathlib import Path
-from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
@@ -42,7 +40,7 @@ class DashboardCursor:
 
 
 def test_load_dashboard_stats_aggregates_accessible_department_data(ordinary_user) -> None:
-    from app.dashboard import load_dashboard_stats
+    from app.domains.observability.repository import ObservabilityRepository
 
     cursor = DashboardCursor(
         {
@@ -55,10 +53,7 @@ def test_load_dashboard_stats_aggregates_accessible_department_data(ordinary_use
         }
     )
 
-    result = load_dashboard_stats(
-        cursor,
-        ordinary_user,
-    )
+    result = ObservabilityRepository(cursor).dashboard(ordinary_user)
 
     assert result == {
         "knowledge_bases": 3,
@@ -73,7 +68,7 @@ def test_load_dashboard_stats_aggregates_accessible_department_data(ordinary_use
 
 
 def test_load_dashboard_stats_uses_unrestricted_admin_aggregation() -> None:
-    from app.dashboard import load_dashboard_stats
+    from app.domains.observability.repository import ObservabilityRepository
 
     cursor = DashboardCursor(
         {
@@ -86,9 +81,8 @@ def test_load_dashboard_stats_uses_unrestricted_admin_aggregation() -> None:
         }
     )
 
-    result = load_dashboard_stats(
-        cursor,
-        {"department_id": 1, "department_code": "PLATFORM_ADMIN"},
+    result = ObservabilityRepository(cursor).dashboard(
+        {"department_id": 1, "department_code": "PLATFORM_ADMIN"}
     )
 
     assert result == {
@@ -105,14 +99,20 @@ def test_load_dashboard_stats_uses_unrestricted_admin_aggregation() -> None:
 
 def test_dashboard_stats_http_contract(monkeypatch, ordinary_user):
     from app import main
+    from app.domains.auth.router import current_user
+    from app.domains.observability.router import get_observability_service
 
     cursor = DashboardCursor({
         "knowledge_bases": 3, "documents": 25, "agents": 2,
         "processing": 4, "succeeded": 19, "failed": 2,
     })
-    connection = SimpleNamespace(cursor=lambda: nullcontext(cursor))
-    monkeypatch.setattr(main, "connect", lambda: nullcontext(connection))
-    monkeypatch.setitem(main.app.dependency_overrides, main.current_user, lambda: ordinary_user)
+    class Service:
+        def dashboard(self, user):
+            from app.domains.observability.repository import ObservabilityRepository
+            return ObservabilityRepository(cursor).dashboard(user)
+
+    monkeypatch.setitem(main.app.dependency_overrides, current_user, lambda: ordinary_user)
+    monkeypatch.setitem(main.app.dependency_overrides, get_observability_service, lambda: Service())
     # No context manager: avoid the application's database-writing startup hook.
     response = TestClient(main.app).get("/api/v1/dashboard/stats")
 

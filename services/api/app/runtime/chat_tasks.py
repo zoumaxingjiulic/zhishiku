@@ -107,7 +107,7 @@ def recover_interrupted_runs() -> None:
 
 
 def main() -> None:
-    from ..platform import run_evaluation, run_workflow
+    from .workflows import run_evaluation, run_workflow
 
     recover_interrupted_runs()
     handlers = {"chat_task": run_chat_task, "workflow_run": run_workflow, "evaluation_run": run_evaluation}
