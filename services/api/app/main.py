@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from .config import settings
 from .database import connect
+from .dashboard import DashboardStats, load_dashboard_stats
 from .agent_runtime import generate_agent_answer
 from .quality import RetrievalPolicy, retrieve, retrieval_query
 from .mcp_client import McpError, StreamableHttpMcpClient
@@ -651,6 +652,12 @@ def logout(response: Response) -> dict:
 @app.get("/api/v1/auth/me", tags=["auth"])
 def me(user: dict = Depends(current_user)) -> dict:
     return user
+
+
+@app.get("/api/v1/dashboard/stats", response_model=DashboardStats, tags=["dashboard"])
+def dashboard_stats(user: dict = Depends(current_user)) -> DashboardStats:
+    with connect() as conn, conn.cursor() as cursor:
+        return load_dashboard_stats(cursor, user)
 
 
 @app.post("/api/v1/auth/change-password", tags=["auth"])
