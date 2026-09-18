@@ -1,18 +1,13 @@
-from urllib.parse import unquote, urlparse
+import os
 
 import pymysql
 
-from .config import settings
+from enterprise_kb.config import mysql_connection_params
 
 
 def connect() -> pymysql.connections.Connection:
-    parsed = urlparse(settings.mysql_dsn)
     return pymysql.connect(
-        host=parsed.hostname,
-        port=parsed.port or 3306,
-        user=unquote(parsed.username or ""),
-        password=unquote(parsed.password or ""),
-        database=parsed.path.lstrip("/"),
+        **mysql_connection_params(os.environ),
         charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor,
         autocommit=False,

@@ -100,14 +100,19 @@ services:
 
   api:
     build:
-      context: ../services/api
+      context: ..
+      dockerfile: services/api/Dockerfile
     restart: unless-stopped
     environment: &api_environment
       TZ: ${TZ}
       APP_ENV: ${APP_ENV}
       LOG_LEVEL: ${LOG_LEVEL}
       CORS_ALLOW_ORIGINS: ${CORS_ALLOW_ORIGINS}
-      MYSQL_DSN: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: minio:9000
       MINIO_BUCKET: ${MINIO_BUCKET}
@@ -151,7 +156,8 @@ services:
 
   chat-runner:
     build:
-      context: ../services/api
+      context: ..
+      dockerfile: services/api/Dockerfile
     restart: unless-stopped
     command: ["python", "-m", "app.chat_worker"]
     environment: *api_environment
@@ -161,13 +167,18 @@ services:
 
   worker:
     build:
-      context: ../services/worker
+      context: ..
+      dockerfile: services/worker/Dockerfile
     restart: unless-stopped
     environment:
       TZ: ${TZ}
       APP_ENV: ${APP_ENV}
       LOG_LEVEL: ${LOG_LEVEL}
-      MYSQL_DSN: mysql+pymysql://${MYSQL_USER}:${MYSQL_PASSWORD}@mysql:3306/${MYSQL_DATABASE}
+      MYSQL_HOST: mysql
+      MYSQL_PORT: "3306"
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD}
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
       REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: minio:9000
       MINIO_BUCKET: ${MINIO_BUCKET}
@@ -181,6 +192,7 @@ services:
       MILVUS_COLLECTION: ${MILVUS_COLLECTION}
       EMBEDDING_PROVIDER: ${EMBEDDING_PROVIDER}
       LOCAL_EMBEDDING_DIM: ${LOCAL_EMBEDDING_DIM}
+      LOCAL_TEST_MODE: ${LOCAL_TEST_MODE}
       EMBEDDING_BASE_URL: ${EMBEDDING_BASE_URL}
       EMBEDDING_API_KEY: ${EMBEDDING_API_KEY}
       EMBEDDING_MODEL: ${EMBEDDING_MODEL}

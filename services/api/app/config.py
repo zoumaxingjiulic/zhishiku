@@ -1,13 +1,19 @@
 import os
 from dataclasses import dataclass
 
+from enterprise_kb.config import load_runtime_config, parse_bool
+
+
+runtime_config = load_runtime_config(os.environ)
+
 
 def env_bool(name: str, default: bool = False) -> bool:
-    return os.getenv(name, str(default)).lower() in {"1", "true", "yes", "on"}
+    return parse_bool(os.environ, name, default)
 
 
 @dataclass(frozen=True)
 class Settings:
+    app_env: str = runtime_config.app_env
     mysql_dsn: str = os.getenv("MYSQL_DSN", "")
     minio_endpoint: str = os.getenv("MINIO_ENDPOINT", "minio:9000")
     minio_bucket: str = os.getenv("MINIO_BUCKET", "enterprise-kb")
@@ -26,7 +32,7 @@ class Settings:
     admin_password: str = os.getenv("ADMIN_PASSWORD", "")
     admin_display_name: str = os.getenv("ADMIN_DISPLAY_NAME", "平台管理员")
     max_upload_bytes: int = int(os.getenv("MAX_UPLOAD_BYTES") or str(200 * 1024 * 1024))
-    embedding_provider: str = os.getenv("EMBEDDING_PROVIDER", "local_hash")
+    embedding_provider: str = runtime_config.embedding_provider
     embedding_base_url: str = os.getenv("EMBEDDING_BASE_URL", "")
     embedding_api_key: str = os.getenv("EMBEDDING_API_KEY", "")
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "")
@@ -38,7 +44,7 @@ class Settings:
     rerank_base_url: str = os.getenv("RERANK_BASE_URL", "")
     rerank_api_key: str = os.getenv("RERANK_API_KEY", "")
     rerank_model: str = os.getenv("RERANK_MODEL", "")
-    local_test_mode: bool = env_bool("LOCAL_TEST_MODE", True)
+    local_test_mode: bool = runtime_config.local_test_mode
 
 
 settings = Settings()

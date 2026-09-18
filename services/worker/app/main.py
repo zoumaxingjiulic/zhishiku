@@ -7,14 +7,16 @@ import re
 import tempfile
 import time
 from pathlib import Path
-from urllib.parse import unquote, urlparse
 
 import httpx
 import pymysql
 from minio import Minio
 from pymilvus import Collection, CollectionSchema, DataType, FieldSchema, connections, utility
+from enterprise_kb.config import load_runtime_config, mysql_connection_params
 
 from .parsing import PARSER_VERSION, Chunk, extract, split_blocks, configured_chunks
+
+runtime_config = load_runtime_config(os.environ)
 
 logging.basicConfig(level=os.getenv("LOG_LEVEL", "INFO"))
 log = logging.getLogger("kb-worker")
@@ -31,9 +33,7 @@ def value(name: str, mandatory: bool = False) -> str | None:
 
 
 def db() -> pymysql.connections.Connection:
-    parsed = urlparse(value("MYSQL_DSN", True))
-    return pymysql.connect(host=parsed.hostname, port=parsed.port or 3306, user=unquote(parsed.username or ""),
-        password=unquote(parsed.password or ""), database=parsed.path.lstrip("/"), charset="utf8mb4",
+    return pymysql.connect(**mysql_connection_params(os.environ), charset="utf8mb4",
         cursorclass=pymysql.cursors.DictCursor, autocommit=False)
 
 
@@ -142,7 +142,7 @@ def local_hash_embedding(text: str) -> list[float]:
 
 
 def embed(text: str) -> list[float] | None:
-    if (value("EMBEDDING_PROVIDER") or "local_hash") == "local_hash":
+    if runtime_config.embedding_provider == "local_hash":
         return local_hash_embedding(text)
     base, model = value("EMBEDDING_BASE_URL"), value("EMBEDDING_MODEL")
     if not base or not model:
