@@ -19,7 +19,7 @@ from minio import Minio
 from pydantic import BaseModel, Field
 
 from .config import settings
-from .database import connect
+from .core.database import connect
 from .readiness import check_readiness
 from .dashboard import DashboardStats, load_dashboard_stats
 from .agent_runtime import generate_agent_answer
