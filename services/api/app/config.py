@@ -11,6 +11,10 @@ def env_bool(name: str, default: bool = False) -> bool:
     return parse_bool(os.environ, name, default)
 
 
+def env_csv(name: str) -> tuple[str, ...]:
+    return tuple(item.strip() for item in os.getenv(name, "").split(",") if item.strip())
+
+
 @dataclass(frozen=True)
 class Settings:
     app_env: str = runtime_config.app_env
@@ -41,6 +45,10 @@ class Settings:
     llm_api_key: str = os.getenv("LLM_API_KEY", "")
     llm_model: str = os.getenv("LLM_MODEL", "")
     model_credential_key: str = os.getenv("MODEL_CREDENTIAL_KEY", "")
+    mcp_allowed_hosts: tuple[str, ...] = env_csv("MCP_ALLOWED_HOSTS")
+    mcp_allowed_cidrs: tuple[str, ...] = env_csv("MCP_ALLOWED_CIDRS")
+    model_allowed_hosts: tuple[str, ...] = env_csv("MODEL_ALLOWED_HOSTS")
+    model_allowed_cidrs: tuple[str, ...] = env_csv("MODEL_ALLOWED_CIDRS")
     rerank_base_url: str = os.getenv("RERANK_BASE_URL", "")
     rerank_api_key: str = os.getenv("RERANK_API_KEY", "")
     rerank_model: str = os.getenv("RERANK_MODEL", "")

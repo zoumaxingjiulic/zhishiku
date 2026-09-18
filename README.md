@@ -64,6 +64,10 @@ Worker：从 MySQL ingestion_job 领取任务，执行解析/OCR、切片、向�
 
 平台支持 MCP Streamable HTTP + Bearer Token。Token 使用与大模型网关相同的 `MODEL_CREDENTIAL_KEY` 做 Fernet 加密，数据库和 API 均不返回明文。连接流程为：
 
+所有 MCP 和模型网关出站访问默认拒绝。部署时必须配置精确主机允许列表；私网 MCP 还必须同时配置允许网段。例如当前 ERP/OA 可配置 `MCP_ALLOWED_HOSTS=192.168.1.33` 与 `MCP_ALLOWED_CIDRS=192.168.1.0/24`，DashScope 可配置 `MODEL_ALLOWED_HOSTS=dashscope.aliyuncs.com`。平台会在实际建立 TCP 连接时重新解析并校验全部 DNS 地址，只连接本次校验通过的具体 IP，同时保留原主机名用于 HTTP Host 与 TLS SNI/证书验证；连接不跨解析结果复用，并拒绝 loopback、link-local、multicast、unspecified、reserved、云 metadata 地址及重定向。应用层策略仍应配合容器/宿主机防火墙或云 NSG 的出站 ACL，形成纵深防御。
+
+安全传输层显式锁定 `httpcore==1.0.9`，因为 DNS pinning 使用其 `NetworkBackend`/`ConnectionPool` 接口。升级 HTTPX/httpcore 前必须先运行出站策略、IPv4/IPv6、Host/SNI 和总时限兼容测试。
+
 ~~~text
 配置连接地址和 Token
 → MCP initialize

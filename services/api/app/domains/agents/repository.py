@@ -326,7 +326,7 @@ class AgentRepository:
         self.cursor.execute(
             "SELECT ct.id,ct.tool_name,ct.title,ct.description,ct.input_schema_json,ct.output_schema_json,"
             "ct.annotations_json,c.id connector_id,c.code connector_code,c.name connector_name,"
-            "c.base_url,c.credential_ciphertext,c.protocol_version "
+            "c.base_url,c.credential_ciphertext,c.protocol_version,ct.status tool_status,c.status connector_status "
             "FROM agent_connector_tool act JOIN connector_tool ct ON ct.id=act.connector_tool_id "
             "JOIN system_connector c ON c.id=ct.connector_id "
             "WHERE act.agent_id=%s AND act.permission='read' AND ct.status='active' AND c.status='active' "
@@ -346,7 +346,9 @@ class AgentRepository:
             return []
         placeholders = ",".join(["%s"] * len(connector_tool_ids))
         self.cursor.execute(
-            "SELECT ct.id,ct.tool_name,ct.annotations_json,c.code connector_code "
+            "SELECT ct.id,ct.tool_name,ct.title,ct.description,ct.input_schema_json,ct.output_schema_json,"
+            "ct.annotations_json,c.id connector_id,c.code connector_code,c.name connector_name,"
+            "c.base_url,c.credential_ciphertext,c.protocol_version,ct.status tool_status,c.status connector_status "
             "FROM agent_connector_tool act JOIN connector_tool ct ON ct.id=act.connector_tool_id "
             "JOIN system_connector c ON c.id=ct.connector_id "
             "WHERE act.agent_id=%s AND act.permission='read' "
@@ -356,6 +358,8 @@ class AgentRepository:
         )
         rows = list(self.cursor.fetchall())
         for row in rows:
+            row["input_schema"] = parse_json(row.pop("input_schema_json", None), {})
+            row["output_schema"] = parse_json(row.pop("output_schema_json", None), {})
             row["annotations"] = parse_json(row.pop("annotations_json", None), {})
         return rows
 
@@ -375,7 +379,8 @@ class AgentRepository:
 
     def model_gateway(self, profile_id: int) -> dict | None:
         self.cursor.execute(
-            "SELECT base_url,api_key_ciphertext,model_name FROM llm_gateway_profile "
+            "SELECT id,name,provider_type,base_url,api_key_ciphertext,model_name,capabilities_json,config_json,status "
+            "FROM llm_gateway_profile "
             "WHERE id=%s AND status='active'",
             (profile_id,),
         )

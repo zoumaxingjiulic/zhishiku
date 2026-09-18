@@ -6,22 +6,29 @@ import logging
 import time
 import uuid
 
-from cryptography.fernet import Fernet, InvalidToken
-from jsonschema import validate
+from jsonschema import SchemaError, ValidationError as JsonSchemaValidationError, validate
 
 from ..agent_runtime import generate_agent_answer
 from ..config import settings
+from ..core.credentials import decrypt_credential
 from ..core.database import UnitOfWork
 from ..core.errors import AuthorizationError, NotFoundError, ServiceUnavailableError, ValidationError
+from ..core.outbound import OutboundPolicy
+from ..core.redaction import redact_values
 from ..domains.agents.repository import AgentRepository, parse_json
 from ..domains.agents.service import AgentService
 from ..domains.auth.repository import AuthRepository
 from ..domains.auth.service import AuthService
-from ..mcp_client import McpError, StreamableHttpMcpClient
+from .mcp import McpError, StreamableHttpMcpClient
 from ..quality import RetrievalPolicy, retrieve, retrieval_query
 
 
 log = logging.getLogger("kb-api.chat")
+
+MAX_TOOL_RESULT_DEPTH = 16
+MAX_TOOL_RESULT_ITEMS = 500
+MAX_TOOL_TEXT_CHARS = 32_000
+MAX_TOOL_RESULT_BYTES = 256 * 1024
 
 
 class TaskCancelled(Exception):
@@ -33,20 +40,10 @@ def require_same_knowledge_scope(expected: list[int], current: list[int]) -> Non
         raise AuthorizationError("智能体知识授权已变更，请重新提交问题")
 
 
-def _decrypt(value: str | None) -> str:
-    if not value:
-        return ""
-    if not settings.model_credential_key:
-        raise ServiceUnavailableError("凭据加密密钥未配置")
-    try:
-        return Fernet(settings.model_credential_key.encode()).decrypt(value.encode()).decode()
-    except (InvalidToken, ValueError, TypeError) as exc:
-        raise ServiceUnavailableError("凭据无法解密") from exc
-
-
 def bound_agent_tools(agent_id: int) -> list[dict]:
     with UnitOfWork() as uow:
-        return AgentRepository(uow.cursor).bound_tools(agent_id)
+        rows = AgentRepository(uow.cursor).bound_tools(agent_id)
+    return [sanitize_bound_tool(row) for row in rows]
 
 
 def load_runtime_user(user_id: int) -> dict:
@@ -54,27 +51,130 @@ def load_runtime_user(user_id: int) -> dict:
         return AuthService(uow, AuthRepository(uow.cursor)).load_user(user_id)
 
 
-def execute_bound_tool(tool: dict, arguments: dict) -> tuple[dict, dict]:
-    with StreamableHttpMcpClient(
-        tool["base_url"], _decrypt(tool.get("credential_ciphertext")), tool["protocol_version"]
-    ) as client:
-        result = client.call_tool(tool["tool_name"], arguments)
+def _bounded_tool_value(value, depth: int = 0, counter: list[int] | None = None):
+    if depth > MAX_TOOL_RESULT_DEPTH:
+        raise McpError("MCP 工具结果层级超过上限")
+    counter = counter or [0]
+    counter[0] += 1
+    if counter[0] > MAX_TOOL_RESULT_ITEMS:
+        raise McpError("MCP 工具结果条目超过上限")
+    if isinstance(value, dict):
+        clean = {str(key): _bounded_tool_value(item, depth + 1, counter) for key, item in value.items()}
+    elif isinstance(value, list):
+        clean = [_bounded_tool_value(item, depth + 1, counter) for item in value]
+    elif value is None or isinstance(value, (bool, int, float)):
+        clean = value
+    elif isinstance(value, str):
+        if len(value) > MAX_TOOL_TEXT_CHARS:
+            raise McpError("MCP 工具结果文本超过上限")
+        clean = value
+    else:
+        raise McpError("MCP 工具结果包含不支持的数据类型")
+    if depth == 0 and len(json.dumps(clean, ensure_ascii=False).encode()) > MAX_TOOL_RESULT_BYTES:
+        raise McpError("MCP 工具结果超过大小上限")
+    return clean
+
+
+def _safe_tool_content(content) -> list[dict]:
+    if not isinstance(content, list) or len(content) > 100:
+        raise McpError("MCP 工具内容格式无效或条目过多")
+    clean = []
+    for item in content:
+        if not isinstance(item, dict):
+            raise McpError("MCP 工具内容格式无效")
+        if item.get("type") == "text":
+            text = item.get("text")
+            if not isinstance(text, str) or len(text) > MAX_TOOL_TEXT_CHARS:
+                raise McpError("MCP 工具文本内容无效或超过上限")
+            clean.append({"type": "text", "text": text})
+        elif item.get("type") == "resource_link":
+            allowed = ("type", "name", "title", "uri", "description", "mimeType", "size")
+            rebuilt = {key: item[key] for key in allowed if key in item}
+            if not isinstance(rebuilt.get("uri"), str) or len(rebuilt["uri"]) > 2048:
+                raise McpError("MCP 资源链接无效")
+            for key in ("name", "title", "description", "mimeType"):
+                if key in rebuilt and (not isinstance(rebuilt[key], str) or len(rebuilt[key]) > 4000):
+                    raise McpError("MCP 资源链接元数据无效")
+            if "size" in rebuilt and not isinstance(rebuilt["size"], int):
+                raise McpError("MCP 资源链接元数据无效")
+            clean.append(rebuilt)
+        else:
+            raise McpError("MCP 工具返回不支持的内容类型")
+    return _bounded_tool_value(clean)
+
+
+def tool_binding_version(tool: dict) -> str:
+    ciphertext = tool.get("credential_ciphertext") or ""
+    snapshot = {
+        key: tool.get(key) for key in (
+            "id", "tool_name", "title", "description", "input_schema", "output_schema", "annotations",
+            "connector_id", "connector_code", "connector_name", "protocol_version", "base_url",
+            "tool_status", "connector_status",
+        )
+    }
+    snapshot["credential_digest"] = hashlib.sha256(str(ciphertext).encode()).hexdigest()
+    return hashlib.sha256(
+        json.dumps(snapshot, sort_keys=True, ensure_ascii=False, default=str).encode()
+    ).hexdigest()
+
+
+def sanitize_bound_tool(tool: dict, decryptor=decrypt_credential) -> dict:
+    """Sanitize historical connector metadata without exposing the credential."""
+    result = dict(tool)
+    token = decryptor(result.get("credential_ciphertext"))
+    try:
+        critical = ("tool_name", "connector_code", "base_url", "protocol_version")
+        for key in critical:
+            if redact_values(result.get(key), [token]) != result.get(key):
+                raise ServiceUnavailableError("授权工具配置包含不可安全使用的数据")
+        for key in ("connector_name", "title", "description", "input_schema", "output_schema", "annotations"):
+            result[key] = redact_values(result.get(key), [token])
+        result["_binding_version"] = tool_binding_version(tool)
+        return result
+    finally:
+        token = ""
+
+
+def execute_bound_tool(
+    tool: dict, arguments: dict, additional_secrets: list[str] | tuple[str, ...] = (),
+) -> tuple[dict, dict]:
+    token = decrypt_credential(tool.get("credential_ciphertext"))
+    try:
+        with StreamableHttpMcpClient(
+            tool["base_url"], token, tool["protocol_version"]
+        ) as client:
+            result = redact_values(
+                client.call_tool(tool["tool_name"], arguments),
+                [token, settings.llm_api_key, *additional_secrets],
+            )
+    finally:
+        token = ""
     if result.get("isError"):
         raise McpError("MCP 工具返回执行错误")
     structured = result.get("structuredContent")
     content = result.get("content") or []
-    tool_result = structured if structured is not None else {
-        "content": [item for item in content if item.get("type") in {"text", "resource_link"}]
-    }
+    if structured is not None:
+        schema = tool.get("output_schema") or {}
+        if schema:
+            try:
+                validate(structured, schema)
+            except (JsonSchemaValidationError, SchemaError):
+                raise McpError("MCP 工具结果不符合已绑定输出 Schema") from None
+        tool_result = _bounded_tool_value(structured)
+    else:
+        tool_result = {"content": _safe_tool_content(content)}
     trace_id = structured.get("trace_id") if isinstance(structured, dict) else None
     return tool_result, {
         "connector": tool["connector_code"], "connector_name": tool["connector_name"],
         "tool": tool["tool_name"], "connector_tool_id": tool.get("id"),
         "success": True, "trace_id": trace_id,
+        "_binding_version": tool.get("_binding_version") or tool_binding_version(tool),
     }
 
 
-def checked_executor(user: dict, agent_id: int):
+def checked_executor(
+    user: dict, agent_id: int, redaction_secrets: list[str] | tuple[str, ...] = (),
+):
     def execute(tool: dict, arguments: dict) -> tuple[dict, dict]:
         from .chat_tasks import progress
 
@@ -83,11 +183,14 @@ def checked_executor(user: dict, agent_id: int):
             repository = AgentRepository(uow.cursor)
             fresh_user = AuthService(uow, AuthRepository(uow.cursor)).load_user(user["id"])
             AgentService(uow, repository).authorize_agent(fresh_user, agent_id)
-            fresh = next((item for item in repository.bound_tools(agent_id) if item["id"] == tool["id"]), None)
+            raw = next((item for item in repository.bound_tools(agent_id) if item["id"] == tool["id"]), None)
+        fresh = sanitize_bound_tool(raw) if raw else None
         if not fresh or fresh.get("annotations", {}).get("readOnlyHint") is not True:
             raise AuthorizationError("工具授权已撤销")
+        if fresh.get("_binding_version") != tool.get("_binding_version"):
+            raise AuthorizationError("工具配置已变更，请重新提交问题")
         validate(arguments, fresh["input_schema"])
-        return execute_bound_tool(fresh, arguments)
+        return execute_bound_tool(fresh, arguments, redaction_secrets)
 
     return execute
 
@@ -112,6 +215,38 @@ def retrieval_config(agent_id: int, knowledge_base_ids: list[int]) -> dict:
     return RetrievalPolicy(**config).model_dump()
 
 
+def sanitize_model_gateway_row(row: dict, decryptor=decrypt_credential, outbound_validator=None) -> dict:
+    api_key = decryptor(row.get("api_key_ciphertext"))
+    try:
+        safe_base_url = redact_values(row.get("base_url"), [api_key])
+        safe_model_name = redact_values(row.get("model_name"), [api_key])
+        # These values control routing and are sent to the provider. Redacting
+        # them would silently change semantics, so historical pollution fails safe.
+        if safe_base_url != row.get("base_url") or safe_model_name != row.get("model_name"):
+            raise ServiceUnavailableError("智能体模型配置包含不可安全使用的数据")
+        # Sanitize all remaining profile material even though current runtime
+        # only needs the two critical fields.
+        redact_values({
+            "name": row.get("name"), "provider_type": row.get("provider_type"),
+            "capabilities": parse_json(row.get("capabilities_json"), []),
+            "config": parse_json(row.get("config_json"), {}),
+        }, [api_key])
+        try:
+            validator = outbound_validator or OutboundPolicy(
+                settings.model_allowed_hosts, settings.model_allowed_cidrs
+            ).validate
+            try:
+                validator(safe_base_url, deadline=time.monotonic() + 10)
+            except TypeError:
+                validator(safe_base_url)
+        except ValidationError:
+            raise ServiceUnavailableError("智能体模型出站目标未获允许") from None
+        return {"base_url": safe_base_url, "api_key": api_key, "model_name": safe_model_name}
+    except Exception:
+        api_key = ""
+        raise
+
+
 def agent_model_gateway(profile_id: int | None) -> dict | None:
     if profile_id is None:
         return None
@@ -119,8 +254,7 @@ def agent_model_gateway(profile_id: int | None) -> dict | None:
         row = AgentRepository(uow.cursor).model_gateway(profile_id)
     if not row:
         raise ServiceUnavailableError("智能体绑定的模型配置不可用")
-    return {"base_url": row["base_url"], "api_key": _decrypt(row.get("api_key_ciphertext")),
-            "model_name": row["model_name"]}
+    return sanitize_model_gateway_row(row)
 
 
 def effective_departments(user: dict) -> list[int]:
@@ -196,6 +330,20 @@ def persist_successful_chat(
         }
         if set(used_tool_ids) != set(current_tools):
             raise AuthorizationError("工具授权已变更，请重新提交问题")
+        expected_versions = {
+            event["connector_tool_id"]: event.get("_binding_version")
+            for event in tool_events if event.get("connector_tool_id") in used_tool_ids
+        }
+        if any(
+            not expected_versions.get(tool_id)
+            or expected_versions[tool_id] != tool_binding_version(current_tools[tool_id])
+            for tool_id in used_tool_ids
+        ):
+            raise AuthorizationError("工具配置已变更，请重新提交问题")
+
+    # Internal optimistic token is never returned, persisted or audited.
+    for event in tool_events:
+        event.pop("_binding_version", None)
 
     if task:
         current_task = repository.get_task(task["id"], user_id, for_update=True)
@@ -305,13 +453,19 @@ def execute_chat(agent_id: int, payload, user: dict, *, ip_address: str,
         else:
             retrieve_ms = 0.0
         gateway = agent_model_gateway(agent.get("llm_gateway_profile_id"))
+        gateway_model_name = gateway["model_name"] if gateway else None
         stage = time.perf_counter()
-        answer, answer_method, tool_events, cited_units = generate_agent_answer(
-            agent["system_prompt"], payload.question, units, history, tools,
-            checked_executor(user, agent_id), agent.get("llm_model"), gateway,
-            config["context_max_chars"], emit=emit,
-            max_tool_rounds=config["max_tool_rounds"], max_tool_calls=config["max_tool_calls"],
-        )
+        try:
+            answer, answer_method, tool_events, cited_units = generate_agent_answer(
+                agent["system_prompt"], payload.question, units, history, tools,
+                checked_executor(user, agent_id, [gateway.get("api_key", "")] if gateway else []),
+                agent.get("llm_model"), gateway,
+                config["context_max_chars"], emit=emit,
+                max_tool_rounds=config["max_tool_rounds"], max_tool_calls=config["max_tool_calls"],
+            )
+        finally:
+            if gateway:
+                gateway["api_key"] = ""
         timings = {"retrieve_ms": retrieve_ms,
                    "generation_ms": round((time.perf_counter() - stage) * 1000, 1),
                    "total_ms": round((time.perf_counter() - started) * 1000, 1)}
@@ -332,7 +486,7 @@ def execute_chat(agent_id: int, payload, user: dict, *, ip_address: str,
             "candidate_counts": counts,
             "timings": timings,
         }
-        model_name = gateway["model_name"] if gateway else (
+        model_name = gateway_model_name if gateway_model_name else (
             agent.get("llm_model") or settings.llm_model or answer_method
         )
         with UnitOfWork() as final_uow:

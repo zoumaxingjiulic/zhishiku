@@ -33,6 +33,10 @@ class ServiceUnavailableError(ApplicationError):
     """A configured runtime dependency cannot currently serve the request."""
 
 
+class UpstreamServiceError(ApplicationError):
+    """An upstream system failed while serving an otherwise valid request."""
+
+
 class CompensationRequiredError(ApplicationError):
     """A cross-store operation needs operator reconciliation."""
 

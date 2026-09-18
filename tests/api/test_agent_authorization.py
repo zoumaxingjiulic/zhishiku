@@ -229,6 +229,25 @@ def test_answer_is_discarded_when_knowledge_authorization_changes_mid_run():
         require_same_knowledge_scope([2, 3], [2])
 
 
+def test_tool_binding_version_changes_for_every_model_visible_or_execution_field():
+    from app.runtime.chat import tool_binding_version
+
+    baseline = {
+        "id": 1, "tool_name": "stock", "title": "Stock", "description": "desc",
+        "input_schema": {"type": "object"}, "output_schema": {"type": "object"},
+        "annotations": {"readOnlyHint": True}, "connector_id": 2, "connector_code": "ERP",
+        "connector_name": "ERP", "protocol_version": "1", "base_url": "https://erp.test/mcp",
+        "tool_status": "active", "connector_status": "active", "credential_ciphertext": "cipher-a",
+    }
+    version = tool_binding_version(baseline)
+    for key, changed in (
+        ("title", "New"), ("description", "new desc"), ("connector_name", "New ERP"),
+        ("output_schema", {"type": "array"}), ("tool_status", "missing"),
+        ("credential_ciphertext", "cipher-b"),
+    ):
+        assert tool_binding_version({**baseline, key: changed}) != version
+
+
 class FinalizationRepository(AuthorizationRepository):
     def __init__(self, race=None, fail_result=False):
         super().__init__(configured=(2,), accessible=(2,), department_grant=True, strict=True)
@@ -276,9 +295,16 @@ class FinalizationRepository(AuthorizationRepository):
 
     def bound_tools_by_ids(self, agent_id, connector_tool_ids, for_update=False):
         self.events.append(("tools", for_update))
-        return [] if self.race == "tool" else [
+        rows = [] if self.race == "tool" else [
             tool for tool in self.tools if tool["id"] in connector_tool_ids
         ]
+        if self.race == "tool_config" and rows:
+            rows = [{**rows[0], "output_schema": {"type": "object"}}]
+        if self.race == "tool_description" and rows:
+            rows = [{**rows[0], "description": "changed"}]
+        if self.race == "connector_name" and rows:
+            rows = [{**rows[0], "connector_name": "changed"}]
+        return rows
 
     def get_task(self, task_id, user_id, for_update=False):
         self.events.append(("task", for_update))
@@ -326,7 +352,10 @@ class FinalizationAuthService:
         return self.user
 
 
-@pytest.mark.parametrize("race", ["agent", "kb", "binding", "document", "tool", "cancel"])
+@pytest.mark.parametrize("race", [
+    "agent", "kb", "binding", "document", "tool", "tool_config",
+    "tool_description", "connector_name", "cancel",
+])
 def test_finalization_rechecks_every_acl_and_discards_generated_answer(monkeypatch, race):
     """Revocation during generation must win before any generated answer is persisted."""
     from app.runtime import chat
@@ -348,7 +377,8 @@ def test_finalization_rechecks_every_acl_and_discards_generated_answer(monkeypat
             question="库存？",
             answer="敏感回答",
             citations=[{"document_id": 51}],
-            tool_events=[{"connector_tool_id": 31, "connector": "ERP", "tool": "stock"}],
+            tool_events=[{"connector_tool_id": 31, "connector": "ERP", "tool": "stock",
+                          "_binding_version": chat.tool_binding_version(repository.tools[0])}],
             model_name="m",
             route="hybrid",
             counts={},
@@ -383,7 +413,8 @@ def test_finalization_locks_all_current_authorization_reads_and_commits_result_a
         question="库存？",
         answer=result["answer"],
         citations=[{"document_id": 51}],
-        tool_events=[{"connector_tool_id": 31, "connector": "ERP", "tool": "stock"}],
+        tool_events=[{"connector_tool_id": 31, "connector": "ERP", "tool": "stock",
+                      "_binding_version": chat.tool_binding_version(repository.tools[0])}],
         model_name="m",
         route="hybrid",
         counts={},

@@ -14,6 +14,7 @@ from .errors import (
     NotFoundError,
     RateLimitError,
     ServiceUnavailableError,
+    UpstreamServiceError,
     ValidationError,
 )
 
@@ -32,6 +33,7 @@ def as_http_exception(error: ApplicationError) -> HTTPException:
         CompensationRequiredError: 503,
         RateLimitError: 429,
         ServiceUnavailableError: 503,
+        UpstreamServiceError: 502,
         ValidationError: 422,
     }
     return HTTPException(status_codes.get(type(error), 400), str(error))

@@ -13,6 +13,22 @@ from .repository import UsersRepository
 from .schemas import DepartmentCreate, UserCreate, UserUpdate
 
 
+def require_current_platform_admin(repository: UsersRepository, actor_id: int) -> None:
+    """Validate administrator membership with locking current reads.
+
+    This follows the non-membership-mutation lock order used by the agent domain:
+    actor row, then actor membership rows. It intentionally does not acquire the
+    PLATFORM_ADMIN department mutex reserved for membership-changing operations.
+    """
+    users = repository.lock_users([actor_id])
+    actor = users.get(actor_id)
+    if not actor or actor.get("status") != 1 or actor.get("deleted_at") is not None:
+        raise AuthorizationError("仅平台管理员可以执行此操作")
+    admin_department_id = repository.platform_admin_department_id()
+    if admin_department_id not in repository.lock_user_department_ids(actor_id):
+        raise AuthorizationError("仅平台管理员可以执行此操作")
+
+
 def generate_temporary_password() -> str:
     alphabet = string.ascii_letters + string.digits + "!@#$%&*"
     required = [

@@ -93,3 +93,34 @@ def test_unknown_tool_call_is_reported_without_binding_id_and_answer_continues(m
     assert method == "llm_tools"
     assert events[0]["error_code"] == "NOT_AUTHORIZED_OR_BUDGET"
     assert "connector_tool_id" not in events[0]
+
+
+def test_model_response_cannot_echo_current_api_key(monkeypatch):
+    secret = "model-api-key-long-secret"
+    monkeypatch.setattr(agent_runtime, "_chat", lambda *_: {"content": f"echo {secret}"})
+
+    answer, _, _, _ = agent_runtime.generate_agent_answer(
+        "system", "question", [], [], [], lambda *_: ({}, {}),
+        gateway={"base_url": "https://vendor.test/v1", "api_key": secret, "model_name": "test"},
+    )
+
+    assert secret not in answer
+    assert "[REDACTED]" in answer
+
+
+def test_model_transport_policy_failure_is_normalized_without_host_or_secret(monkeypatch):
+    from app.core.errors import ValidationError
+
+    secret = "provider-secret-value"
+    monkeypatch.setattr(
+        agent_runtime.OutboundPolicy, "validate",
+        lambda self, url, **kwargs: (_ for _ in ()).throw(ValidationError(f"{url} {secret}")),
+    )
+    try:
+        agent_runtime._chat("https://private.vendor.example/v1", secret, {})
+    except agent_runtime.ModelRuntimeError as exc:
+        assert str(exc) == "模型服务调用失败"
+        assert secret not in str(exc)
+        assert "private.vendor.example" not in str(exc)
+    else:
+        raise AssertionError("blocked model destination must fail")
