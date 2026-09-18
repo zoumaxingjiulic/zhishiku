@@ -237,9 +237,12 @@ git commit -m "feat: add accurate dashboard statistics"
 **文件：**
 - 创建：`shared/python/enterprise_kb/__init__.py`
 - 创建：`shared/python/enterprise_kb/config.py`
+- 创建：`shared/python/pyproject.toml`
 - 修改：`services/api/app/config.py`
 - 修改：`services/api/app/database.py`
 - 修改：`services/worker/app/main.py`
+- 修改：`services/api/Dockerfile`
+- 修改：`services/worker/Dockerfile`
 - 创建：`tests/test_config.py`
 - 修改：`.env.example`
 - 修改：`deploy/docker-compose.yml`
@@ -269,6 +272,8 @@ def test_bool_parser_rejects_unknown_text(): ...
 
 `config.py` 只接收映射并返回不可变配置；数据库参数使用 `MYSQL_HOST`、`MYSQL_PORT`、`MYSQL_USER`、`MYSQL_PASSWORD`、`MYSQL_DATABASE`，不把密码拼入 URL。兼容期仅在缺少独立参数时解析 `MYSQL_DSN`。
 
+`shared/python/pyproject.toml` 将 `enterprise_kb` 声明为可安装的内部包。API 与 Worker 的 Compose 构建上下文改为仓库根目录，Dockerfile 使用根上下文分别复制服务 requirements、共享包和服务代码，再执行 `pip install --no-cache-dir ./shared/python`。容器不得依赖开发机的 `PYTHONPATH`。
+
 API `connect()` 和 Worker `connect()` 都调用同一个 `mysql_connection_params`；异常文本只能列出缺失变量名，不能打印值。
 
 - [ ] **步骤 4：更新 Compose 与安全默认值**
@@ -289,13 +294,15 @@ LOCAL_TEST_MODE=false
 
 ```powershell
 E:\zhishiku\.venv\Scripts\python.exe -m pytest tests/test_config.py -q
+docker build -f services/api/Dockerfile --target runtime -t enterprise-kb-api:config-test .
+docker build -f services/worker/Dockerfile --target runtime -t enterprise-kb-worker:config-test .
 docker compose --env-file .env.example -f deploy/docker-compose.yml -f deploy/docker-compose.models.yml config --quiet
 ```
 
 提交：
 
 ```powershell
-git add shared/python services/api/app/config.py services/api/app/database.py services/worker/app/main.py tests/test_config.py .env.example deploy/docker-compose.yml
+git add shared/python services/api/app/config.py services/api/app/database.py services/worker/app/main.py services/api/Dockerfile services/worker/Dockerfile tests/test_config.py .env.example deploy/docker-compose.yml
 git commit -m "refactor: centralize safe runtime configuration"
 ```
 
@@ -448,4 +455,3 @@ git commit -m "chore: add repeatable quality and container gates"
 - [ ] 对照规格核验：无数据库 DDL、无现有 API 破坏、无凭据输出。
 - [ ] 生成整个阶段 diff 的独立代码审查，并修复 Critical/Important 发现。
 - [ ] 更新路线图账本并进入阶段二计划编写，不直接部署服务器。
-
