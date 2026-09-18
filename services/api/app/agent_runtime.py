@@ -163,12 +163,18 @@ def generate_agent_answer(
             result = {'error': '工具未授权或超出执行预算'}
             if tool and used < max_tool_calls and round_index < max_tool_rounds:
                 used += 1
+                event.update(
+                    connector=tool['connector_code'],
+                    tool=tool['tool_name'],
+                    connector_tool_id=tool.get('id'),
+                )
                 if emit:
                     emit('stage', '查询 ' + tool['connector_name'])
                 try:
                     arguments = json.loads(function.get('arguments') or '{}')
                     validate_json(arguments, tool.get('input_schema') or {'type': 'object'})
-                    result, event = tool_executor(tool, arguments)
+                    result, executed_event = tool_executor(tool, arguments)
+                    event.update(executed_event)
                 except (json.JSONDecodeError, ValidationError, ValueError):
                     event['error_code'] = 'INVALID_ARGUMENT'
                     result = {'error': '参数不符合工具结构要求，请补充或修正参数，不要猜测。'}
@@ -177,7 +183,11 @@ def generate_agent_answer(
                         raise
                     event['error_code'] = type(exc).__name__
                     result = {'error': '企业系统暂时不可用，请稍后重试。'}
-                event.update(connector=tool['connector_code'], tool=tool['tool_name'])
+                event.update(
+                    connector=tool['connector_code'],
+                    tool=tool['tool_name'],
+                    connector_tool_id=tool.get('id'),
+                )
             else:
                 event['error_code'] = 'NOT_AUTHORIZED_OR_BUDGET'
             event['duration_ms'] = round((time.perf_counter() - started) * 1000, 1)

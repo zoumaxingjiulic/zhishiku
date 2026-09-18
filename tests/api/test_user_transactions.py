@@ -53,9 +53,17 @@ class RecordingUsersRepository:
         self.events = events
         self.fail_insert = fail_insert
 
-    def is_platform_admin(self, user_id: int) -> bool:
+    def lock_platform_admin_department(self) -> int:
+        self.events.append("lock:PLATFORM_ADMIN")
+        return 1
+
+    def lock_users(self, user_ids: list[int]) -> dict[int, dict]:
+        self.events.append(f"users:{id(self.cursor)}:{','.join(str(item) for item in user_ids)}")
+        return {item: {"id": item, "status": 1, "deleted_at": None} for item in user_ids}
+
+    def lock_user_department_ids(self, user_id: int) -> set[int]:
         self.events.append(f"permission:{id(self.cursor)}:{user_id}")
-        return True
+        return {1}
 
     def find_active_department(self, department_id: int) -> dict:
         self.events.append(f"department:{id(self.cursor)}:{department_id}")
@@ -107,6 +115,8 @@ def test_admin_check_and_user_write_share_one_uow_cursor_and_commit_once() -> No
     assert result["temporary_password"] == "TempPassword#9"
     assert events == [
         "connection.cursor",
+        "lock:PLATFORM_ADMIN",
+        f"users:{cursor_id}:1",
         f"permission:{cursor_id}:1",
         f"department:{cursor_id}:2",
         f"write:{cursor_id}:1",
@@ -137,6 +147,8 @@ def test_user_write_failure_rolls_back_the_authorization_transaction() -> None:
     cursor_id = id(repository.cursor)
     assert events == [
         "connection.cursor",
+        "lock:PLATFORM_ADMIN",
+        f"users:{cursor_id}:1",
         f"permission:{cursor_id}:1",
         f"department:{cursor_id}:2",
         f"write:{cursor_id}:1",
@@ -157,9 +169,17 @@ class GuardRepository:
         self.events = events
         self.active_admin_ids = active_admin_ids if active_admin_ids is not None else {2, 3}
 
-    def is_platform_admin(self, user_id: int) -> bool:
-        self.events.append(f"admin:{user_id}")
-        return True
+    def platform_admin_department_id(self) -> int:
+        self.events.append("read:PLATFORM_ADMIN")
+        return 1
+
+    def lock_users(self, user_ids: list[int]) -> dict[int, dict]:
+        self.events.append("users:" + ",".join(str(item) for item in user_ids))
+        return {item: {"id": item, "status": 1, "deleted_at": None} for item in user_ids}
+
+    def lock_user_department_ids(self, user_id: int) -> set[int]:
+        self.events.append(f"membership:{user_id}")
+        return {1} if user_id in self.active_admin_ids or user_id == 1 or user_id == 3 else set()
 
     def user_exists(self, user_id: int) -> bool:
         self.events.append(f"exists:{user_id}")
@@ -171,10 +191,11 @@ class GuardRepository:
             return None
         return {"id": department_id, "code": "HR"}
 
-    def lock_platform_admin_department(self) -> None:
+    def lock_platform_admin_department(self) -> int:
         self.events.append("lock:PLATFORM_ADMIN")
+        return 1
 
-    def lock_active_platform_admin_user_ids(self) -> set[int]:
+    def lock_active_platform_admin_user_ids(self, department_id: int | None = None) -> set[int]:
         self.events.append("members:PLATFORM_ADMIN")
         return set(self.active_admin_ids)
 
@@ -226,6 +247,7 @@ def test_last_admin_update_locks_before_membership_read_and_rolls_back() -> None
             service.update_user(1, 2, update_payload(), "127.0.0.1")
 
     assert events.index("lock:PLATFORM_ADMIN") < events.index("members:PLATFORM_ADMIN")
+    assert events.index("lock:PLATFORM_ADMIN") < events.index("users:1,2")
     assert not any(event.startswith("write:") for event in events)
     assert events[-3:] == ["connection.rollback", "cursor.close", "connection.close"]
 
@@ -247,6 +269,7 @@ def test_admin_reduction_holds_lock_until_write_and_commit(operation: str) -> No
             write_event = "write:delete:2"
 
     assert events.index("lock:PLATFORM_ADMIN") < events.index("members:PLATFORM_ADMIN")
+    assert events.index("lock:PLATFORM_ADMIN") < events.index("users:1,2")
     assert events.index("members:PLATFORM_ADMIN") < events.index(write_event)
     assert events.index(write_event) < events.index("connection.commit")
 
@@ -322,10 +345,10 @@ def test_repository_uses_a_current_locking_read_for_active_admin_members() -> No
             return [{"id": 2}, {"id": 3}]
 
     cursor = MemberCursor()
-    member_ids = UsersRepository(cursor).lock_active_platform_admin_user_ids()
+    member_ids = UsersRepository(cursor).lock_active_platform_admin_user_ids(1)
 
     assert member_ids == {2, 3}
-    assert "d.code='PLATFORM_ADMIN'" in cursor.statement
+    assert "ud.department_id=%s" in cursor.statement
     assert "u.status=1" in cursor.statement
     assert "u.deleted_at IS NULL" in cursor.statement
     assert cursor.statement.endswith("FOR UPDATE")
@@ -345,6 +368,46 @@ def test_waiting_transaction_uses_latest_locked_admin_membership() -> None:
     assert events.index("lock:PLATFORM_ADMIN") < events.index("members:PLATFORM_ADMIN")
     assert not any(event.startswith("write:") for event in events)
     assert events[-3:] == ["connection.rollback", "cursor.close", "connection.close"]
+
+
+def test_promotion_takes_admin_mutex_before_any_user_row_lock() -> None:
+    """Promotion writes the same membership set as demotion and must use the same lock prefix."""
+    events: list[str] = []
+    uow = make_uow(events)
+
+    with uow:
+        repository = GuardRepository(uow.cursor, events, active_admin_ids={1, 3})
+        repository.find_active_department = lambda department_id: (
+            events.append(f"department:{department_id}") or {"id": department_id, "code": "PLATFORM_ADMIN"}
+        )
+        service = UsersService(uow, repository=repository)
+        service.update_user(1, 2, update_payload(department_id=1), "127.0.0.1")
+
+    assert events.index("lock:PLATFORM_ADMIN") < events.index("users:1,2")
+    assert events.index("users:1,2") < events.index("membership:1")
+    assert events.index("membership:1") < events.index("write:department:2:1")
+
+
+def test_password_reset_uses_admin_mutex_then_sorted_user_rows() -> None:
+    events: list[str] = []
+    uow = make_uow(events)
+
+    with uow:
+        repository = GuardRepository(uow.cursor, events, active_admin_ids={2})
+        repository.update_password = lambda user_id, password_hash: (
+            events.append(f"write:password:{user_id}") or True
+        )
+        service = UsersService(
+            uow,
+            repository=repository,
+            password_generator=lambda: "TempPassword#9",
+            password_hasher=lambda value: f"hash:{value}",
+        )
+        service.reset_password(2, 1)
+
+    assert events.index("lock:PLATFORM_ADMIN") < events.index("users:1,2")
+    assert events.index("users:1,2") < events.index("membership:2")
+    assert events.index("membership:2") < events.index("write:password:1")
 
 
 def test_fastapi_dependency_graph_reuses_one_uow_for_auth_and_admin_query() -> None:

@@ -13,6 +13,7 @@ from app.mcp_client import _response_payload  # noqa: E402
 
 def tool(read_only=True):
     return {
+        "id": 42,
         "connector_code": "ERP_U9",
         "connector_name": "ERP U9 Cloud",
         "tool_name": "u9_get_item",
@@ -70,4 +71,25 @@ def test_runtime_executes_only_mapped_tool_and_returns_trace(monkeypatch):
     assert method == "llm_tools"
     assert calls == [("u9_get_item", {"item_code": "0001"})]
     assert events[0]["success"] is True
+    assert events[0]["connector_tool_id"] == 42
     assert selected == []
+
+
+def test_unknown_tool_call_is_reported_without_binding_id_and_answer_continues(monkeypatch):
+    replies = iter([
+        {"content": None, "tool_calls": [{"id": "call-x", "type": "function", "function": {
+            "name": "UNKNOWN__write", "arguments": "{}"}}]},
+        {"content": "该工具未获授权，未执行。"},
+    ])
+    monkeypatch.setattr(agent_runtime, "_chat", lambda *_: next(replies))
+
+    answer, method, events, _ = agent_runtime.generate_agent_answer(
+        "只调用授权工具", "执行未知工具", [], [], [tool(True)],
+        lambda *_: (_ for _ in ()).throw(AssertionError("unknown tool must not execute")),
+        gateway={"base_url": "http://llm.local/v1", "api_key": "", "model_name": "test"},
+    )
+
+    assert answer == "该工具未获授权，未执行。"
+    assert method == "llm_tools"
+    assert events[0]["error_code"] == "NOT_AUTHORIZED_OR_BUDGET"
+    assert "connector_tool_id" not in events[0]

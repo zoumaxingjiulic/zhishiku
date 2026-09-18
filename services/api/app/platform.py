@@ -6,47 +6,12 @@ from typing import Literal
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field, model_validator
 from .database import connect
+from .domains.agents.schemas import AgentWrite
 from .quality import RetrievalPolicy, retrieve, score_retrieval
 
 
 def dumps(value):
     return json.dumps(value, ensure_ascii=False, default=str)
-
-
-class Step(BaseModel):
-    key: str = Field(pattern=r'^[a-z][a-z0-9_]{0,31}$')
-    type: Literal['retrieve', 'tool', 'llm', 'approval']
-    instruction: str = Field('', max_length=8000)
-    tool_id: int | None = None
-    arguments: dict = Field(default_factory=dict)
-
-
-class AgentWrite(BaseModel):
-    code: str = Field(pattern=r'^[A-Z][A-Z0-9_]{1,63}$')
-    name: str = Field(min_length=2, max_length=128)
-    description: str = Field('', max_length=4000)
-    system_prompt: str = Field(min_length=1, max_length=20000)
-    launch_mode: Literal['chat', 'workflow'] = 'chat'
-    status: Literal['active', 'disabled'] = 'active'
-    llm_gateway_profile_id: int | None = None
-    department_ids: list[int] = Field(default_factory=list, max_length=200)
-    knowledge_base_ids: list[int] = Field(default_factory=list, max_length=100)
-    tool_ids: list[int] = Field(default_factory=list, max_length=30)
-    retrieval: RetrievalPolicy = Field(default_factory=RetrievalPolicy)
-    steps: list[Step] = Field(default_factory=list, max_length=20)
-    config_version: int = 1
-
-    @model_validator(mode='after')
-    def check_steps(self):
-        if self.launch_mode == 'workflow' and not self.steps:
-            raise ValueError('工作流至少需要一个步骤')
-        keys = [s.key for s in self.steps]
-        if len(keys) != len(set(keys)):
-            raise ValueError('步骤标识不能重复')
-        for step in self.steps:
-            if step.type == 'tool' and step.tool_id not in self.tool_ids:
-                raise ValueError('步骤工具必须在授权工具中')
-        return self
 
 
 class Processing(BaseModel):
@@ -85,20 +50,6 @@ class Feedback(BaseModel):
     comment: str = Field('', max_length=2000)
 
 
-def snapshot(c, agent_id, m):
-    c.execute('SELECT id,code,name,description,system_prompt,launch_mode,status,llm_gateway_profile_id,settings_json,config_version FROM agent WHERE id=%s', (agent_id,))
-    row = c.fetchone()
-    if not row:
-        raise HTTPException(404, '智能体不存在')
-    config = m.parse_json_column(row.pop('settings_json'), {})
-    row['retrieval'] = config.get('retrieval', RetrievalPolicy().model_dump())
-    row['steps'] = config.get('steps', [])
-    for table, field, output in [('agent_department_acl', 'department_id', 'department_ids'), ('agent_knowledge_base', 'knowledge_base_id', 'knowledge_base_ids'), ('agent_connector_tool', 'connector_tool_id', 'tool_ids')]:
-        c.execute(f'SELECT {field} FROM {table} WHERE agent_id=%s', (agent_id,))
-        row[output] = [r[field] for r in c.fetchall()]
-    return row
-
-
 def retrieval_test(m, user, agent_id, question, policy=None):
     agent = m.agent_for_user(user, agent_id)
     config = policy or m.retrieval_config(agent_id, agent['knowledge_base_ids'])
@@ -126,71 +77,6 @@ def install(app, m):
         with connect() as conn, conn.cursor() as c:
             c.execute('SELECT f.*,s.agent_id,cm.content FROM answer_feedback f JOIN chat_message cm ON cm.id=f.message_id JOIN chat_session s ON s.id=cm.session_id ORDER BY f.created_at DESC LIMIT 100')
             return list(c.fetchall())
-
-    def save(payload, user, agent_id=None):
-        with connect() as conn, conn.cursor() as c:
-            # Validate all foreign keys and explicitly approved readonly tools before changing bindings.
-            for table, values in [('department', payload.department_ids), ('knowledge_base', payload.knowledge_base_ids), ('llm_gateway_profile', [payload.llm_gateway_profile_id] if payload.llm_gateway_profile_id else [])]:
-                for value in set(values):
-                    c.execute(f'SELECT id FROM {table} WHERE id=%s', (value,))
-                    if not c.fetchone():
-                        raise HTTPException(422, f'{table} 引用不存在')
-            for tool_id in payload.tool_ids:
-                c.execute("SELECT annotations_json FROM connector_tool WHERE id=%s AND status='active'", (tool_id,))
-                tool = c.fetchone()
-                if not tool or m.parse_json_column(tool['annotations_json'], {}).get('readOnlyHint') is not True:
-                    raise HTTPException(422, '只能绑定管理员确认的只读工具；同时应确保 MCP 账号实际只读')
-            if agent_id:
-                c.execute('SELECT config_version FROM agent WHERE id=%s FOR UPDATE', (agent_id,))
-                old = c.fetchone()
-                if not old:
-                    raise HTTPException(404, '智能体不存在')
-                if old['config_version'] != payload.config_version:
-                    raise HTTPException(409, '配置已变更，请刷新后再编辑')
-                previous = snapshot(c, agent_id, m)
-                c.execute('INSERT IGNORE INTO agent_revision(agent_id,version,snapshot_json,created_by) VALUES(%s,%s,%s,%s)', (agent_id, previous['config_version'], dumps(previous), user['id']))
-                version = old['config_version'] + 1
-            else:
-                c.execute('SELECT id FROM agent WHERE code=%s', (payload.code,))
-                if c.fetchone():
-                    raise HTTPException(409, '智能体编码已存在')
-                c.execute('INSERT INTO agent(code,name,system_prompt,created_by) VALUES(%s,%s,%s,%s)', (payload.code, payload.name, payload.system_prompt, user['id']))
-                agent_id, version = c.lastrowid, 1
-            c.execute('SELECT settings_json FROM agent WHERE id=%s', (agent_id,))
-            settings = m.parse_json_column(c.fetchone()['settings_json'], {})
-            settings.update(retrieval=payload.retrieval.model_dump(), steps=[s.model_dump() for s in payload.steps], explicit_acl=True)
-            c.execute('UPDATE agent SET name=%s,description=%s,system_prompt=%s,launch_mode=%s,agent_type=%s,status=%s,llm_gateway_profile_id=%s,settings_json=%s,config_version=%s WHERE id=%s',
-                      (payload.name, payload.description, payload.system_prompt, payload.launch_mode, 'workflow' if payload.launch_mode == 'workflow' else 'rag', payload.status, payload.llm_gateway_profile_id, dumps(settings), version, agent_id))
-            for table, field, values in [('agent_department_acl','department_id',payload.department_ids), ('agent_knowledge_base','knowledge_base_id',payload.knowledge_base_ids), ('agent_connector_tool','connector_tool_id',payload.tool_ids)]:
-                c.execute(f'DELETE FROM {table} WHERE agent_id=%s', (agent_id,))
-                for value in set(values):
-                    c.execute(f'INSERT INTO {table}(agent_id,{field}) VALUES(%s,%s)', (agent_id, value))
-            current = snapshot(c, agent_id, m)
-            c.execute('INSERT INTO agent_revision(agent_id,version,snapshot_json,created_by) VALUES(%s,%s,%s,%s)', (agent_id, version, dumps(current), user['id']))
-            m.audit(c, user['id'], 'agent.publish', 'agent', agent_id, {'version': version})
-            conn.commit()
-            return current
-
-    @app.get('/api/v1/studio/agents')
-    def agents(user=Depends(m.platform_admin)):
-        with connect() as conn, conn.cursor() as c:
-            c.execute('SELECT id FROM agent ORDER BY id')
-            ids = [r['id'] for r in c.fetchall()]
-            return [snapshot(c, i, m) for i in ids]
-
-    @app.post('/api/v1/studio/agents')
-    def create(payload: AgentWrite, user=Depends(m.platform_admin)):
-        return save(payload, user)
-
-    @app.put('/api/v1/studio/agents/{agent_id}')
-    def update(agent_id: int, payload: AgentWrite, user=Depends(m.platform_admin)):
-        return save(payload, user, agent_id)
-
-    @app.get('/api/v1/studio/agents/{agent_id}/revisions')
-    def revisions(agent_id: int, user=Depends(m.platform_admin)):
-        with connect() as conn, conn.cursor() as c:
-            c.execute('SELECT version,snapshot_json,created_at FROM agent_revision WHERE agent_id=%s ORDER BY version DESC LIMIT 30', (agent_id,))
-            return [{**r, 'snapshot': m.parse_json_column(r.pop('snapshot_json'), {})} for r in c.fetchall()]
 
     @app.post('/api/v1/studio/agents/{agent_id}/test')
     def test(agent_id: int, payload: TestQuery, user=Depends(m.platform_admin)):

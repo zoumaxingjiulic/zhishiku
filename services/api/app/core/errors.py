@@ -25,6 +25,14 @@ class ValidationError(ApplicationError):
     """The request violates a business validation rule."""
 
 
+class RateLimitError(ApplicationError):
+    """The caller exceeded a bounded concurrency or request allowance."""
+
+
+class ServiceUnavailableError(ApplicationError):
+    """A configured runtime dependency cannot currently serve the request."""
+
+
 class CompensationRequiredError(ApplicationError):
     """A cross-store operation needs operator reconciliation."""
 

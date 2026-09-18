@@ -18,20 +18,51 @@ class UsersRepository:
         )
         return self.cursor.fetchone() is not None
 
-    def lock_platform_admin_department(self) -> None:
+    def platform_admin_department_id(self) -> int:
+        self.cursor.execute(
+            "SELECT id FROM department WHERE code='PLATFORM_ADMIN' AND status=1"
+        )
+        row = self.cursor.fetchone()
+        if not row:
+            raise RuntimeError("PLATFORM_ADMIN department is missing")
+        return int(row["id"])
+
+    def lock_platform_admin_department(self) -> int:
         self.cursor.execute(
             "SELECT id FROM department WHERE code='PLATFORM_ADMIN' AND status=1 FOR UPDATE"
         )
-        if not self.cursor.fetchone():
+        row = self.cursor.fetchone()
+        if not row:
             raise RuntimeError("PLATFORM_ADMIN department is missing")
+        return int(row["id"])
 
-    def lock_active_platform_admin_user_ids(self) -> set[int]:
+    def lock_users(self, user_ids: list[int]) -> dict[int, dict]:
+        ids = sorted(set(user_ids))
+        if not ids:
+            return {}
+        placeholders = ",".join(["%s"] * len(ids))
         self.cursor.execute(
-            "SELECT u.id FROM department d "
-            "JOIN user_department ud ON ud.department_id=d.id "
-            "JOIN app_user u ON u.id=ud.user_id "
-            "WHERE d.code='PLATFORM_ADMIN' AND d.status=1 "
-            "AND u.status=1 AND u.deleted_at IS NULL FOR UPDATE"
+            f"SELECT id,status,deleted_at FROM app_user WHERE id IN ({placeholders}) "
+            "ORDER BY id FOR UPDATE",
+            ids,
+        )
+        return {int(row["id"]): row for row in self.cursor.fetchall()}
+
+    def lock_user_department_ids(self, user_id: int) -> set[int]:
+        self.cursor.execute(
+            "SELECT department_id FROM user_department WHERE user_id=%s "
+            "ORDER BY department_id FOR UPDATE",
+            (user_id,),
+        )
+        return {int(row["department_id"]) for row in self.cursor.fetchall()}
+
+    def lock_active_platform_admin_user_ids(self, department_id: int | None = None) -> set[int]:
+        admin_department_id = department_id or self.platform_admin_department_id()
+        self.cursor.execute(
+            "SELECT u.id FROM user_department ud JOIN app_user u ON u.id=ud.user_id "
+            "WHERE ud.department_id=%s "
+            "AND u.status=1 AND u.deleted_at IS NULL FOR UPDATE",
+            (admin_department_id,),
         )
         return {int(row["id"]) for row in self.cursor.fetchall()}
 

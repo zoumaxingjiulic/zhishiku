@@ -50,8 +50,12 @@ class AuthService:
             raise AuthenticationError("登录已失效，请重新登录")
         return user
 
-    def load_user(self, user_id: int) -> dict:
-        user = self.repository.load_user(user_id)
+    def load_user(self, user_id: int, for_update: bool = False) -> dict:
+        user = (
+            self.repository.load_user(user_id, for_update=True)
+            if for_update
+            else self.repository.load_user(user_id)
+        )
         if not user or user["status"] != 1 or user["deleted_at"] is not None:
             raise AuthenticationError("账号不存在或已停用")
         departments = user.get("departments", [])

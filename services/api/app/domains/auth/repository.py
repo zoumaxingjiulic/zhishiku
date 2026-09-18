@@ -16,19 +16,46 @@ class AuthRepository:
         )
         return self.cursor.fetchone()
 
-    def load_user(self, user_id: int) -> dict | None:
+    def load_user(self, user_id: int, for_update: bool = False) -> dict | None:
+        lock = " FOR UPDATE" if for_update else ""
         self.cursor.execute(
             "SELECT id,username,display_name,email,status,last_login_at,password_changed_at,deleted_at "
-            "FROM app_user WHERE id=%s",
+            "FROM app_user WHERE id=%s" + lock,
             (user_id,),
         )
         user = self.cursor.fetchone()
         if not user:
             return None
+        if for_update:
+            # Lock only the principal's membership rows. Locking the joined
+            # department rows here made every chat completion contend on the
+            # shared PLATFORM_ADMIN row and inverted the administration order.
+            self.cursor.execute(
+                "SELECT department_id,is_primary FROM user_department "
+                "WHERE user_id=%s ORDER BY is_primary DESC,department_id FOR UPDATE",
+                (user_id,),
+            )
+            memberships = list(self.cursor.fetchall())
+            if not memberships:
+                user["departments"] = []
+                return user
+            ids = [row["department_id"] for row in memberships]
+            placeholders = ",".join(["%s"] * len(ids))
+            self.cursor.execute(
+                f"SELECT id,code,name FROM department WHERE id IN ({placeholders}) AND status=1",
+                ids,
+            )
+            departments = {row["id"]: row for row in self.cursor.fetchall()}
+            user["departments"] = [
+                {**departments[row["department_id"]], "is_primary": row["is_primary"]}
+                for row in memberships
+                if row["department_id"] in departments
+            ]
+            return user
         self.cursor.execute(
             "SELECT d.id,d.code,d.name,ud.is_primary FROM department d "
             "JOIN user_department ud ON ud.department_id=d.id "
-            "WHERE ud.user_id=%s AND d.status=1 ORDER BY ud.is_primary DESC,d.id",
+            "WHERE ud.user_id=%s AND d.status=1 ORDER BY ud.is_primary DESC,d.id" + lock,
             (user_id,),
         )
         user["departments"] = list(self.cursor.fetchall())

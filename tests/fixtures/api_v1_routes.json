@@ -33,7 +33,7 @@
     "path": "/api/v1/agents/{agent_id}/chat",
     "method": "POST",
     "operation_id": "chat_agent_api_v1_agents__agent_id__chat_post",
-    "deprecated": false
+    "deprecated": true
   },
   {
     "path": "/api/v1/agents/{agent_id}/chat/latest",

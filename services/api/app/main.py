@@ -1,10 +1,8 @@
-import hashlib
 import json
 import logging
 import os
 import secrets
 import time
-import uuid
 
 import pymysql
 from cryptography.fernet import Fernet, InvalidToken
@@ -14,7 +12,7 @@ from pydantic import BaseModel, Field
 
 from .config import settings
 from .core.audit import write_audit as audit
-from .core.database import connect
+from .core.database import UnitOfWork, connect
 from .core.dependencies import as_http_exception
 from .core.errors import ApplicationError
 from .core.security import hash_password
@@ -28,22 +26,20 @@ from .domains.auth.router import (
 from .domains.users.router import router as users_router
 from .domains.knowledge.router import router as knowledge_router
 from .domains.documents.router import router as documents_router
-from .domains.documents.service import load_accessible_document as accessible_document
-from .domains.knowledge.service import (
-    load_accessible_knowledge_base_ids as accessible_knowledge_base_ids,
-    load_folder_document_ids as folder_document_ids,
-    load_knowledge_base_permission as kb_permission,
-)
+from .domains.agents.repository import AgentRepository
+from .domains.agents.router import router as agents_router
+from .domains.agents.service import AgentService
 from .readiness import check_readiness
 from .dashboard import DashboardStats, load_dashboard_stats
 from .agent_runtime import generate_agent_answer
-from .quality import RetrievalPolicy, retrieve, retrieval_query
 from .mcp_client import McpError, StreamableHttpMcpClient
-from .retrieval import (
-    keyword_candidates,
-    reciprocal_rank_fusion,
-    rerank,
-    vector_candidates,
+from .runtime.chat import (
+    agent_model_gateway,
+    bound_agent_tools,
+    effective_departments,
+    execute_bound_tool,
+    hydrate_units,
+    retrieval_config,
 )
 
 log = logging.getLogger("kb-api")
@@ -53,14 +49,7 @@ app.include_router(auth_router)
 app.include_router(users_router)
 app.include_router(knowledge_router)
 app.include_router(documents_router)
-
-
-class ChatRequest(BaseModel):
-    question: str = Field(min_length=1, max_length=4000)
-    session_id: str | None = None
-    knowledge_base_id: int | None = Field(default=None, ge=1)
-    folder_id: int | None = Field(default=None, ge=0)
-    include_subfolders: bool = True
+app.include_router(agents_router)
 
 
 class PromptTemplateWrite(BaseModel):
@@ -191,72 +180,6 @@ def discover_mcp_tools(connector_id: int) -> tuple[dict, list[dict]]:
     return server_info, tools
 
 
-def bound_agent_tools(agent_id: int) -> list[dict]:
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT ct.id,ct.tool_name,ct.title,ct.description,ct.input_schema_json,ct.output_schema_json,"
-            "ct.annotations_json,c.id connector_id,c.code connector_code,c.name connector_name "
-            "FROM agent_connector_tool act JOIN connector_tool ct ON ct.id=act.connector_tool_id "
-            "JOIN system_connector c ON c.id=ct.connector_id "
-            "WHERE act.agent_id=%s AND act.permission='read' AND ct.status='active' AND c.status='active' "
-            "ORDER BY c.id,ct.id", (agent_id,)
-        )
-        rows = list(cursor.fetchall())
-    for row in rows:
-        row["input_schema"] = parse_json_column(row.pop("input_schema_json"), {})
-        row["output_schema"] = parse_json_column(row.pop("output_schema_json"), {})
-        row["annotations"] = parse_json_column(row.pop("annotations_json"), {})
-    return rows
-
-
-def execute_bound_tool(tool: dict, arguments: dict) -> tuple[dict, dict]:
-    connector = connector_runtime(tool["connector_id"])
-    with StreamableHttpMcpClient(connector["base_url"], connector["bearer_token"],
-                                 connector["protocol_version"]) as client:
-        result = client.call_tool(tool["tool_name"], arguments)
-    if result.get('isError'):
-        raise McpError('MCP 工具返回执行错误')
-    structured = result.get("structuredContent")
-    content = result.get("content") or []
-    tool_result = structured if structured is not None else {
-        "content": [item for item in content if item.get("type") in {"text", "resource_link"}]
-    }
-    trace_id = structured.get("trace_id") if isinstance(structured, dict) else None
-    return tool_result, {"connector": tool["connector_code"], "connector_name": tool["connector_name"],
-                         "tool": tool["tool_name"], "success": True, "trace_id": trace_id}
-
-
-def retrieval_config(agent_id: int, knowledge_base_ids: list[int]) -> dict:
-    config = RetrievalPolicy().model_dump()
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute("SELECT settings_json FROM agent WHERE id=%s", (agent_id,))
-        row = cursor.fetchone()
-    saved = parse_json_column(row['settings_json'], {}) if row else {}
-    if saved.get('retrieval'):
-        return RetrievalPolicy(**saved['retrieval']).model_dump()
-    if not knowledge_base_ids:
-        return config
-    placeholders = ",".join(["%s"] * len(knowledge_base_ids))
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            f"SELECT retrieval_config_json FROM agent_knowledge_base WHERE agent_id=%s "
-            f"AND knowledge_base_id IN ({placeholders})", [agent_id, *knowledge_base_ids]
-        )
-        rows = cursor.fetchall()
-    for row in rows:
-        candidate = parse_json_column(row["retrieval_config_json"], {})
-        for key in config:
-            if key in candidate:
-                config[key] = candidate[key]
-    config["candidate_k"] = max(5, min(100, int(config["candidate_k"])))
-    config["top_k"] = max(1, min(20, int(config["top_k"])))
-    config["context_max_chars"] = max(2000, min(40000, int(config["context_max_chars"])))
-    config["history_messages"] = max(0, min(30, int(config["history_messages"])))
-    if config["score_threshold"] is not None:
-        config["score_threshold"] = max(0.0, min(1.0, float(config["score_threshold"])))
-    return RetrievalPolicy(**config).model_dump()
-
-
 def model_profile_view(row: dict) -> dict:
     result = dict(row)
     result["has_api_key"] = bool(result.pop("api_key_ciphertext", None))
@@ -269,38 +192,6 @@ def model_profile_view(row: dict) -> dict:
                 raw = None
         result[target] = raw or ([] if target == "capabilities" else {})
     return result
-
-
-def agent_model_gateway(profile_id: int | None) -> dict | None:
-    if profile_id is None:
-        return None
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT base_url,api_key_ciphertext,model_name FROM llm_gateway_profile "
-            "WHERE id=%s AND status='active'", (profile_id,)
-        )
-        row = cursor.fetchone()
-    if not row:
-        raise HTTPException(503, "智能体绑定的模型配置不可用")
-    api_key = ""
-    if row["api_key_ciphertext"]:
-        if not settings.model_credential_key:
-            raise HTTPException(503, "模型凭据加密密钥未配置")
-        try:
-            api_key = Fernet(settings.model_credential_key.encode()).decrypt(
-                row["api_key_ciphertext"].encode()
-            ).decode()
-        except (InvalidToken, ValueError, TypeError) as exc:
-            raise HTTPException(503, "模型凭据无法解密") from exc
-    return {"base_url": row["base_url"], "api_key": api_key, "model_name": row["model_name"]}
-
-
-def effective_departments(user: dict) -> list[int]:
-    if not is_admin(user):
-        return user["department_ids"]
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute("SELECT id FROM department WHERE status=1 ORDER BY id")
-        return [row["id"] for row in cursor.fetchall()]
 
 
 def bootstrap_admin() -> None:
@@ -569,405 +460,13 @@ def bind_agent_model_profile(agent_id: int, payload: AgentModelBinding, request:
     return {"status": "updated"}
 
 
-@app.get("/api/v1/agents", tags=["agents"])
-def list_agents(user: dict = Depends(current_user)) -> list[dict]:
-    kb_ids = accessible_knowledge_base_ids(user)
-    access_clause = ""
-    parameters: list = []
-    if not is_admin(user):
-        conditions: list[str] = []
-        if user["department_ids"]:
-            dept_placeholders = ",".join(["%s"] * len(user["department_ids"]))
-            conditions.append(
-                f"EXISTS (SELECT 1 FROM agent_department_acl aa WHERE aa.agent_id=a.id "
-                f"AND aa.department_id IN ({dept_placeholders}))"
-            )
-            parameters.extend(user["department_ids"])
-        if kb_ids:
-            kb_placeholders = ",".join(["%s"] * len(kb_ids))
-            conditions.append(
-                f"(COALESCE(JSON_EXTRACT(a.settings_json,'$.explicit_acl'),FALSE) = FALSE AND EXISTS (SELECT 1 FROM agent_knowledge_base access_ak WHERE access_ak.agent_id=a.id "
-                f"AND access_ak.knowledge_base_id IN ({kb_placeholders})))"
-            )
-            parameters.extend(kb_ids)
-        if not conditions:
-            return []
-        access_clause = "AND (" + " OR ".join(conditions) + ")"
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            f"SELECT a.id,a.code,a.name,a.description,a.agent_type,a.launch_mode,a.icon,a.category,"
-            f"a.llm_gateway_profile_id,a.status,"
-            f"GROUP_CONCAT(DISTINCT k.name ORDER BY k.id SEPARATOR ', ') knowledge_bases,"
-            f"GROUP_CONCAT(DISTINCT k.id ORDER BY k.id SEPARATOR ',') knowledge_base_ids,"
-            f"(SELECT GROUP_CONCAT(DISTINCT CONCAT(sc.name,' / ',COALESCE(ct.title,ct.tool_name)) "
-            f"ORDER BY sc.id,ct.id SEPARATOR ', ') FROM agent_connector_tool act "
-            f"JOIN connector_tool ct ON ct.id=act.connector_tool_id "
-            f"JOIN system_connector sc ON sc.id=ct.connector_id "
-            f"WHERE act.agent_id=a.id AND act.permission='read' AND ct.status='active' AND sc.status='active') tools "
-            f"FROM agent a LEFT JOIN agent_knowledge_base ak ON ak.agent_id=a.id "
-            f"LEFT JOIN knowledge_base k ON k.id=ak.knowledge_base_id "
-            f"WHERE a.status='active' {access_clause} "
-            f"GROUP BY a.id ORDER BY a.id",
-            parameters,
-        )
-        return list(cursor.fetchall())
-
-
 def agent_for_user(user: dict, agent_id: int) -> dict:
-    accessible = set(accessible_knowledge_base_ids(user))
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT id,code,name,system_prompt,llm_model,llm_gateway_profile_id,agent_type,launch_mode,status,settings_json,config_version "
-            "FROM agent WHERE id=%s", (agent_id,)
-        )
-        agent = cursor.fetchone()
-        if not agent or agent["status"] != "active":
-            raise HTTPException(404, "智能体不存在或未启用")
-        cursor.execute("SELECT knowledge_base_id FROM agent_knowledge_base WHERE agent_id=%s", (agent_id,))
-        agent["knowledge_base_ids"] = [row["knowledge_base_id"] for row in cursor.fetchall() if row["knowledge_base_id"] in accessible]
-        explicit_access = is_admin(user)
-        if not explicit_access and user["department_ids"]:
-            placeholders = ",".join(["%s"] * len(user["department_ids"]))
-            cursor.execute(
-                f"SELECT 1 FROM agent_department_acl WHERE agent_id=%s AND department_id IN ({placeholders}) LIMIT 1",
-                [agent_id, *user["department_ids"]],
-            )
-            explicit_access = cursor.fetchone() is not None
-    strict_acl = parse_json_column(agent['settings_json'], {}).get('explicit_acl', False)
-    if not explicit_access and (strict_acl or not agent["knowledge_base_ids"]):
-        raise HTTPException(403, "无权使用该智能体")
-    return agent
-
-
-def hydrate_units(
-    unit_ids: list[int],
-    kb_ids: list[int],
-    user: dict,
-    document_ids: list[int] | None = None,
-) -> list[dict]:
-    if not unit_ids:
-        return []
-    unit_placeholders = ",".join(["%s"] * len(unit_ids))
-    kb_placeholders = ",".join(["%s"] * len(kb_ids))
-    parameters: list = [*unit_ids, *kb_ids]
-    acl_clause = ""
-    document_clause = ""
-    if document_ids is not None:
-        if not document_ids:
-            return []
-        document_placeholders = ",".join(["%s"] * len(document_ids))
-        document_clause = f"AND d.id IN ({document_placeholders})"
-        parameters.extend(document_ids)
-    if not is_admin(user):
-        dept_placeholders = ",".join(["%s"] * len(user["department_ids"]))
-        acl_clause = (
-            "AND EXISTS (SELECT 1 FROM document_department_acl acl "
-            f"WHERE acl.document_id=d.id AND acl.department_id IN ({dept_placeholders}))"
-        )
-        parameters.extend(user["department_ids"])
-    query = (
-        "SELECT cu.id,cu.content_text,cu.parent_text,cu.metadata_json,cu.page_start,cu.page_end,d.id document_id,d.title,d.knowledge_base_id,v.original_filename "
-        "FROM content_unit cu JOIN document_version v ON v.id=cu.document_version_id "
-        "JOIN document d ON d.id=v.document_id "
-        f"WHERE cu.id IN ({unit_placeholders}) AND d.status='active' "
-        f"AND d.knowledge_base_id IN ({kb_placeholders}) {document_clause} {acl_clause}"
-    )
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(query, parameters)
-        rows = {row["id"]: row for row in cursor.fetchall()}
-    return [rows[unit_id] for unit_id in unit_ids if unit_id in rows]
-
-
-@app.get("/api/v1/agents/{agent_id}/chat/latest", tags=["agents"])
-def latest_agent_chat(agent_id: int, user: dict = Depends(current_user)) -> dict:
-    """Return the caller's most recently active conversation for this chat agent."""
-    agent = agent_for_user(user, agent_id)
-    if agent["launch_mode"] != "chat":
-        raise HTTPException(422, "该智能体不是问答型入口")
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT id FROM chat_session WHERE agent_id=%s AND user_id=%s AND status='active' "
-            "ORDER BY updated_at DESC,id DESC LIMIT 1",
-            (agent_id, user["id"]),
-        )
-        session = cursor.fetchone()
-        if not session:
-            return {"session_id": None, "messages": []}
-        cursor.execute(
-            "SELECT id,role,content,citations_json,tool_calls_json,created_at FROM chat_message WHERE session_id=%s ORDER BY id",
-            (session["id"],),
-        )
-        messages = list(cursor.fetchall())
-    for message in messages:
-        message["citations"] = parse_json_column(message.pop("citations_json", None), [])
-        message["tool_calls"] = parse_json_column(message.pop("tool_calls_json", None), [])
-    return {"session_id": session["id"], "messages": messages}
-
-
-@app.get("/api/v1/agents/{agent_id}/chat/sessions", tags=["agents"])
-def list_agent_chat_sessions(agent_id: int, user: dict = Depends(current_user)) -> list[dict]:
-    agent = agent_for_user(user, agent_id)
-    if agent["launch_mode"] != "chat":
-        raise HTTPException(422, "该智能体不是问答型入口")
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT s.id,s.title,s.created_at,s.updated_at,COUNT(m.id) message_count,"
-            "(SELECT lm.role FROM chat_message lm WHERE lm.session_id=s.id ORDER BY lm.id DESC LIMIT 1) last_role "
-            "FROM chat_session s LEFT JOIN chat_message m ON m.session_id=s.id "
-            "WHERE s.agent_id=%s AND s.user_id=%s AND s.status='active' "
-            "GROUP BY s.id ORDER BY s.updated_at DESC,s.id DESC",
-            (agent_id, user["id"]),
-        )
-        return list(cursor.fetchall())
-
-
-@app.post("/api/v1/agents/{agent_id}/chat/sessions", tags=["agents"])
-def create_agent_chat_session(agent_id: int, request: Request, user: dict = Depends(current_user)) -> dict:
-    agent = agent_for_user(user, agent_id)
-    if agent["launch_mode"] != "chat":
-        raise HTTPException(422, "该智能体不是问答型入口")
-    session_id = str(uuid.uuid4())
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "INSERT INTO chat_session (id,agent_id,user_id,title) VALUES (%s,%s,%s,'新对话')",
-            (session_id, agent_id, user["id"]),
-        )
-        audit(cursor, user["id"], "chat_session.create", "chat_session", None,
-              {"session_id": session_id, "agent_id": agent_id}, request.client.host)
-        conn.commit()
-    return {"id": session_id, "title": "新对话", "message_count": 0}
-
-
-@app.get("/api/v1/agents/{agent_id}/chat/sessions/{session_id}", tags=["agents"])
-def get_agent_chat_session(agent_id: int, session_id: str, user: dict = Depends(current_user)) -> dict:
-    agent = agent_for_user(user, agent_id)
-    if agent["launch_mode"] != "chat":
-        raise HTTPException(422, "该智能体不是问答型入口")
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT id,title FROM chat_session WHERE id=%s AND agent_id=%s AND user_id=%s AND status='active'",
-            (session_id, agent_id, user["id"]),
-        )
-        session = cursor.fetchone()
-        if not session:
-            raise HTTPException(404, "对话不存在")
-        cursor.execute(
-            "SELECT id,role,content,citations_json,tool_calls_json,created_at FROM chat_message WHERE session_id=%s ORDER BY id",
-            (session_id,),
-        )
-        messages = list(cursor.fetchall())
-    for message in messages:
-        message["citations"] = parse_json_column(message.pop("citations_json", None), [])
-        message["tool_calls"] = parse_json_column(message.pop("tool_calls_json", None), [])
-    return {**session, "messages": messages}
-
-
-@app.delete("/api/v1/agents/{agent_id}/chat/sessions/{session_id}", tags=["agents"])
-def delete_agent_chat_session(agent_id: int, session_id: str, request: Request,
-                              user: dict = Depends(current_user)) -> dict:
-    agent = agent_for_user(user, agent_id)
-    if agent["launch_mode"] != "chat":
-        raise HTTPException(422, "该智能体不是问答型入口")
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT id FROM chat_session WHERE id=%s AND agent_id=%s AND user_id=%s AND status='active'",
-            (session_id, agent_id, user["id"]),
-        )
-        if not cursor.fetchone():
-            raise HTTPException(404, "对话不存在")
-        cursor.execute("SELECT id FROM chat_task WHERE session_id=%s AND status IN ('queued','running')", (session_id,))
-        if cursor.fetchone():
-            raise HTTPException(409, '请先停止正在运行的任务再删除对话')
-        cursor.execute('SELECT id FROM chat_session WHERE id=%s FOR UPDATE', (session_id,))
-        cursor.execute("SELECT id FROM chat_task WHERE session_id=%s AND status IN ('queued','running')", (session_id,))
-        if cursor.fetchone():
-            raise HTTPException(409, '请先停止正在运行的任务再删除对话')
-        audit(cursor, user["id"], "chat_session.delete", "chat_session", None,
-              {"session_id": session_id, "agent_id": agent_id}, request.client.host)
-        cursor.execute("DELETE FROM chat_session WHERE id=%s", (session_id,))
-        conn.commit()
-    return {"status": "deleted"}
-
-
-@app.post("/api/v1/agents/{agent_id}/chat", tags=["agents"])
-def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict = Depends(current_user)) -> dict:
-    from .tasks import active_task, progress, checked_executor
-    task = active_task.get()
-    agent = agent_for_user(user, agent_id)
-    if agent["launch_mode"] != "chat":
-        raise HTTPException(422, "该智能体不是问答型入口")
-    knowledge_base_ids = agent["knowledge_base_ids"]
-    tools = bound_agent_tools(agent_id)
-    if payload.knowledge_base_id is not None:
-        if payload.knowledge_base_id not in knowledge_base_ids:
-            raise HTTPException(403, "无权在所选知识库中问答")
-        knowledge_base_ids = [payload.knowledge_base_id]
-    document_ids = None
-    if payload.folder_id is not None:
-        if payload.knowledge_base_id is None:
-            raise HTTPException(422, "限定文件夹时必须同时指定知识库")
-        kb_permission(user, payload.knowledge_base_id)
-        document_ids = folder_document_ids(
-            payload.knowledge_base_id,
-            payload.folder_id,
-            payload.include_subfolders,
-        )
-    session_id = payload.session_id or str(uuid.uuid4())
-    config = retrieval_config(agent_id, knowledge_base_ids)
-    history: list[dict] = []
-    with connect() as conn, conn.cursor() as cursor:
-        if payload.session_id:
-            cursor.execute(
-                "SELECT id FROM chat_session WHERE id=%s AND agent_id=%s AND user_id=%s AND status='active'",
-                (session_id, agent_id, user["id"]),
-            )
-            if not cursor.fetchone():
-                raise HTTPException(404, "会话不存在")
-        else:
-            cursor.execute(
-                "INSERT INTO chat_session (id,agent_id,user_id,title) VALUES (%s,%s,%s,%s)",
-                (session_id, agent_id, user["id"], payload.question[:120]),
-            )
-        if config["history_messages"]:
-            cursor.execute(
-                "SELECT role,content,citations_json,tool_calls_json FROM (SELECT id,role,content,citations_json,tool_calls_json FROM chat_message WHERE session_id=%s "
-                "AND id<%s AND role IN ('user','assistant') ORDER BY id DESC LIMIT %s) recent ORDER BY id",
-                (session_id, task['user_message_id'] if task else 9223372036854775807, config["history_messages"]),
-            )
-            history = list(cursor.fetchall())
-        if not task:
-            cursor.execute("INSERT INTO chat_message (session_id,role,content) VALUES (%s,'user',%s)", (session_id, payload.question))
-        cursor.execute(
-            "UPDATE chat_session SET title=CASE WHEN title='新对话' THEN %s ELSE title END,updated_at=NOW(3) "
-            "WHERE id=%s",
-            (payload.question[:120], session_id),
-        )
-        run_id = task['id'] if task else str(uuid.uuid4())
-        cursor.execute(
-            "INSERT INTO agent_run (id,session_id,agent_id,user_id,question_hash,route,status) "
-            "VALUES (%s,%s,%s,%s,%s,'chat','running')",
-            (run_id, session_id, agent_id, user["id"], hashlib.sha256(payload.question.encode()).hexdigest()),
-        )
-        conn.commit()
-
-    started = time.perf_counter()
-    # Do not re-inject previously authorized enterprise evidence after access revocation.
-    safe_history = []
-    for message in history:
-        if message['role'] == 'assistant':
-            try:
-                for citation in parse_json_column(message.get('citations_json'), []):
-                    document = accessible_document(user, citation['document_id'])
-                    if document['knowledge_base_id'] not in knowledge_base_ids:
-                        raise HTTPException(403, '历史证据已不在授权范围')
-                allowed_tools = {(t['connector_code'],t['tool_name']) for t in tools}
-                if any((e.get('connector'),e.get('tool')) not in allowed_tools for e in parse_json_column(message.get('tool_calls_json'), [])):
-                    continue
-            except HTTPException:
-                continue
-        safe_history.append(message)
-    history = safe_history
-    timings: dict[str, float] = {}
-    vector: list[int] = []
-    keyword: list[int] = []
-    units: list[dict] = []
-    tool_events: list[dict] = []
-    rerank_method = "none"
-    try:
-        if knowledge_base_ids:
-            stage = time.perf_counter()
-            progress('stage', '检索与重排序')
-            query, query_method = retrieval_query(payload.question, history, config['query_rewrite'])
-            units, retrieval_counts, rerank_method, warnings = retrieve(
-                query, knowledge_base_ids, effective_departments(user), document_ids, user, config, hydrate_units)
-            timings["retrieve_ms"] = round((time.perf_counter() - stage) * 1000, 1)
-            stage = time.perf_counter()
-        gateway = agent_model_gateway(agent["llm_gateway_profile_id"])
-        stage = time.perf_counter()
-        answer, answer_method, tool_events, cited_units = generate_agent_answer(
-            agent["system_prompt"], payload.question, units, history, tools, checked_executor(user['id'], agent_id),
-            agent["llm_model"], gateway, config["context_max_chars"],
-            emit=progress if task else None, max_tool_rounds=config['max_tool_rounds'], max_tool_calls=config['max_tool_calls'],
-        )
-        timings["generation_ms"] = round((time.perf_counter() - stage) * 1000, 1)
-        citations = [
-            {
-                "document_id": unit["document_id"],
-                "title": unit["title"],
-                "filename": unit["original_filename"],
-                "page": unit["page_start"],
-                "page_end": unit.get("page_end"),
-                "content_unit_id": unit["id"],
-                "rerank_score": unit.get("_rerank_score"),
-            }
-            for unit in cited_units
-        ]
-    except Exception as exc:
-        log.exception("Agent response generation failed for session %s", session_id)
-        cancelled = type(exc).__name__ == 'TaskCancelled'
-        timings["total_ms"] = round((time.perf_counter() - started) * 1000, 1)
-        with connect() as conn, conn.cursor() as cursor:
-            cursor.execute(
-                "INSERT INTO chat_message (session_id,role,content,model_name) "
-                "VALUES (%s,'assistant',%s,'error')",
-                (session_id, '任务已停止。' if cancelled else '回答生成失败，请稍后重试。'),
-            )
-            cursor.execute("UPDATE chat_session SET updated_at=NOW(3) WHERE id=%s", (session_id,))
-            cursor.execute(
-                "UPDATE agent_run SET status='failed',candidate_counts_json=%s,timings_json=%s,"
-                "tool_events_json=%s,error_type=%s,finished_at=NOW(3) WHERE id=%s",
-                (json.dumps({"vector": len(vector), "keyword": len(keyword), "final": len(units)}),
-                 json.dumps(timings), json.dumps(tool_events, ensure_ascii=False), type(exc).__name__, run_id),
-            )
-            audit(cursor, user["id"], "agent.chat.failed", "agent", agent_id,
-                  {"session_id": session_id, "trace_id": run_id, "error_type": type(exc).__name__},
-                  request.client.host)
-            conn.commit()
-        raise
-
-    timings["total_ms"] = round((time.perf_counter() - started) * 1000, 1)
-    counts = retrieval_counts if knowledge_base_ids else {"vector": 0, "keyword": 0, "final": 0}
-    route = "hybrid" if tool_events and citations else "tool" if tool_events else "rag" if citations else "chat"
-    with connect() as conn, conn.cursor() as cursor:
-        if task:
-            cursor.execute('SELECT cancel_requested FROM chat_task WHERE id=%s FOR UPDATE', (task['id'],))
-            row = cursor.fetchone()
-            if not row or row['cancel_requested']:
-                from .tasks import TaskCancelled
-                raise TaskCancelled()
-        cursor.execute(
-            "INSERT INTO chat_message (session_id,role,content,citations_json,tool_calls_json,model_name) "
-            "VALUES (%s,'assistant',%s,%s,%s,%s)",
-            (session_id, answer, json.dumps(citations, ensure_ascii=False),
-             json.dumps(tool_events, ensure_ascii=False),
-             gateway["model_name"] if gateway else (agent["llm_model"] or settings.llm_model or answer_method)),
-        )
-        if task:
-            cursor.execute("UPDATE chat_task SET status='succeeded',stage='完成',partial_answer=NULL,finished_at=NOW(3) WHERE id=%s", (task['id'],))
-        cursor.execute("UPDATE chat_session SET updated_at=NOW(3) WHERE id=%s", (session_id,))
-        cursor.execute(
-            "UPDATE agent_run SET route=%s,status='succeeded',candidate_counts_json=%s,timings_json=%s,"
-            "tool_events_json=%s,finished_at=NOW(3) WHERE id=%s",
-            (route, json.dumps(counts), json.dumps(timings), json.dumps(tool_events, ensure_ascii=False), run_id),
-        )
-        audit(cursor, user["id"], "agent.chat", "agent", agent_id, {
-            "session_id": session_id,
-            "trace_id": run_id,
-            "knowledge_base_id": payload.knowledge_base_id,
-            "folder_id": payload.folder_id,
-            "route": route,
-        }, request.client.host)
-        conn.commit()
-    return {
-        "trace_id": run_id,
-        "session_id": session_id,
-        "answer": answer,
-        "citations": citations,
-        "tool_calls": tool_events,
-        "retrieval_method": {"fusion": "rrf", "rerank": rerank_method, "answer": answer_method},
-        "candidate_counts": counts,
-        "timings": timings,
-    }
+    """Compatibility entry point for Studio routes migrated in task 7."""
+    with UnitOfWork() as uow:
+        try:
+            return AgentService(uow, AgentRepository(uow.cursor)).authorize_agent(user, agent_id)
+        except ApplicationError as exc:
+            raise as_http_exception(exc) from exc
 
 
 @app.get("/api/v1/connectors", tags=["connectors"])
@@ -1191,6 +690,5 @@ def list_audit_logs(limit: int = Query(100, ge=1, le=500), user: dict = Depends(
 
 
 import sys as _sys
-from . import platform as _platform, tasks as _tasks
+from . import platform as _platform
 _platform.install(app, _sys.modules[__name__])
-_tasks.install(app, _sys.modules[__name__])

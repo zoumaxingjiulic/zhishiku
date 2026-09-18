@@ -43,9 +43,41 @@ class UsersService:
         if not self.repository.is_platform_admin(actor_id):
             raise AuthorizationError("仅平台管理员可以执行此操作")
 
-    def _protect_last_platform_admin(self, user_id: int) -> None:
-        self.repository.lock_platform_admin_department()
-        active_admin_ids = self.repository.lock_active_platform_admin_user_ids()
+    def _lock_current_admin(
+        self,
+        actor_id: int,
+        *target_ids: int,
+        membership_mutex: bool = False,
+    ) -> tuple[dict[int, dict], int]:
+        """Lock a fresh administrator identity using one acyclic global order.
+
+        Membership-changing operations take the stable administrator department
+        mutex *before* any user row. Other operations lock sorted user rows and
+        never wait for that mutex, so a D_admin -> user / user -> D_admin cycle
+        cannot be formed.
+        """
+        admin_department_id = (
+            self.repository.lock_platform_admin_department()
+            if membership_mutex
+            else None
+        )
+        ids = sorted(set((actor_id, *target_ids)))
+        users = self.repository.lock_users(ids)
+        actor = users.get(actor_id)
+        if not actor or actor.get("status") != 1 or actor.get("deleted_at") is not None:
+            raise AuthorizationError("仅平台管理员可以执行此操作")
+        if admin_department_id is None:
+            admin_department_id = self.repository.platform_admin_department_id()
+        actor_departments = self.repository.lock_user_department_ids(actor_id)
+        if admin_department_id not in actor_departments:
+            raise AuthorizationError("仅平台管理员可以执行此操作")
+        for target_id in ids:
+            if target_id != actor_id:
+                self.repository.lock_user_department_ids(target_id)
+        return users, admin_department_id
+
+    def _protect_last_platform_admin(self, user_id: int, department_id: int) -> None:
+        active_admin_ids = self.repository.lock_active_platform_admin_user_ids(department_id)
         if user_id in active_admin_ids and len(active_admin_ids) <= 1:
             raise ValidationError("至少需要保留一个启用的平台管理员账号")
 
@@ -53,7 +85,7 @@ class UsersService:
         return self.repository.list_departments()
 
     def create_department(self, actor_id: int, payload: DepartmentCreate, ip_address: str) -> dict:
-        self._require_platform_admin(actor_id)
+        self._lock_current_admin(actor_id, membership_mutex=True)
         try:
             department_id = self.repository.insert_department(payload)
             self.repository.write_audit(
@@ -73,7 +105,7 @@ class UsersService:
         return self.repository.list_users()
 
     def create_user(self, actor_id: int, payload: UserCreate, ip_address: str) -> dict:
-        self._require_platform_admin(actor_id)
+        self._lock_current_admin(actor_id, membership_mutex=True)
         if not self.repository.find_active_department(payload.department_id):
             raise ValidationError("部门不存在或已停用")
         temporary_password = self._password_generator()
@@ -109,14 +141,16 @@ class UsersService:
         payload: UserUpdate,
         ip_address: str,
     ) -> None:
-        self._require_platform_admin(actor_id)
-        if not self.repository.user_exists(user_id):
+        users, admin_department_id = self._lock_current_admin(
+            actor_id, user_id, membership_mutex=True
+        )
+        if user_id not in users:
             raise NotFoundError("用户不存在")
         department = self.repository.find_active_department(payload.department_id)
         if not department:
             raise ValidationError("部门不存在或已停用")
         if department["code"] != "PLATFORM_ADMIN":
-            self._protect_last_platform_admin(user_id)
+            self._protect_last_platform_admin(user_id, admin_department_id)
         try:
             self.repository.update_user(user_id, payload)
             self.repository.assign_primary_department(user_id, payload.department_id)
@@ -132,18 +166,24 @@ class UsersService:
         self.uow.commit()
 
     def update_user_status(self, actor_id: int, user_id: int, status: int) -> None:
-        self._require_platform_admin(actor_id)
         if user_id == actor_id and status == 0:
             raise ValidationError("不能停用当前登录账号")
+        users, admin_department_id = self._lock_current_admin(
+            actor_id, user_id, membership_mutex=True
+        )
+        if user_id not in users:
+            raise NotFoundError("用户不存在")
         if status == 0:
-            self._protect_last_platform_admin(user_id)
+            self._protect_last_platform_admin(user_id, admin_department_id)
         if not self.repository.update_status(user_id, status):
             raise NotFoundError("用户不存在")
         self.repository.write_audit(actor_id, "user.status_update", user_id, {"status": status})
         self.uow.commit()
 
     def reset_password(self, actor_id: int, user_id: int) -> str:
-        self._require_platform_admin(actor_id)
+        users, _ = self._lock_current_admin(actor_id, user_id, membership_mutex=True)
+        if user_id not in users:
+            raise NotFoundError("用户不存在")
         temporary_password = self._password_generator()
         if not self.repository.update_password(user_id, self._password_hasher(temporary_password)):
             raise NotFoundError("用户不存在")
@@ -152,12 +192,14 @@ class UsersService:
         return temporary_password
 
     def delete_user(self, actor_id: int, user_id: int) -> None:
-        self._require_platform_admin(actor_id)
         if user_id == actor_id:
             raise ValidationError("不能删除当前登录账号")
-        if not self.repository.user_exists(user_id):
+        users, admin_department_id = self._lock_current_admin(
+            actor_id, user_id, membership_mutex=True
+        )
+        if user_id not in users:
             raise NotFoundError("用户不存在")
-        self._protect_last_platform_admin(user_id)
+        self._protect_last_platform_admin(user_id, admin_department_id)
         self.repository.soft_delete(user_id)
         self.repository.write_audit(actor_id, "user.delete", user_id)
         self.uow.commit()
