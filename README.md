@@ -120,7 +120,7 @@ Worker：从 MySQL ingestion_job 领取任务，执行解析/OCR、切片、向�
 
 切片、向量化和全文索引均由 Worker 异步执行，前端显示处理、切片、向量和全文状态。
 
-解析器 `builtin-structured 0.8.0` 的规则、限制、回归测试和部署方法见 [文档解析说明](docs/document-parsing.md)。无需数据库迁移；已有文档不会自动重建。跨页切片保留起止页码，问答引用显示完整页码范围。
+解析器 `builtin-structured 1.1.0` 的规则与限制见 [文档解析说明](docs/document-parsing.md)。1.1 父子切片与处理配置需要迁移 012；已有文档不会自动重建。跨页切片保留起止页码，问答引用显示页码范围。
 
 ## 目录
 

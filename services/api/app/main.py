@@ -1120,6 +1120,10 @@ def list_documents(
             placeholders = ",".join(["%s"] * len(folder_ids))
             folder_clause = f"AND d.folder_id IN ({placeholders}) "
             parameters.extend(folder_ids)
+        if not is_admin(user):
+            placeholders = ','.join(['%s'] * len(user['department_ids']))
+            folder_clause += f'AND EXISTS (SELECT 1 FROM document_department_acl da WHERE da.document_id=d.id AND da.department_id IN ({placeholders})) '
+            parameters.extend(user['department_ids'])
         parameters.append(limit)
         cursor.execute(
             "SELECT d.id,d.knowledge_base_id,d.folder_id,d.row_version,f.name folder_name,d.title,d.mime_type,d.security_level,d.status,d.current_version_no,"
@@ -1230,6 +1234,12 @@ def accessible_document(user: dict, document_id: int, manage: bool = False) -> d
         if not document:
             raise HTTPException(404, "文档不存在")
     kb_permission(user, document["knowledge_base_id"], manage=manage)
+    if not is_admin(user):
+        placeholders = ','.join(['%s'] * len(user['department_ids']))
+        with connect() as conn, conn.cursor() as cursor:
+            cursor.execute(f'SELECT 1 FROM document_department_acl WHERE document_id=%s AND department_id IN ({placeholders}) LIMIT 1', [document_id,*user['department_ids']])
+            if not cursor.fetchone():
+                raise HTTPException(403, '无权访问该文档')
     return document
 
 
