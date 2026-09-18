@@ -20,6 +20,8 @@ from pydantic import BaseModel, Field
 from .config import settings
 from .core.audit import write_audit as audit
 from .core.database import connect
+from .core.dependencies import as_http_exception
+from .core.errors import ApplicationError
 from .core.security import hash_password
 from .domains.auth.router import (
     current_user,
@@ -29,6 +31,14 @@ from .domains.auth.router import (
     router as auth_router,
 )
 from .domains.users.router import router as users_router
+from .domains.knowledge.router import router as knowledge_router
+from .domains.knowledge.service import (
+    folder_descendants_for_cursor as folder_descendant_ids,
+    folder_for_cursor as folder_for_kb,
+    load_accessible_knowledge_base_ids as accessible_knowledge_base_ids,
+    load_folder_document_ids as folder_document_ids,
+    load_knowledge_base_permission as kb_permission,
+)
 from .readiness import check_readiness
 from .dashboard import DashboardStats, load_dashboard_stats
 from .agent_runtime import generate_agent_answer
@@ -46,25 +56,7 @@ app = FastAPI(title="企业智能体平台 API", version="1.1.0", docs_url="/doc
 
 app.include_router(auth_router)
 app.include_router(users_router)
-
-
-class KnowledgeBaseCreate(BaseModel):
-    code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
-    name: str = Field(min_length=2, max_length=128)
-    description: str | None = None
-    owner_department_id: int
-    security_level: str = "internal"
-
-
-class KnowledgeBaseUpdate(BaseModel):
-    name: str = Field(min_length=2, max_length=128)
-    description: str | None = None
-    security_level: str = "internal"
-
-
-class KnowledgeBaseAclUpdate(BaseModel):
-    department_ids: list[int] = Field(min_length=1)
-    manager_department_id: int
+app.include_router(knowledge_router)
 
 
 class ChatRequest(BaseModel):
@@ -73,20 +65,6 @@ class ChatRequest(BaseModel):
     knowledge_base_id: int | None = Field(default=None, ge=1)
     folder_id: int | None = Field(default=None, ge=0)
     include_subfolders: bool = True
-
-
-class FolderCreate(BaseModel):
-    knowledge_base_id: int
-    parent_id: int | None = None
-    name: str = Field(min_length=1, max_length=128)
-    sort_order: int = 0
-
-
-class FolderUpdate(BaseModel):
-    parent_id: int | None = None
-    name: str = Field(min_length=1, max_length=128)
-    sort_order: int = 0
-    row_version: int = Field(ge=1)
 
 
 class DocumentFolderUpdate(BaseModel):
@@ -145,6 +123,12 @@ class ConnectorWrite(BaseModel):
 
 class AgentToolBinding(BaseModel):
     connector_tool_ids: list[int] = Field(default_factory=list)
+
+
+@app.exception_handler(ApplicationError)
+async def application_error_handler(request: Request, error: ApplicationError) -> JSONResponse:
+    http_error = as_http_exception(error)
+    return JSONResponse(status_code=http_error.status_code, content={"detail": http_error.detail})
 
 
 def object_store() -> Minio:
@@ -337,97 +321,6 @@ def effective_departments(user: dict) -> list[int]:
         return [row["id"] for row in cursor.fetchall()]
 
 
-def kb_permission(user: dict, knowledge_base_id: int, manage: bool = False) -> dict:
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT id,code,name,description,owner_department_id,security_level,status "
-            "FROM knowledge_base WHERE id=%s",
-            (knowledge_base_id,),
-        )
-        kb = cursor.fetchone()
-        if not kb or kb["status"] != "active":
-            raise HTTPException(404, "知识库不存在或已归档")
-        if is_admin(user):
-            return kb
-        if not user["department_ids"]:
-            raise HTTPException(403, "账号未分配部门")
-        placeholders = ",".join(["%s"] * len(user["department_ids"]))
-        permission_clause = "AND permission='manage'" if manage else ""
-        cursor.execute(
-            f"SELECT permission FROM knowledge_base_department_acl "
-            f"WHERE knowledge_base_id=%s AND department_id IN ({placeholders}) {permission_clause} LIMIT 1",
-            [knowledge_base_id, *user["department_ids"]],
-        )
-        if not cursor.fetchone():
-            raise HTTPException(403, "无权访问该知识库" if not manage else "无权管理该知识库")
-        return kb
-
-
-def accessible_knowledge_base_ids(user: dict) -> list[int]:
-    with connect() as conn, conn.cursor() as cursor:
-        if is_admin(user):
-            cursor.execute("SELECT id FROM knowledge_base WHERE status='active'")
-        elif user["department_ids"]:
-            placeholders = ",".join(["%s"] * len(user["department_ids"]))
-            cursor.execute(
-                f"SELECT DISTINCT k.id FROM knowledge_base k "
-                f"JOIN knowledge_base_department_acl acl ON acl.knowledge_base_id=k.id "
-                f"WHERE k.status='active' AND acl.department_id IN ({placeholders})",
-                user["department_ids"],
-            )
-        else:
-            return []
-        return [row["id"] for row in cursor.fetchall()]
-
-
-def folder_for_kb(cursor: pymysql.cursors.Cursor, folder_id: int, knowledge_base_id: int) -> dict:
-    cursor.execute(
-        "SELECT id,knowledge_base_id,parent_id,name,sort_order,row_version,status "
-        "FROM knowledge_folder WHERE id=%s AND knowledge_base_id=%s AND deleted_at IS NULL AND status='active'",
-        (folder_id, knowledge_base_id),
-    )
-    folder = cursor.fetchone()
-    if not folder:
-        raise HTTPException(422, "文件夹不存在或不属于当前知识库")
-    return folder
-
-
-def folder_descendant_ids(cursor: pymysql.cursors.Cursor, folder_id: int, include_self: bool = True) -> list[int]:
-    cursor.execute(
-        "WITH RECURSIVE descendants AS ("
-        "SELECT id FROM knowledge_folder WHERE id=%s AND deleted_at IS NULL AND status='active' "
-        "UNION ALL "
-        "SELECT child.id FROM knowledge_folder child JOIN descendants parent ON child.parent_id=parent.id "
-        "WHERE child.deleted_at IS NULL AND child.status='active') "
-        "SELECT id FROM descendants",
-        (folder_id,),
-    )
-    ids = [row["id"] for row in cursor.fetchall()]
-    return ids if include_self else [item for item in ids if item != folder_id]
-
-
-def folder_document_ids(
-    knowledge_base_id: int,
-    folder_id: int,
-    include_subfolders: bool,
-) -> list[int]:
-    with connect() as conn, conn.cursor() as cursor:
-        if folder_id == 0:
-            cursor.execute(
-                "SELECT id FROM document WHERE knowledge_base_id=%s AND folder_id IS NULL AND status='active'",
-                (knowledge_base_id,),
-            )
-        else:
-            folder_for_kb(cursor, folder_id, knowledge_base_id)
-            folder_ids = folder_descendant_ids(cursor, folder_id) if include_subfolders else [folder_id]
-            placeholders = ",".join(["%s"] * len(folder_ids))
-            cursor.execute(
-                f"SELECT id FROM document WHERE knowledge_base_id=%s AND folder_id IN ({placeholders}) AND status='active'",
-                [knowledge_base_id, *folder_ids],
-            )
-        return [row["id"] for row in cursor.fetchall()]
-
-
 def bootstrap_admin() -> None:
     if not settings.jwt_secret:
         raise RuntimeError("JWT_SECRET 未配置")
@@ -488,286 +381,6 @@ def readyz() -> JSONResponse:
 def dashboard_stats(user: dict = Depends(current_user)) -> DashboardStats:
     with connect() as conn, conn.cursor() as cursor:
         return load_dashboard_stats(cursor, user)
-
-
-@app.get("/api/v1/knowledge-bases", tags=["knowledge-bases"])
-def list_knowledge_bases(user: dict = Depends(current_user)) -> list[dict]:
-    with connect() as conn, conn.cursor() as cursor:
-        if is_admin(user):
-            cursor.execute(
-                "SELECT k.id,k.code,k.name,k.description,k.owner_department_id,d.name owner_department_name,"
-                "k.security_level,k.status,k.created_at,'manage' permission,"
-                "(SELECT COUNT(*) FROM document doc WHERE doc.knowledge_base_id=k.id AND doc.status!='deleted') document_count "
-                "FROM knowledge_base k JOIN department d ON d.id=k.owner_department_id "
-                "WHERE k.status='active' ORDER BY k.id"
-            )
-        elif user["department_ids"]:
-            placeholders = ",".join(["%s"] * len(user["department_ids"]))
-            cursor.execute(
-                f"SELECT DISTINCT k.id,k.code,k.name,k.description,k.owner_department_id,d.name owner_department_name,"
-                f"k.security_level,k.status,k.created_at,acl.permission,"
-                f"(SELECT COUNT(*) FROM document doc WHERE doc.knowledge_base_id=k.id AND doc.status!='deleted') document_count "
-                f"FROM knowledge_base k JOIN department d ON d.id=k.owner_department_id "
-                f"JOIN knowledge_base_department_acl acl ON acl.knowledge_base_id=k.id "
-                f"WHERE k.status='active' AND acl.department_id IN ({placeholders}) ORDER BY k.id",
-                user["department_ids"],
-            )
-        else:
-            return []
-        return list(cursor.fetchall())
-
-
-@app.post("/api/v1/knowledge-bases", tags=["knowledge-bases"])
-def create_knowledge_base(payload: KnowledgeBaseCreate, request: Request, user: dict = Depends(current_user)) -> dict:
-    if payload.security_level not in {"public", "internal", "confidential", "secret"}:
-        raise HTTPException(422, "无效的密级")
-    if not is_admin(user):
-        if payload.owner_department_id not in user["department_ids"]:
-            raise HTTPException(403, "无权为该部门创建知识库")
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute("SELECT id FROM department WHERE id=%s AND status=1", (payload.owner_department_id,))
-        if not cursor.fetchone():
-            raise HTTPException(422, "所属部门不存在或已停用")
-        try:
-            cursor.execute(
-                "INSERT INTO knowledge_base (code,name,description,owner_department_id,security_level,created_by) "
-                "VALUES (%s,%s,%s,%s,%s,%s)",
-                (payload.code, payload.name, payload.description, payload.owner_department_id, payload.security_level, user["id"]),
-            )
-            kb_id = cursor.lastrowid
-            cursor.execute(
-                "INSERT INTO knowledge_base_department_acl (knowledge_base_id,department_id,permission) VALUES (%s,%s,'manage')",
-                (kb_id, payload.owner_department_id),
-            )
-            audit(cursor, user["id"], "knowledge_base.create", "knowledge_base", kb_id, payload.model_dump(), request.client.host)
-            conn.commit()
-        except pymysql.err.IntegrityError as exc:
-            conn.rollback()
-            raise HTTPException(409, "知识库编码已存在") from exc
-    return {"id": kb_id, **payload.model_dump(), "status": "active"}
-
-
-@app.put("/api/v1/knowledge-bases/{knowledge_base_id}", tags=["knowledge-bases"])
-def update_knowledge_base(
-    knowledge_base_id: int,
-    payload: KnowledgeBaseUpdate,
-    request: Request,
-    user: dict = Depends(current_user),
-) -> dict:
-    if payload.security_level not in {"public", "internal", "confidential", "secret"}:
-        raise HTTPException(422, "无效的密级")
-    kb_permission(user, knowledge_base_id, manage=True)
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "UPDATE knowledge_base SET name=%s,description=%s,security_level=%s "
-            "WHERE id=%s AND status='active'",
-            (payload.name, payload.description, payload.security_level, knowledge_base_id),
-        )
-        if cursor.rowcount == 0:
-            raise HTTPException(404, "知识库不存在或已归档")
-        audit(cursor, user["id"], "knowledge_base.update", "knowledge_base", knowledge_base_id, payload.model_dump(), request.client.host)
-        conn.commit()
-    return {"id": knowledge_base_id, **payload.model_dump(), "status": "active"}
-
-
-@app.put("/api/v1/knowledge-bases/{knowledge_base_id}/acl", tags=["knowledge-bases"])
-def update_knowledge_base_acl(
-    knowledge_base_id: int,
-    payload: KnowledgeBaseAclUpdate,
-    user: dict = Depends(platform_admin),
-) -> dict:
-    if payload.manager_department_id not in payload.department_ids:
-        raise HTTPException(422, "管理部门必须包含在授权部门中")
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute("SELECT id FROM knowledge_base WHERE id=%s AND status='active'", (knowledge_base_id,))
-        if not cursor.fetchone():
-            raise HTTPException(404, "知识库不存在")
-        placeholders = ",".join(["%s"] * len(payload.department_ids))
-        cursor.execute(f"SELECT id FROM department WHERE status=1 AND id IN ({placeholders})", payload.department_ids)
-        if len(cursor.fetchall()) != len(set(payload.department_ids)):
-            raise HTTPException(422, "包含不存在的部门")
-        cursor.execute("DELETE FROM knowledge_base_department_acl WHERE knowledge_base_id=%s", (knowledge_base_id,))
-        for department_id in payload.department_ids:
-            permission = "manage" if department_id == payload.manager_department_id else "read"
-            cursor.execute(
-                "INSERT INTO knowledge_base_department_acl (knowledge_base_id,department_id,permission) VALUES (%s,%s,%s)",
-                (knowledge_base_id, department_id, permission),
-            )
-        cursor.execute(
-            "UPDATE knowledge_base SET owner_department_id=%s WHERE id=%s",
-            (payload.manager_department_id, knowledge_base_id),
-        )
-        cursor.execute(
-            "DELETE acl FROM document_department_acl acl JOIN document d ON d.id=acl.document_id "
-            "WHERE d.knowledge_base_id=%s",
-            (knowledge_base_id,),
-        )
-        for department_id in payload.department_ids:
-            permission = "manage" if department_id == payload.manager_department_id else "read"
-            cursor.execute(
-                "INSERT INTO document_department_acl (document_id,department_id,permission) "
-                "SELECT id,%s,%s FROM document WHERE knowledge_base_id=%s AND status!='deleted'",
-                (department_id, permission, knowledge_base_id),
-            )
-        cursor.execute(
-            "SELECT v.id,d.id document_id FROM document d JOIN document_version v "
-            "ON v.document_id=d.id AND v.version_no=d.current_version_no "
-            "WHERE d.knowledge_base_id=%s AND d.status!='deleted'",
-            (knowledge_base_id,),
-        )
-        for document in cursor.fetchall():
-            cursor.execute(
-                "INSERT INTO ingestion_job (document_version_id,job_type,idempotency_key,payload_json) "
-                "VALUES (%s,'reindex',%s,JSON_OBJECT('document_id',%s,'reason','acl_update'))",
-                (document["id"], f"reindex:{document['id']}:{uuid.uuid4().hex}", document["document_id"]),
-            )
-        audit(cursor, user["id"], "knowledge_base.acl_update", "knowledge_base", knowledge_base_id, payload.model_dump())
-        conn.commit()
-    return {"status": "ok"}
-
-
-@app.delete("/api/v1/knowledge-bases/{knowledge_base_id}", tags=["knowledge-bases"])
-def delete_knowledge_base(knowledge_base_id: int, user: dict = Depends(current_user)) -> dict:
-    kb_permission(user, knowledge_base_id, manage=True)
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT d.id,v.id version_id FROM document d JOIN document_version v "
-            "ON v.document_id=d.id AND v.version_no=d.current_version_no "
-            "WHERE d.knowledge_base_id=%s AND d.status!='deleted'",
-            (knowledge_base_id,),
-        )
-        documents = list(cursor.fetchall())
-        for document in documents:
-            cursor.execute("UPDATE document SET status='deleted',deleted_at=NOW(3) WHERE id=%s", (document["id"],))
-            cursor.execute(
-                "INSERT INTO ingestion_job (document_version_id,job_type,idempotency_key,payload_json) "
-                "VALUES (%s,'delete',%s,JSON_OBJECT('document_id',%s))",
-                (document["version_id"], f"delete:{document['version_id']}:{uuid.uuid4().hex}", document["id"]),
-            )
-        cursor.execute("UPDATE knowledge_base SET status='archived' WHERE id=%s", (knowledge_base_id,))
-        audit(cursor, user["id"], "knowledge_base.archive", "knowledge_base", knowledge_base_id)
-        conn.commit()
-    return {"status": "queued", "documents": len(documents)}
-
-
-@app.get("/api/v1/folders", tags=["folders"])
-def list_folders(knowledge_base_id: int = Query(..., ge=1), user: dict = Depends(current_user)) -> list[dict]:
-    kb_permission(user, knowledge_base_id)
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "WITH RECURSIVE folder_tree AS ("
-            "SELECT f.id,f.knowledge_base_id,f.parent_id,f.name,f.sort_order,f.row_version,0 depth,"
-            "CAST(f.name AS CHAR(2048)) path "
-            "FROM knowledge_folder f WHERE f.knowledge_base_id=%s AND f.parent_id IS NULL "
-            "AND f.deleted_at IS NULL AND f.status='active' "
-            "UNION ALL "
-            "SELECT child.id,child.knowledge_base_id,child.parent_id,child.name,child.sort_order,child.row_version,"
-            "parent.depth+1,CONCAT(parent.path,'/',child.name) "
-            "FROM knowledge_folder child JOIN folder_tree parent ON child.parent_id=parent.id "
-            "WHERE child.deleted_at IS NULL AND child.status='active') "
-            "SELECT tree.*,(SELECT COUNT(*) FROM document d WHERE d.folder_id=tree.id AND d.status!='deleted') document_count,"
-            "(SELECT COUNT(*) FROM knowledge_folder child WHERE child.parent_id=tree.id "
-            "AND child.deleted_at IS NULL AND child.status='active') child_count "
-            "FROM folder_tree tree ORDER BY tree.path,tree.sort_order,tree.id",
-            (knowledge_base_id,),
-        )
-        return list(cursor.fetchall())
-
-
-@app.post("/api/v1/folders", tags=["folders"])
-def create_folder(payload: FolderCreate, request: Request, user: dict = Depends(current_user)) -> dict:
-    kb_permission(user, payload.knowledge_base_id, manage=True)
-    name = payload.name.strip()
-    if not name or "/" in name or "\\" in name:
-        raise HTTPException(422, "文件夹名称不能为空或包含路径分隔符")
-    with connect() as conn, conn.cursor() as cursor:
-        if payload.parent_id is not None:
-            folder_for_kb(cursor, payload.parent_id, payload.knowledge_base_id)
-        try:
-            cursor.execute(
-                "INSERT INTO knowledge_folder (knowledge_base_id,parent_id,name,sort_order,created_by) "
-                "VALUES (%s,%s,%s,%s,%s)",
-                (payload.knowledge_base_id, payload.parent_id, name, payload.sort_order, user["id"]),
-            )
-            folder_id = cursor.lastrowid
-            audit(cursor, user["id"], "folder.create", "knowledge_folder", folder_id, payload.model_dump(), request.client.host)
-            conn.commit()
-        except pymysql.err.IntegrityError as exc:
-            conn.rollback()
-            raise HTTPException(409, "同一目录下已存在同名文件夹") from exc
-    return {"id": folder_id, **payload.model_dump(), "name": name, "row_version": 1, "status": "active"}
-
-
-@app.put("/api/v1/folders/{folder_id}", tags=["folders"])
-def update_folder(folder_id: int, payload: FolderUpdate, request: Request, user: dict = Depends(current_user)) -> dict:
-    name = payload.name.strip()
-    if not name or "/" in name or "\\" in name:
-        raise HTTPException(422, "文件夹名称不能为空或包含路径分隔符")
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT id,knowledge_base_id,parent_id,row_version FROM knowledge_folder "
-            "WHERE id=%s AND deleted_at IS NULL AND status='active'",
-            (folder_id,),
-        )
-        folder = cursor.fetchone()
-        if not folder:
-            raise HTTPException(404, "文件夹不存在")
-        kb_permission(user, folder["knowledge_base_id"], manage=True)
-        if payload.parent_id == folder_id:
-            raise HTTPException(422, "文件夹不能移动到自身")
-        if payload.parent_id is not None:
-            folder_for_kb(cursor, payload.parent_id, folder["knowledge_base_id"])
-            if payload.parent_id in folder_descendant_ids(cursor, folder_id):
-                raise HTTPException(422, "文件夹不能移动到自己的子目录")
-        try:
-            cursor.execute(
-                "UPDATE knowledge_folder SET parent_id=%s,name=%s,sort_order=%s,row_version=row_version+1 "
-                "WHERE id=%s AND row_version=%s AND deleted_at IS NULL",
-                (payload.parent_id, name, payload.sort_order, folder_id, payload.row_version),
-            )
-            if cursor.rowcount == 0:
-                raise HTTPException(409, "文件夹已被其他操作修改，请刷新后重试")
-            audit(cursor, user["id"], "folder.update", "knowledge_folder", folder_id, payload.model_dump(), request.client.host)
-            conn.commit()
-        except pymysql.err.IntegrityError as exc:
-            conn.rollback()
-            raise HTTPException(409, "目标目录下已存在同名文件夹") from exc
-    return {"status": "ok", "row_version": payload.row_version + 1}
-
-
-@app.delete("/api/v1/folders/{folder_id}", tags=["folders"])
-def delete_folder(
-    folder_id: int,
-    row_version: int = Query(..., ge=1),
-    user: dict = Depends(current_user),
-) -> dict:
-    with connect() as conn, conn.cursor() as cursor:
-        cursor.execute(
-            "SELECT id,knowledge_base_id FROM knowledge_folder WHERE id=%s AND deleted_at IS NULL AND status='active'",
-            (folder_id,),
-        )
-        folder = cursor.fetchone()
-        if not folder:
-            raise HTTPException(404, "文件夹不存在")
-        kb_permission(user, folder["knowledge_base_id"], manage=True)
-        cursor.execute(
-            "SELECT (SELECT COUNT(*) FROM knowledge_folder WHERE parent_id=%s AND deleted_at IS NULL AND status='active') child_count,"
-            "(SELECT COUNT(*) FROM document WHERE folder_id=%s AND status!='deleted') document_count",
-            (folder_id, folder_id),
-        )
-        counts = cursor.fetchone()
-        if counts["child_count"] or counts["document_count"]:
-            raise HTTPException(422, "文件夹非空，请先移动或删除其中的资料和子文件夹")
-        cursor.execute(
-            "UPDATE knowledge_folder SET status='deleted',deleted_at=NOW(3),row_version=row_version+1 "
-            "WHERE id=%s AND row_version=%s AND deleted_at IS NULL",
-            (folder_id, row_version),
-        )
-        if cursor.rowcount == 0:
-            raise HTTPException(409, "文件夹已被其他操作修改，请刷新后重试")
-        audit(cursor, user["id"], "folder.delete", "knowledge_folder", folder_id)
-        conn.commit()
-    return {"status": "ok"}
 
 
 @app.get("/api/v1/documents", tags=["documents"])
