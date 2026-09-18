@@ -369,12 +369,17 @@ git commit -m "fix: enforce dependency-aware readiness"
 
 **文件：**
 - 创建：`.dockerignore`
-- 创建：`services/api/.dockerignore`
-- 创建：`services/worker/.dockerignore`
+- 创建：`services/api/Dockerfile.dockerignore`
+- 创建：`services/worker/Dockerfile.dockerignore`
 - 创建：`services/frontend/.dockerignore`
 - 创建：`.github/workflows/quality.yml`
+- 创建：`requirements-test.txt`
+- 创建：`tools/check_repository_hygiene.py`
+- 创建：`tests/test_repository_hygiene.py`
 - 修改：`deploy/docker-compose.yml`
+- 修改：`services/api/requirements.txt`
 - 修改：`services/worker/requirements.txt`
+- 修改：`services/frontend/nginx.conf`
 - 修改：`README.md`
 - 修改：`deploy/README.md`
 - 删除：`deploy/upgrade-v05.sh`
@@ -383,7 +388,9 @@ git commit -m "fix: enforce dependency-aware readiness"
 
 - [ ] **步骤 1：建立可执行的构建上下文和 Compose 检查**
 
-在 CI 中运行 `docker compose ... config --quiet` 并使用 `docker build --check` 检查三个 Dockerfile。每个 `.dockerignore` 至少排除 `.git`、`.env`、`node_modules`、`dist`、`__pycache__`、`.pytest_cache`、`.mypy_cache`、`.ruff_cache`、测试缓存和本地数据目录。
+在 CI 中运行 `docker compose ... config --quiet` 并使用 `docker build --check` 检查三个 Dockerfile。根 `.dockerignore` 服务 API/Worker 的仓库根构建上下文；`services/api/Dockerfile.dockerignore` 和 `services/worker/Dockerfile.dockerignore` 为显式 Dockerfile 构建提供相同限制；Frontend 使用 `services/frontend/.dockerignore`。忽略文件至少排除 `.git`、`.env`、`node_modules`、`dist`、`__pycache__`、`.pytest_cache`、`.mypy_cache`、`.ruff_cache`、测试缓存和本地数据目录，但不得排除 `shared/python`、服务 requirements 或服务源代码。
+
+修正 Nginx 缓存头：哈希静态资源的 `immutable` 不使用 `always`，因此 404/5xx 不携带一年缓存；`index.html` 和 SPA fallback 仍为 `no-store`。在可运行 Docker 的阶段验收中，分别请求存在与不存在的哈希资源验证响应头。
 
 - [ ] **步骤 2：复用 API 镜像**
 
@@ -393,7 +400,8 @@ Compose 中 API 指定稳定本地镜像名：
 api:
   image: enterprise-kb-api:${APP_IMAGE_TAG:-local}
   build:
-    context: ../services/api
+    context: ..
+    dockerfile: services/api/Dockerfile
 
 chat-runner:
   image: enterprise-kb-api:${APP_IMAGE_TAG:-local}
@@ -403,13 +411,18 @@ chat-runner:
 
 - [ ] **步骤 3：删除已确认无效的依赖和旧脚本**
 
-先用 `rg` 确认 Worker 运行代码没有导入 `cryptography`，再从 `services/worker/requirements.txt` 移除；删除只服务旧版本升级或已被 `verify-platform-v11.py` 覆盖的三个脚本。README 只保留当前迁移与验收入口。
+先用 `rg` 确认 Worker 运行代码没有导入 `cryptography`，再从 `services/worker/requirements.txt` 移除；将仅由测试 fixture 使用的 `pypdf` 移入根 `requirements-test.txt`，同时把 `pytest==8.3.5` 放入测试依赖。API 直接导入的 `pydantic==2.13.5` 必须成为显式运行依赖。删除只服务旧版本升级或已被 `verify-platform-v11.py` 覆盖的三个脚本，并用 `rg` 修复全部文档引用；README 只保留当前迁移与验收入口。
+
+先为 `tools/check_repository_hygiene.py` 编写失败测试，覆盖已跟踪 `.env`、私钥文件名、PEM 私钥头和形如 `sk-` 加 20 位以上字符的密钥；允许 `.env.example` 与 `CHANGE_ME` 占位符。脚本只扫描 `git ls-files` 返回的文件，并在发现违规时列文件和规则名，绝不回显完整密钥。
 
 - [ ] **步骤 4：配置 CI 门禁**
 
 GitHub Actions 使用 Python 3.12 和 Node 22，依次执行：
 
 ```yaml
+- run: pip install -r requirements-test.txt
+- run: pip install ./shared/python
+- run: python tools/check_repository_hygiene.py
 - run: python -m pytest -q
 - run: npm ci
   working-directory: services/frontend
@@ -438,6 +451,7 @@ npm run build
 cd ../..
 docker compose --env-file .env.example -f deploy/docker-compose.yml -f deploy/docker-compose.models.yml config --quiet
 git diff --check
+E:\zhishiku\.venv\Scripts\python.exe tools/check_repository_hygiene.py
 ```
 
 预期：所有命令退出码为 0；pytest 保持或超过 42 个通过，前端至少包含 Users 与 Dashboard 组件回归测试。
@@ -445,7 +459,7 @@ git diff --check
 - [ ] **步骤 6：提交**
 
 ```powershell
-git add .dockerignore services/api/.dockerignore services/worker/.dockerignore services/frontend/.dockerignore .github/workflows/quality.yml deploy/docker-compose.yml services/worker/requirements.txt README.md deploy/README.md deploy/upgrade-v05.sh deploy/smoke-test.sh deploy/e2e-admin.py
+git add .dockerignore services/api/Dockerfile.dockerignore services/worker/Dockerfile.dockerignore services/frontend/.dockerignore .github/workflows/quality.yml requirements-test.txt tools/check_repository_hygiene.py tests/test_repository_hygiene.py deploy/docker-compose.yml services/api/requirements.txt services/worker/requirements.txt services/frontend/nginx.conf README.md deploy/README.md deploy/upgrade-v05.sh deploy/smoke-test.sh deploy/e2e-admin.py
 git commit -m "chore: add repeatable quality and container gates"
 ```
 
