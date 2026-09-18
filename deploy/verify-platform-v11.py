@@ -97,6 +97,12 @@ try:
     call(employee,'POST',f"/api/v1/messages/{answer['id']}/feedback",json={'rating':1})
     call(outsider,'POST',f"/api/v1/messages/{answer['id']}/feedback",json={'rating':-1},status=404)
     passed('durable question, idempotency, real model answer, citations and feedback ownership')
+    cancel_sid=call(employee,'POST',f'/api/v1/agents/{aid}/chat/sessions')['id']
+    cancellation=call(employee,'POST',f'/api/v1/agents/{aid}/runs',status=202,json={'question':'请详细解释星河项目的报销制度','session_id':cancel_sid,'request_key':str(uuid.uuid4())})
+    call(employee,'POST',f"/api/v1/tasks/{cancellation['id']}/cancel")
+    stopped=wait_until(lambda:call(employee,'GET',f'/api/v1/agents/{aid}/chat/sessions/{cancel_sid}/task'),lambda t:t['status'] in ('cancelled','failed','succeeded'))
+    assert stopped['status']=='cancelled',stopped
+    passed('background task cancellation reaches a terminal state')
     flowconfig={**config,'code':tag+'_FLOW','name':'验收临时流程','launch_mode':'workflow','steps':[{'key':'lookup','type':'retrieve'},{'key':'review','type':'approval','instruction':'请核对虚构测试制度'},{'key':'summary','type':'llm','instruction':'根据前序检索结果，用一句话说明报销截止日期。'}]}
     flow=call(admin,'POST','/api/v1/studio/agents',json=flowconfig);fid=flow['id'];created['agents'].append(fid)
     fr=call(employee,'POST',f'/api/v1/agents/{fid}/workflow-runs',json={'question':'星河测试项目报销截止日期'},status=202)

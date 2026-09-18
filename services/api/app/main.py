@@ -1817,8 +1817,6 @@ def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict
         raise HTTPException(422, "该智能体不是问答型入口")
     knowledge_base_ids = agent["knowledge_base_ids"]
     tools = bound_agent_tools(agent_id)
-    if not knowledge_base_ids and not tools:
-        raise HTTPException(422, "该智能体尚未配置知识范围或系统工具")
     if payload.knowledge_base_id is not None:
         if payload.knowledge_base_id not in knowledge_base_ids:
             raise HTTPException(403, "无权在所选知识库中问答")

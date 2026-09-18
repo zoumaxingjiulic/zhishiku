@@ -161,6 +161,7 @@ def main():
     with connect() as conn, conn.cursor() as c:
         for table in ('chat_task', 'evaluation_run', 'workflow_run'):
             c.execute(f"UPDATE {table} SET status='failed',error_code='WORKER_RESTARTED',finished_at=NOW(3) WHERE status='running'")
+        c.execute("UPDATE agent_run r JOIN chat_task t ON t.id=r.id SET r.status='failed',r.error_type='WORKER_RESTARTED',r.finished_at=NOW(3) WHERE t.error_code='WORKER_RESTARTED' AND r.status='running'")
         c.execute("INSERT INTO chat_message(session_id,role,content) SELECT t.session_id,'assistant','任务因服务重启中断，请重新提交。' FROM chat_task t WHERE t.error_code='WORKER_RESTARTED' AND t.user_message_id=(SELECT MAX(id) FROM chat_message WHERE session_id=t.session_id)")
         conn.commit()
     with ThreadPoolExecutor(max_workers=4) as pool:
