@@ -128,8 +128,7 @@ Worker：从 MySQL ingestion_job 领取任务，执行解析/OCR、切片、向�
 deploy/
   docker-compose.yml              基础服务 Compose
   docker-compose.models.yml       本地模型覆盖文件（服务器创建）
-  smoke-test.sh                   全流程/权限隔离验收
-  upgrade-v05.sh                  既有环境升级
+  verify-platform-v11.py          平台 1.1 集成与权限隔离验收
   apply-mysql-migration.sh        单个迁移执行器
   queue-reindex.py                既有文档重建索引任务
 database/mysql/                   001~012 MySQL 初始化与增量迁移
@@ -304,18 +303,23 @@ PY
 全新 MySQL 数据目录自动执行 001_initial_schema.sql。既有环境的后续迁移每个文件只能执行一次：
 
 ~~~bash
-bash deploy/apply-mysql-migration.sh database/mysql/011_mcp_agent_runtime_observability.sql
+bash deploy/apply-mysql-migration.sh database/mysql/012_platform_quality_runtime.sql
 ~~~
 
 历史迁移见 [database/mysql/README.md](database/mysql/README.md)。已执行过的迁移绝不能修改或重写。
 
-完整验收：
+完成迁移后，在已确认的验收环境运行当前平台集成验收（会创建并清理临时业务数据）：
 
 ~~~bash
-bash deploy/smoke-test.sh
+docker compose --env-file .env \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.models.yml \
+  exec -T api python - < deploy/verify-platform-v11.py
 ~~~
 
-它验证账号、软删除、部门隔离、跨部门 403、上传、解析、切片、Milvus、OpenSearch、RRF、rerank、LLM 回答、文件夹范围检索、文档移动不重索引，并清理临时资料和账号。MCP 连接发现与工具授权另在系统连接页面验证，验收时不要调用会产生业务副作用的工具。
+它验证部门与文档权限、上传和父子切片、双路索引、混合检索与 rerank、配置版本、评测、持久化对话与幂等、模型回答与引用、反馈所有权、任务取消和工作流审批。脚本清理本次创建的资料与智能体，停用临时账号和部门、归档临时知识库并保留审计记录；覆盖边界见 [平台 1.1 验收记录](docs/verification-v11.md)。MCP 连接发现与工具授权另在系统连接页面验证，验收时不要调用会产生业务副作用的工具。
+
+本地质量门禁与容器构建检查见 [部署说明](deploy/README.md#本地质量门禁与镜像构建)。API 与 chat-runner 复用 `enterprise-kb-api:${APP_IMAGE_TAG:-local}` 镜像，更新时一起重建、重建容器以保持版本一致。
 
 | 现象 | 优先检查 |
 | --- | --- |

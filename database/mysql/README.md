@@ -21,7 +21,7 @@ Do not edit a migration that has been applied to any environment. Add a new numb
 
 If `002_agent_platform.sql` was manually applied in a non-UTF-8 terminal and its seeded Chinese labels display as mojibake, apply `003_fix_platform_seed_encoding.sql` once using the same command pattern.
 
-`005_auth_rbac_audit_connectors.sql` adds local authentication, audit logs and connector metadata. On the current server, use `bash deploy/upgrade-v05.sh`; it checks the schema before applying this migration and is safe to rerun.
+`005_auth_rbac_audit_connectors.sql` adds local authentication, audit logs and connector metadata. After checking the applied schema and taking a backup, apply this migration only if it has not already been applied: `bash deploy/apply-mysql-migration.sh database/mysql/005_auth_rbac_audit_connectors.sql`. The migration runner does not detect previously applied migrations; do not rerun them.
 
 `006_fix_company_seed_tech_department.sql` repairs the company-name seed encoding and creates the technical department and its isolated knowledge base. It is idempotent.
 

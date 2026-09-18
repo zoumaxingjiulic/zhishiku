@@ -99,6 +99,7 @@ services:
     networks: [kb-internal]
 
   api:
+    image: enterprise-kb-api:${APP_IMAGE_TAG:-local}
     build:
       context: ..
       dockerfile: services/api/Dockerfile
@@ -161,9 +162,7 @@ services:
     networks: [kb-internal]
 
   chat-runner:
-    build:
-      context: ..
-      dockerfile: services/api/Dockerfile
+    image: enterprise-kb-api:${APP_IMAGE_TAG:-local}
     restart: unless-stopped
     command: ["python", "-m", "app.chat_worker"]
     environment: *api_environment
