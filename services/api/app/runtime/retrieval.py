@@ -3,6 +3,7 @@
 import time
 
 from ..core.database import UnitOfWork
+from ..core.deadline import remaining_timeout
 from ..domains.agents.repository import AgentRepository
 from ..quality import retrieve
 
@@ -21,8 +22,12 @@ def hydrate_units(unit_ids: list[int], knowledge_base_ids: list[int], user: dict
         return AgentRepository(uow.cursor).hydrate_units(unit_ids, knowledge_base_ids, departments)
 
 
-def retrieve_for_agent(user: dict, agent: dict, question: str, policy: dict) -> dict:
+def retrieve_for_agent(user: dict, agent: dict, question: str, policy: dict, *, deadline=None, check_active=None) -> dict:
     started = time.perf_counter()
+    if check_active:
+        check_active()
+    remaining_timeout(deadline, 60)
+    options = {'deadline': deadline, 'check_active': check_active} if deadline is not None or check_active else {}
     units, counts, method, warnings = retrieve(
         question,
         agent["knowledge_base_ids"],
@@ -31,7 +36,11 @@ def retrieve_for_agent(user: dict, agent: dict, question: str, policy: dict) -> 
         user,
         policy,
         hydrate_units,
+        **options,
     )
+    if check_active:
+        check_active()
+    remaining_timeout(deadline, 60)
     return {
         "units": units,
         "counts": counts,

@@ -22,7 +22,7 @@ def test_delegation_rechecks_agent_binding_and_config_after_retrieval(monkeypatc
         if changed and revoke == 'agent':
             raise AuthorizationError('agent ACL revoked')
         return {**agent, 'config_version': 2 if changed and revoke == 'config' else 1}
-    def retrieve(*a):
+    def retrieve(*a, **kwargs):
         nonlocal changed
         changed = True
         return {'units': []}

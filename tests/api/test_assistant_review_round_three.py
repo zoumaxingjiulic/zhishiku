@@ -64,7 +64,7 @@ def test_visible_agent_kb_subset_publishes_only_while_dependencies_remain_valid(
     monkeypatch.setattr(runtime, 'bound_agent_tools', lambda aid: [])
     monkeypatch.setattr(runtime, 'agent_model_gateway', lambda profile: None)
     retrieved = []
-    def retrieve(user, agent, question, policy):
+    def retrieve(user, agent, question, policy, **kwargs):
         retrieved.extend(agent['knowledge_base_ids'])
         return {'units': []}
     def generate(*args, **kwargs):

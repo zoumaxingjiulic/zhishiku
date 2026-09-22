@@ -28,7 +28,7 @@ def test_delegation_with_only_agent_in_initial_snapshot_never_exposes_dependenci
     }))
     monkeypatch.setattr(runtime, 'bound_agent_tools', lambda aid: [{'id': 12}])
     external = []
-    monkeypatch.setattr(runtime, 'retrieve_for_agent', lambda *a: external.append('KB2') or {'units': []})
+    monkeypatch.setattr(runtime, 'retrieve_for_agent', lambda *a, **k: external.append('KB2') or {'units': []})
     adapter = runtime.ProductionAdapters(TASK, store)
     monkeypatch.setattr(adapter, '_generate', lambda *a, **k: external.append(('schemas', k.get('tools'))) or {'answer': 'x'})
     with pytest.raises(AuthorizationError):
@@ -388,7 +388,7 @@ def test_retrieval_uses_user_from_latest_permission_check(monkeypatch):
     store.load_current_user = lambda uid: {**USER, 'department_ids': [2, 3]}
     store.validate = lambda *a: {**USER, 'department_ids': [2]}
     observed = []
-    monkeypatch.setattr(runtime, 'retrieve_for_agent', lambda user, *a: observed.append(user['department_ids']) or {'units': []})
+    monkeypatch.setattr(runtime, 'retrieve_for_agent', lambda user, *a, **k: observed.append(user['department_ids']) or {'units': []})
     adapter = runtime.ProductionAdapters(TASK, store)
     monkeypatch.setattr(adapter, '_generate', lambda *a, **k: {'answer': 'ok'})
     adapter.execute('knowledge', [1], 'question', USER)

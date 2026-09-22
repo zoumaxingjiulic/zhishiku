@@ -230,7 +230,7 @@ def test_production_tool_adapter_uses_schema_and_current_readonly_permission(mon
     ])
     monkeypatch.setattr(runtime.agent_runtime, '_stream_chat', lambda *args, **kwargs: next(replies))
     calls = []
-    def execute(tool, arguments):
+    def execute(tool, arguments, **kwargs):
         calls.append((tool['id'], arguments))
         return {'stock': 12}, {'success': True, '_binding_version': tool['_binding_version']}
     monkeypatch.setattr(runtime, 'execute_bound_tool', execute)

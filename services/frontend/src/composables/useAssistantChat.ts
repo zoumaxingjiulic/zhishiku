@@ -353,13 +353,21 @@ export function useAssistantChat(options: AssistantChatOptions = {}) {
       if (!isCurrent(sessionId, expectedEpoch, `pending-${key}`)) return false;
       error.value = messageFor(cause);
       try {
-        const detail = await loadMessages(sessionId, expectedEpoch);
+        const status = typeof cause === "object" && cause !== null && "status" in cause ? Number(cause.status) : 0;
+        // A definitive rejection cannot acknowledge this submission. Inspect
+        // ambiguous failures without mutating session state until the key matches.
+        const detail = status >= 400 && status < 500 ? null
+          : await api<AssistantConversationDetail>(`/api/v1/assistant/sessions/${sessionId}/messages`);
+        if (!isCurrent(sessionId, expectedEpoch, `pending-${key}`)) return false;
         const recovered = detail?.latest_task;
-        if (recovered && ACTIVE_STATUSES.has(recovered.status)) {
+        if (recovered && recovered.request_key === key) {
+          tasksBySession[sessionId] = recovered;
+          updateSessionTask(sessionId, recovered);
+          messagesBySession[sessionId] = detail!.messages;
           retrySubmissions.delete(sessionId);
           error.value = "";
           clearSubmittedDraft(sessionId, content, submittedDraft, submittedDraftVersion);
-          schedulePoll(sessionId, recovered.id, expectedEpoch);
+          if (ACTIVE_STATUSES.has(recovered.status)) schedulePoll(sessionId, recovered.id, expectedEpoch);
           return true;
         }
       } catch { /* keep the submit error visible */ }

@@ -212,7 +212,14 @@ class MemorySkillRepository:
 
 class MemoryUow:
     def __init__(self):
-        self.cursor = None
+        class AdminCursor:
+            def execute(self, sql, args=()): self.sql = sql
+            def fetchall(self):
+                if 'FROM app_user' in self.sql:
+                    return [{'id': 1, 'status': 1, 'deleted_at': None}]
+                return [{'department_id': 1}]
+            def fetchone(self): return {'id': 1}
+        self.cursor = AdminCursor()
         self.commits = 0
 
     def commit(self):

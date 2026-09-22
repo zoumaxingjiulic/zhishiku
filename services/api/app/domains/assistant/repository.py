@@ -48,7 +48,7 @@ class AssistantRepository:
         active_departments = [d for d in departments if d['status'] == 1]
         self._locked_user = {'id': user_id, 'department_ids': [d['id'] for d in active_departments],
                              'is_platform_admin': any(d['code'] == 'PLATFORM_ADMIN' for d in active_departments)}
-        agent_ids = sorted({root_id, *(r.id for r in snapshot.agents)})
+        agent_ids = sorted({root_id, *(r.id for r in snapshot.agents), *snapshot.tool_authority_agent_ids})
         agents = self._lock_rows('agent', 'id', agent_ids)
         self.locked_agents = {r['id']: r for r in agents}
         root = self.locked_agents.get(root_id)
@@ -265,13 +265,13 @@ class AssistantRepository:
             access_clause, access_parameters = self._agent_access_clause(department_ids)
             locked_agents_clause = ''
             if self._locked_scope is not None:
-                locked_ids = [r.id for r in self._locked_scope.agents]
+                locked_ids = list(self._locked_scope.tool_authority_agent_ids) or [r.id for r in self._locked_scope.agents]
                 if not locked_ids:
                     return []
                 locked_agents_clause = 'AND a.id IN (' + ','.join(['%s'] * len(locked_ids)) + ') '
                 access_parameters.extend(locked_ids)
             self.cursor.execute(
-                select
+                select.replace('SELECT DISTINCT ct.id', 'SELECT DISTINCT a.id authority_agent_id,ct.id')
                 + "JOIN agent_connector_tool act ON act.connector_tool_id=ct.id AND act.permission='read' "
                 + "JOIN agent a ON a.id=act.agent_id AND a.status='active' "
                 + f"WHERE ct.status='active' AND c.status='active' "
@@ -361,7 +361,7 @@ class AssistantRepository:
                 "ct.status='active' AND c.status='active' "
                 "AND JSON_EXTRACT(ct.annotations_json,'$.readOnlyHint')=TRUE",
             ),
-            "agent": ("agent a", "a.status='active'"),
+            "agent": ("agent a", "a.status='active' AND a.launch_mode='chat' AND a.code<>'ENTERPRISE_ASSISTANT'"),
         }
         source, condition = definitions[table]
         alias = {"department": "d", "knowledge_base": "k", "connector_tool": "ct", "agent": "a"}[table]

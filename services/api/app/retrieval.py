@@ -7,6 +7,7 @@ import httpx
 from pymilvus import Collection, connections, utility
 
 from .core.config import settings
+from .core.deadline import remaining_timeout
 
 
 def local_hash_embedding(text: str, dimension: int | None = None) -> list[float]:
@@ -22,7 +23,8 @@ def local_hash_embedding(text: str, dimension: int | None = None) -> list[float]
     return [value / norm for value in vector]
 
 
-def embedding(text: str) -> list[float] | None:
+def embedding(text: str, *, deadline=None, check_active=None) -> list[float] | None:
+    remaining_timeout(deadline, 90, check_active)
     if settings.embedding_provider == "local_hash":
         return local_hash_embedding(text)
     if not settings.embedding_base_url or not settings.embedding_model:
@@ -34,8 +36,9 @@ def embedding(text: str) -> list[float] | None:
         settings.embedding_base_url.rstrip("/") + "/embeddings",
         headers=headers,
         json={"model": settings.embedding_model, "input": text},
-        timeout=90,
+        timeout=remaining_timeout(deadline, 90, check_active),
     )
+    remaining_timeout(deadline, 90, check_active)
     response.raise_for_status()
     return response.json()["data"][0]["embedding"]
 
@@ -46,18 +49,24 @@ def vector_candidates(
     document_ids: list[int] | None = None,
     limit: int = 40,
     strict: bool = False,
+    *, deadline=None, check_active=None,
 ) -> list[int]:
+    remaining_timeout(deadline, 60, check_active)
     if document_ids == []:
         return []
     try:
-        vector = embedding(question)
+        control = {'deadline': deadline, 'check_active': check_active} if deadline is not None or check_active else {}
+        vector = embedding(question, **control)
         if vector is None:
             raise RuntimeError('Embedding 未配置')
-        connections.connect(alias="api", uri=settings.milvus_uri)
-        if not utility.has_collection(settings.milvus_collection, using="api"):
+        def options():
+            timeout = remaining_timeout(deadline, 60, check_active)
+            return {'timeout': timeout} if deadline is not None else {}
+        connections.connect(alias="api", uri=settings.milvus_uri, **options())
+        if not utility.has_collection(settings.milvus_collection, using="api", **options()):
             return []
-        collection = Collection(settings.milvus_collection, using="api")
-        collection.load()
+        collection = Collection(settings.milvus_collection, using="api", **options())
+        collection.load(**options())
         expression = "knowledge_base_id in [" + ",".join(str(item) for item in knowledge_base_ids) + "]"
         if document_ids is not None:
             expression += " and document_id in [" + ",".join(str(item) for item in document_ids) + "]"
@@ -68,9 +77,12 @@ def vector_candidates(
             limit=limit,
             expr=expression,
             output_fields=["content_unit_id"],
+            **options(),
         )
+        remaining_timeout(deadline, 60, check_active)
         return [int(hit.entity.get("content_unit_id")) for hit in hits[0]]
     except Exception:
+        remaining_timeout(deadline, 60, check_active)
         if strict:
             raise
         return []
@@ -83,7 +95,9 @@ def keyword_candidates(
     document_ids: list[int] | None = None,
     limit: int = 40,
     strict: bool = False,
+    *, deadline=None, check_active=None,
 ) -> list[int]:
+    remaining_timeout(deadline, 30, check_active)
     if document_ids == []:
         return []
     body = {
@@ -106,13 +120,15 @@ def keyword_candidates(
             auth=(settings.opensearch_username, settings.opensearch_password),
             verify=False,
             json=body,
-            timeout=30,
+            timeout=remaining_timeout(deadline, 30, check_active),
         )
+        remaining_timeout(deadline, 30, check_active)
         if response.status_code == 404:
             return []
         response.raise_for_status()
         return [int(hit["_source"]["content_unit_id"]) for hit in response.json()["hits"]["hits"]]
     except Exception:
+        remaining_timeout(deadline, 30, check_active)
         if strict:
             raise
         return []
@@ -138,7 +154,9 @@ def rerank(
     units: list[dict],
     top_n: int = 8,
     score_threshold: float | None = None,
+    *, deadline=None, check_active=None,
 ) -> tuple[list[dict], str]:
+    remaining_timeout(deadline, 90, check_active)
     if not units:
         return [], "none"
     if settings.rerank_base_url and settings.rerank_model:
@@ -155,8 +173,9 @@ def rerank(
                     "documents": [unit["content_text"] for unit in units],
                     "top_n": top_n,
                 },
-                timeout=90,
+                timeout=remaining_timeout(deadline, 90, check_active),
             )
+            remaining_timeout(deadline, 90, check_active)
             response.raise_for_status()
             results = response.json().get("results", [])
             ranked = []
@@ -170,6 +189,7 @@ def rerank(
                 ranked.append(unit)
             return ranked, "model"
         except Exception:
+            remaining_timeout(deadline, 90, check_active)
             # Model scores and lexical overlap do not share a threshold scale.
             return units[:top_n], 'rrf_fallback'
     ranked = []

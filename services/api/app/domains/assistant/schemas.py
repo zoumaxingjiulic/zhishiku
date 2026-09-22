@@ -4,7 +4,7 @@ from typing import Annotated, Any, Literal
 
 from jsonschema.exceptions import SchemaError
 from jsonschema.validators import validator_for
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 _SCHEMA_KEYS = {
@@ -141,6 +141,17 @@ class ToolCapabilityRef(CapabilityRef):
     read_only: bool = True
     input_schema_summary: FrozenDict = Field(default_factory=FrozenDict)
 
+    @field_validator('input_schema_summary', mode='before')
+    @classmethod
+    def restore_frozen_summary(cls, value):
+        def freeze(item):
+            if isinstance(item, dict):
+                return FrozenDict({key: freeze(child) for key, child in item.items()})
+            if isinstance(item, (list, tuple)):
+                return tuple(freeze(child) for child in item)
+            return item
+        return freeze(value)
+
 
 class CapabilityCatalogSnapshot(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -149,6 +160,8 @@ class CapabilityCatalogSnapshot(BaseModel):
     tools: tuple[ToolCapabilityRef, ...] = ()
     agents: tuple[CapabilityRef, ...] = ()
     skills: tuple[CapabilityRef, ...] = ()
+    # Internal, persisted grant lineage; never a delegation candidate.
+    tool_authority_agent_ids: tuple[int, ...] = ()
 
 
 PositiveCapabilityId = Annotated[int, Field(strict=True, gt=0)]

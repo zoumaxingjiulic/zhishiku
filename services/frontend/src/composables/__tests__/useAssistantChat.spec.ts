@@ -28,6 +28,58 @@ function session(id: string, status: string | null = null, taskId?: string) {
 }
 
 describe("useAssistantChat", () => {
+  it.each([[409, false], [422, false], [0, false], [409, true]])("does not accept a rejected or unrelated task after submit failure %s (same key %s)", async (status, sameKey) => {
+    const keys: string[] = [];
+    apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path.endsWith("/capabilities")) return { knowledge_bases: [], tools: [], agents: [], skills: [] };
+      if (path.endsWith("/sessions")) return [session("s1")];
+      if (options?.method === "POST") {
+        keys.push(JSON.parse(String(options.body)).request_key);
+        throw Object.assign(new Error("submit failed"), { status });
+      }
+      if (path.endsWith("/s1/messages")) return { messages: [], latest_task: keys.length
+        ? { id: "other-task", session_id: "s1", status: "running", request_key: sameKey ? keys[0] : "other-key" } : null };
+      throw new Error(`Unexpected API call: ${path}`);
+    });
+    render(Harness);
+    await waitFor(() => expect(screen.getByTestId("ready")).toHaveTextContent("true"));
+    await fireEvent.update(screen.getByLabelText("会话草稿"), "我的请求");
+    await fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(screen.getByTestId("waiting")).toHaveTextContent("false"));
+    expect(screen.getByTestId("task-id")).not.toHaveTextContent("other-task");
+    expect(screen.getByLabelText("会话草稿")).toHaveValue("我的请求");
+    expect(screen.queryByText("我的请求")).not.toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(keys).toHaveLength(2));
+    expect(keys[1]).toBe(keys[0]);
+  });
+
+  it("recovers an already completed submission only by its own request key", async () => {
+    let acceptedKey = "";
+    apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path.endsWith("/capabilities")) return { knowledge_bases: [], tools: [], agents: [], skills: [] };
+      if (path.endsWith("/sessions")) return [session("s1")];
+      if (options?.method === "POST") {
+        acceptedKey = JSON.parse(String(options.body)).request_key;
+        throw new Error("response lost");
+      }
+      if (path.endsWith("/s1/messages")) return { messages: acceptedKey ? [
+        { id: 1, role: "user", content: "我的请求" }, { id: 2, role: "assistant", content: "完成回答" },
+      ] : [], latest_task: acceptedKey
+        ? { id: "accepted", session_id: "s1", status: "succeeded", request_key: acceptedKey } : null };
+      throw new Error(`Unexpected API call: ${path}`);
+    });
+    render(Harness);
+    await waitFor(() => expect(screen.getByTestId("ready")).toHaveTextContent("true"));
+    await fireEvent.update(screen.getByLabelText("会话草稿"), "我的请求");
+    await fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await screen.findByText("完成回答");
+    expect(screen.getByTestId("task-id")).toHaveTextContent("accepted");
+    expect(screen.getByTestId("waiting")).toHaveTextContent("false");
+    expect(screen.getAllByText("我的请求")).toHaveLength(1);
+    expect(screen.getByLabelText("会话草稿")).toHaveValue("");
+  });
+
   beforeEach(() => { vi.useRealTimers(); apiMock.mockReset(); });
   afterEach(() => { cleanup(); vi.clearAllTimers(); vi.useRealTimers(); });
 
@@ -172,18 +224,20 @@ describe("useAssistantChat", () => {
   it("recovers a queued task when POST succeeded but its response was lost and keeps polling", async () => {
     vi.useFakeTimers();
     let submitted = false;
+    let acceptedKey = "";
     let taskReads = 0;
     apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
       if (path.endsWith("/capabilities")) return { knowledge_bases: [], tools: [], agents: [], skills: [] };
       if (path.endsWith("/sessions") && !options) return [session("s1")];
       if (path.endsWith("/s1/messages") && options?.method === "POST") {
         submitted = true;
+        acceptedKey = JSON.parse(String(options.body)).request_key;
         throw new Error("响应连接中断");
       }
       if (path.endsWith("/s1/messages")) return {
         id: "s1",
         messages: taskReads > 1 ? [{ id: 2, role: "assistant", content: "已恢复的回答" }] : [],
-        latest_task: submitted ? { id: "t-lost", session_id: "s1", status: taskReads > 1 ? "succeeded" : "queued" } : null,
+        latest_task: submitted ? { id: "t-lost", session_id: "s1", request_key: acceptedKey, status: taskReads > 1 ? "succeeded" : "queued" } : null,
       };
       if (path.endsWith("/tasks/t-lost")) {
         taskReads += 1;

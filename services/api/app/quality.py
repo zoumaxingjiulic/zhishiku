@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .retrieval import keyword_candidates, vector_candidates, reciprocal_rank_fusion, rerank
 from .core.database import connect
+from .core.deadline import remaining_timeout
 
 
 class RetrievalPolicy(BaseModel):
@@ -41,7 +42,13 @@ def retrieval_query(question: str, history: list[dict], enabled: bool) -> tuple[
     return question, 'direct'
 
 
-def retrieve(question, kb_ids, departments, document_ids, user, config, hydrate):
+def retrieve(question, kb_ids, departments, document_ids, user, config, hydrate, *, deadline=None, check_active=None):
+    def check():
+        if check_active:
+            check_active()
+        remaining_timeout(deadline, 60)
+    check()
+    options = {'deadline': deadline, 'check_active': check_active} if deadline is not None or check_active else {}
     if not kb_ids:
         return [], {'vector': 0, 'keyword': 0, 'final': 0}, 'none', []
     # Apply document authorization BEFORE both recall routes, not only after top-K.
@@ -55,23 +62,28 @@ def retrieve(question, kb_ids, departments, document_ids, user, config, hydrate)
             permitted = {r['id'] for r in c.fetchall()}
         document_ids = sorted(permitted if document_ids is None else permitted.intersection(document_ids))
     warnings, outputs = [], {'vector': [], 'keyword': []}
+    check()
     with ThreadPoolExecutor(max_workers=2) as pool:
         futures = {}
         if config['mode'] != 'keyword':
-            futures['vector'] = pool.submit(vector_candidates, question, kb_ids, document_ids, config['candidate_k'], True)
+            futures['vector'] = pool.submit(vector_candidates, question, kb_ids, document_ids, config['candidate_k'], True, **options)
         if config['mode'] != 'vector':
-            futures['keyword'] = pool.submit(keyword_candidates, question, kb_ids, departments, document_ids, config['candidate_k'], True)
+            futures['keyword'] = pool.submit(keyword_candidates, question, kb_ids, departments, document_ids, config['candidate_k'], True, **options)
         for name, future in futures.items():
             try:
-                outputs[name] = future.result()
+                outputs[name] = future.result(timeout=remaining_timeout(deadline, 60) if deadline is not None else None)
             except Exception:
+                check()
                 warnings.append(name + '_unavailable')
+    check()
     if len(warnings) == len(futures):
         raise RuntimeError('RETRIEVAL_UNAVAILABLE')
     fused = reciprocal_rank_fusion(outputs['vector'], outputs['keyword'])
     units = hydrate(fused, kb_ids, user, document_ids)
+    check()
     if config['rerank_enabled']:
-        units, method = rerank(question, units, config['top_k'], config['score_threshold'])
+        units, method = rerank(question, units, config['top_k'], config['score_threshold'], **options)
+        check()
         if method == 'rrf_fallback':
             warnings.append('rerank_unavailable')
     else:

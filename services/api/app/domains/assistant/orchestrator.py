@@ -37,10 +37,11 @@ class ExecutionBudget:
 
     def __init__(self):
         self.started = time.monotonic()
+        self.deadline = self.started + 60
         self.model_calls = self.tool_calls = self.delegations = self.token_reservation = 0
 
     def remaining(self):
-        remaining = 60 - (time.monotonic() - self.started)
+        remaining = self.deadline - time.monotonic()
         if remaining <= 0:
             raise TimeoutError('Assistant execution deadline exceeded')
         return remaining
@@ -443,6 +444,8 @@ class ProductionAdapters:
                      'argument_keys': sorted(arguments), 'success': False}
             try:
                 data, event = executor(tool, arguments)
+                self.store.check_active(self.task)
+                self.budget.remaining()
                 audit['success'] = True
                 event.update(called_at=audit['called_at'], argument_keys=audit['argument_keys'])
                 return data, event
@@ -472,11 +475,16 @@ class ProductionAdapters:
         } for u in cited]}
 
     def execute(self, kind, ids, question, user):
+        self.store.check_active(self.task)
+        self.budget.remaining()
         user = self.store.load_current_user(user['id'])
         field = {'knowledge': 'knowledge_base_ids', 'tools': 'tool_ids', 'agents': 'agent_ids', 'skills': 'skill_ids'}[kind]
         user = self._scope(user, CapabilitySelection(**{field: ids}))
         if kind == 'knowledge':
-            data = retrieve_for_agent(user, {'knowledge_base_ids': ids}, question, RetrievalPolicy().model_dump())
+            data = retrieve_for_agent(user, {'knowledge_base_ids': ids}, question, RetrievalPolicy().model_dump(),
+                                      deadline=self.budget.deadline, check_active=lambda: self.store.check_active(self.task))
+            self.store.check_active(self.task)
+            self.budget.remaining()
             return self._generate(question, user, units=data['units'])
         if kind == 'tools':
             with UnitOfWork() as uow:
@@ -493,7 +501,8 @@ class ProductionAdapters:
                 fresh = sanitize_bound_tool(fresh_rows[0]) if fresh_rows else None
                 if not fresh or fresh['_binding_version'] != tool['_binding_version']:
                     raise AuthorizationError('工具配置已变更')
-                result, event = execute_bound_tool(fresh, arguments)
+                result, event = execute_bound_tool(fresh, arguments, deadline=self.budget.deadline,
+                                                   check_active=lambda: self.store.check_active(self.task))
                 event['called_at'] = datetime.now(timezone.utc).isoformat()
                 # Summarize argument names, never persist possibly confidential values.
                 event['argument_keys'] = sorted(arguments)
@@ -516,9 +525,14 @@ class ProductionAdapters:
                 audit = {'kind': 'delegation', 'agent_id': aid, 'trace_id': self.task['id'], 'success': False}
                 started = time.monotonic()
                 try:
-                    data = retrieve_for_agent(user, agent, question, RetrievalPolicy().model_dump())
+                    data = retrieve_for_agent(user, agent, question, RetrievalPolicy().model_dump(),
+                                              deadline=self.budget.deadline, check_active=lambda: self.store.check_active(self.task))
+                    self.store.check_active(self.task)
+                    self.budget.remaining()
                     parts.append(self._generate(question, user, units=data['units'], tools=tools,
-                                               executor=checked_executor(user, aid, progress_callback=self.emit), agent=agent))
+                                               executor=checked_executor(user, aid, progress_callback=self.emit,
+                                                   deadline=self.budget.deadline,
+                                                   check_active=lambda: self.store.check_active(self.task)), agent=agent))
                     audit['success'] = True
                 except Exception as exc:
                     audit['error_type'] = type(exc).__name__

@@ -39,6 +39,7 @@ export interface ExecutionSummary {
 
 export interface AssistantTask {
   id: string;
+  request_key?: string | null;
   session_id: string;
   status: AssistantTaskStatus;
   stage?: string | null;

@@ -35,6 +35,32 @@ function appRouter() {
 }
 
 describe("SkillsPage", () => {
+  it("only offers active chat agents while preserving removable historical workflow bindings", async () => {
+    apiMock.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/admin/skills") return [skill];
+      if (path === "/api/v1/admin/skills/7") return { ...skill, agent_ids: [42, 99] };
+      if (path === "/api/v1/connectors") return { items: [] };
+      if (path === "/api/v1/studio/agents") return [
+        { id: 1, name: "聊天专家", code: "EXPERT", status: "active", launch_mode: "chat" },
+        { id: 42, name: "历史流程", code: "OLD", status: "active", launch_mode: "workflow" },
+        { id: 43, name: "保留入口", code: "ENTERPRISE_ASSISTANT", status: "active", launch_mode: "chat" },
+      ];
+      return [];
+    });
+    render(SkillsPage);
+    await screen.findByText("库存查询");
+    await fireEvent.click(screen.getByRole("button", { name: "新建 Skill" }));
+    expect(screen.getByLabelText("聊天专家")).toBeInTheDocument();
+    expect(screen.queryByText("历史流程")).not.toBeInTheDocument();
+    expect(screen.queryByText("保留入口")).not.toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: /库存查询/ }));
+    const old = await screen.findByLabelText("历史流程（已停用/不可用）");
+    expect(old).toBeChecked();
+    expect(screen.getByLabelText("智能体 #99（已停用/不可用）")).toBeChecked();
+    await fireEvent.click(old);
+    expect(screen.queryByLabelText("历史流程（已停用/不可用）")).not.toBeInTheDocument();
+  });
+
   afterEach(() => {
     cleanup();
     vi.clearAllMocks();

@@ -12,6 +12,7 @@ from ..agent_runtime import generate_agent_answer
 from ..core.config import settings
 from ..core.credentials import decrypt_credential
 from ..core.database import UnitOfWork
+from ..core.deadline import remaining_timeout
 from ..core.errors import AuthorizationError, NotFoundError, ServiceUnavailableError, ValidationError
 from ..core.outbound import OutboundPolicy
 from ..core.redaction import redact_values
@@ -138,11 +139,16 @@ def sanitize_bound_tool(tool: dict, decryptor=decrypt_credential) -> dict:
 
 def execute_bound_tool(
     tool: dict, arguments: dict, additional_secrets: list[str] | tuple[str, ...] = (),
+    *, deadline: float | None = None, check_active=None,
 ) -> tuple[dict, dict]:
+    if check_active:
+        check_active()
+    remaining_timeout(deadline, 60)
     token = decrypt_credential(tool.get("credential_ciphertext"))
     try:
         with StreamableHttpMcpClient(
-            tool["base_url"], token, tool["protocol_version"]
+            tool["base_url"], token, tool["protocol_version"],
+            timeout=remaining_timeout(deadline, 25), overall_timeout=remaining_timeout(deadline, 60),
         ) as client:
             result = redact_values(
                 client.call_tool(tool["tool_name"], arguments),
@@ -150,6 +156,9 @@ def execute_bound_tool(
             )
     finally:
         token = ""
+        if check_active:
+            check_active()
+        remaining_timeout(deadline, 60)
     if result.get("isError"):
         raise McpError("MCP 工具返回执行错误")
     structured = result.get("structuredContent")
@@ -175,7 +184,7 @@ def execute_bound_tool(
 
 def checked_executor(
     user: dict, agent_id: int, redaction_secrets: list[str] | tuple[str, ...] = (),
-    progress_callback=None,
+    progress_callback=None, *, deadline: float | None = None, check_active=None,
 ):
     def execute(tool: dict, arguments: dict) -> tuple[dict, dict]:
         if progress_callback:
@@ -191,7 +200,8 @@ def checked_executor(
         if fresh.get("_binding_version") != tool.get("_binding_version"):
             raise AuthorizationError("工具配置已变更，请重新提交问题")
         validate(arguments, fresh["input_schema"])
-        return execute_bound_tool(fresh, arguments, redaction_secrets)
+        options = {'deadline': deadline, 'check_active': check_active} if deadline is not None or check_active else {}
+        return execute_bound_tool(fresh, arguments, redaction_secrets, **options)
 
     return execute
 

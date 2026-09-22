@@ -87,7 +87,8 @@ async function loadOptions() {
     })),
   );
   options.agents = agents.map((item) => ({
-    id: item.id, label: item.name, available: item.status === undefined || item.status === "active",
+    id: item.id, label: item.name, available: item.status === "active"
+      && item.launch_mode === "chat" && item.code !== "ENTERPRISE_ASSISTANT",
   }));
   options.departments = departments.map((item) => ({
     id: item.id, label: item.name, available: item.status === undefined || item.status === 1,

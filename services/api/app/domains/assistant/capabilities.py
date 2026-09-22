@@ -77,9 +77,12 @@ class CapabilityCatalog:
         self.repository = repository
 
     def for_user(self, user: dict[str, Any]) -> CapabilityCatalogSnapshot:
+        tools = self.repository.list_tools(user)
         return CapabilityCatalogSnapshot(
             knowledge_bases=tuple(_capability_ref(row) for row in self.repository.list_knowledge_bases(user)),
-            tools=tuple(_tool_ref(row) for row in self.repository.list_tools(user)),
+            tools=tuple({_tool_ref(row).id: _tool_ref(row) for row in tools}.values()),
+            tool_authority_agent_ids=tuple(sorted({row['authority_agent_id'] for row in tools
+                                                   if row.get('authority_agent_id')})),
             agents=tuple(_capability_ref(row) for row in self.repository.list_agents(user)),
             skills=tuple(_capability_ref(row) for row in self.repository.list_skills(user)),
         )

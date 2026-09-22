@@ -269,7 +269,7 @@ class ChatTaskService:
 def task_view(row: dict | None) -> dict | None:
     if not row:
         return None
-    keys = ("id", "session_id", "status", "stage", "error_code", "updated_at")
+    keys = ("id", "session_id", "status", "stage", "error_code", "updated_at", "request_key")
     view = {key: row.get(key) for key in keys}
     view["partial_answer"] = None
     return view

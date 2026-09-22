@@ -36,7 +36,7 @@ class AssistantService(AgentService):
         fresh = repository.load_current_user(user['id'])
         if fresh is None:
             raise NotFoundError("用户不可用")
-        return CapabilityCatalog(repository).for_user(fresh).model_dump(mode='json')
+        return CapabilityCatalog(repository).for_user(fresh).model_dump(mode='json', exclude={'tool_authority_agent_ids'})
 
     def sessions(self, user):
         aid = self.assistant()['id']
@@ -153,6 +153,7 @@ class AssistantService(AgentService):
 
     def create_skill(self, user, payload, ip_address):
         self._require_admin(user)
+        self._require_current_admin(user['id'])
         if payload.version != 1:
             raise ValidationError("新建 Skill 的版本必须为 1")
         try:
@@ -194,12 +195,14 @@ class AssistantService(AgentService):
 
     def update_skill(self, user, skill_id, payload, ip_address):
         self._require_admin(user)
+        self._require_current_admin(user['id'])
         return self._save_skill_update(
             user, skill_id, payload, ip_address, "assistant_skill.update"
         )
 
     def disable_skill(self, user, skill_id, version, ip_address):
         self._require_admin(user)
+        self._require_current_admin(user['id'])
         locked = self.skill_repository.get_managed_skill(skill_id, for_update=True)
         if not locked:
             raise NotFoundError("Skill 不存在")
