@@ -85,6 +85,8 @@ describe("AgentsPage chat task status", () => {
     expect(within(failedRow).getByTitle("删除对话")).toBeEnabled();
     expect(within(cancelledRow).getByTitle("删除对话")).toBeEnabled();
     expect(within(syncFailedRow).getByTitle("删除对话")).toBeEnabled();
+    expect(screen.getByRole("button", { name: /新建/ })).toHaveClass("base-button--ghost-inverse");
+    expect(within(failedRow).getByTitle("删除对话")).toHaveClass("base-button--ghost-inverse");
   });
 
   it("keeps list loading, empty, and failed states distinct and retries a failed load", async () => {

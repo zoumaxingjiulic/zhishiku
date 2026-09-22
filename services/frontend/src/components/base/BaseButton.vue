@@ -5,7 +5,7 @@ const props = withDefaults(defineProps<{
   loadingText?: string;
   size?: "sm" | "md";
   type?: "button" | "submit" | "reset";
-  variant?: "primary" | "secondary" | "ghost" | "danger";
+  variant?: "primary" | "secondary" | "ghost" | "ghost-inverse" | "danger";
 }>(), {
   disabled: false,
   loading: false,
@@ -59,6 +59,8 @@ function handleClick(event: MouseEvent) {
 .base-button--primary:not(:disabled):hover { background: var(--color-primary-hover); }
 .base-button--secondary { background: var(--color-primary-soft); color: var(--color-primary-strong); }
 .base-button--ghost { background: transparent; color: var(--color-text-muted); }
+.base-button--ghost-inverse { background: transparent; color: #dbe7f6; }
+.base-button--ghost-inverse:not(:disabled):hover { background: rgba(255, 255, 255, .12); color: #fff; }
 .base-button--danger { background: var(--color-danger-soft); color: var(--color-danger); }
 .base-button:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
 .base-button:disabled { cursor: not-allowed; opacity: .64; }

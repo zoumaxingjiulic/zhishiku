@@ -156,7 +156,6 @@
 .password-once code:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
 .content-card > .table-wrap { border: 0; border-radius: inherit; }
 .table-wrap { overscroll-behavior-inline: contain; }
-.table-wrap th:last-child, .table-wrap td:last-child { white-space: nowrap; }
 .button-link {
   display: inline-flex;
   align-items: center;

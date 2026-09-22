@@ -1,5 +1,6 @@
 import sys
 import json
+import importlib.util
 from pathlib import Path
 import pytest
 from pydantic import ValidationError
@@ -10,6 +11,58 @@ from app.domains.agents.schemas import AgentWrite
 from app.domains.studio.schemas import Processing
 from app.runtime.workflows import resolve_arguments
 from app import quality, agent_runtime
+
+
+ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_enterprise_assistant_system_contract(monkeypatch):
+    """Catch release assembly that omits the assistant API or worker dispatch."""
+    from app.application import API_VERSION, create_app
+    from app.runtime import chat_tasks
+
+    application = create_app(bootstrap=lambda: None)
+    paths = {route.path for route in application.routes}
+    calls = []
+    monkeypatch.setattr(chat_tasks, "run_chat_task", lambda task: calls.append("chat"))
+    monkeypatch.setattr(chat_tasks, "run_assistant_task", lambda task: calls.append("assistant"))
+
+    chat_tasks.dispatch_chat_task({"agent_code": "ENTERPRISE_ASSISTANT"})
+
+    assert API_VERSION == "1.2.0"
+    assert "/api/v1/assistant/capabilities" in paths
+    assert "/api/v1/assistant/sessions" in paths
+    assert calls == ["assistant"]
+
+
+def test_low_code_freeze_contract():
+    """Catch a new low-code canvas runtime entering the frontend dependency graph."""
+    package = json.loads((ROOT / "services/frontend/package.json").read_text(encoding="utf-8"))
+    package_lock = json.loads((ROOT / "services/frontend/package-lock.json").read_text(encoding="utf-8"))
+    dependencies = set(package.get("dependencies", {})) | set(package.get("devDependencies", {}))
+    dependencies.update(
+        path.rsplit("node_modules/", 1)[-1]
+        for path in package_lock.get("packages", {})
+        if "node_modules/" in path
+    )
+    canvas_runtimes = {
+        "@antv/x6", "@logicflow/core", "@vue-flow/core", "drawflow",
+        "rete", "rete-vue-plugin", "vue-flow",
+    }
+
+    assert canvas_runtimes.isdisjoint(dependencies)
+
+
+def test_tracked_repository_has_no_plaintext_credentials(capsys):
+    """Run the real scanner; diagnostics may name only a file and rule."""
+    path = ROOT / "tools/check_repository_hygiene.py"
+    spec = importlib.util.spec_from_file_location("repository_hygiene_release", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+
+    assert module.main(ROOT) == 0
+    captured = capsys.readouterr()
+    assert captured.out == captured.err == ""
 
 
 def test_policy_validation():

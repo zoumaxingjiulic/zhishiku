@@ -198,6 +198,15 @@ def test_source_authority_bounds_include_nested_dependencies_and_strip_content()
                                            for i in range(1, 5)}})
 
 
+def test_provenance_merge_deduplicates_repeated_history_before_applying_caps():
+    """Catch legitimate repeated history exhausting the cap before ID deduplication."""
+    from app.domains.assistant.provenance import merge
+
+    source = {"version": 1, "document_ids": list(range(1, 257))}
+
+    assert merge(source, source)["document_ids"] == list(range(1, 257))
+
+
 def test_legacy_history_without_complete_provenance_is_not_reused():
     from app.domains.assistant.orchestrator import filter_authorized_history
     history = filter_authorized_history(SimpleNamespace(), USER, Store().snapshot,

@@ -7,11 +7,14 @@ FIELDS = ('knowledge_base_ids', 'tool_ids', 'agent_ids', 'skill_ids')
 
 
 def ids(values):
-    if not isinstance(values, (list, tuple)) or len(values) > 256:
+    if not isinstance(values, (list, tuple)):
         raise AuthorizationError('来源依赖超过限制')
     if any(type(v) is not int or v <= 0 for v in values):
         raise AuthorizationError('来源依赖无效')
-    return sorted(set(values))
+    unique = sorted(set(values))
+    if len(unique) > 256:
+        raise AuthorizationError('来源依赖超过限制')
+    return unique
 
 
 def normalize(source):

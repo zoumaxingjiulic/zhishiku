@@ -1,6 +1,7 @@
 """Reject tracked local secrets without displaying their contents."""
 
 from pathlib import Path
+import os
 import re
 import subprocess
 import sys
@@ -9,6 +10,8 @@ import sys
 PRIVATE_KEY_HEADER = re.compile(rb"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----")
 API_KEY = re.compile(rb"\bsk-[A-Za-z0-9_-]{20,}")
 PLACEHOLDER_KEY = re.compile(rb"sk-(?:CHANGE_ME[_-]?)+")
+BEARER_TOKEN = re.compile(rb"(?i)Authorization\s*[:=]\s*Bearer\s+[A-Za-z0-9._~+/=-]{20,}")
+MCP_TOKEN = re.compile(rb"(?i)\bMCP(?:_[A-Z0-9]+)*_?TOKEN\s*[:=]\s*[\"']?[A-Za-z0-9._~+/=-]{20,}")
 
 
 def main(root: Path | None = None) -> int:
@@ -22,6 +25,10 @@ def main(root: Path | None = None) -> int:
         return 2
 
     violations = []
+    known_fragments = [
+        value.encode("utf-8") for value in os.getenv("REPOSITORY_SECRET_FRAGMENTS", "").split(os.pathsep)
+        if len(value) >= 8
+    ]
     for raw_name in tracked.split(b"\0"):
         if not raw_name:
             continue
@@ -51,6 +58,12 @@ def main(root: Path | None = None) -> int:
                 rules.append("pem-private-key")
             if any(not PLACEHOLDER_KEY.fullmatch(match.group()) for match in API_KEY.finditer(content)):
                 rules.append("api-key")
+            if BEARER_TOKEN.search(content):
+                rules.append("bearer-token")
+            if MCP_TOKEN.search(content):
+                rules.append("mcp-token")
+            if any(fragment in content for fragment in known_fragments):
+                rules.append("known-secret-fragment")
         violations.extend((name, rule) for rule in rules)
 
     for name, rule in violations:

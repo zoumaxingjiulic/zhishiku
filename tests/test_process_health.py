@@ -13,6 +13,18 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "shared" / "python"))
 
 
+def test_frontend_health_probe_uses_a_stable_dedicated_endpoint():
+    """Catch health checks that regress to matching mutable application copy."""
+    compose = (ROOT / "deploy/docker-compose.yml").read_text(encoding="utf-8")
+    dockerfile = (ROOT / "services/frontend/Dockerfile").read_text(encoding="utf-8")
+    nginx = (ROOT / "services/frontend/nginx.conf").read_text(encoding="utf-8")
+
+    assert "http://127.0.0.1/healthz" in compose
+    assert "http://127.0.0.1/healthz" in dockerfile
+    assert "location = /healthz" in nginx
+    assert 'return 200 "ok\\n"' in nginx
+
+
 def test_process_health_cli_redacts_configuration_failure():
     env = {name: value for name, value in os.environ.items() if not name.startswith("MYSQL_")}
     env["PYTHONPATH"] = str(ROOT / "shared" / "python")

@@ -230,10 +230,11 @@ class AssistantRepository:
         return self._scope_rows('knowledge_bases', list(self.cursor.fetchall()))
 
     def list_agents(self, user: dict[str, Any]) -> list[dict]:
+        routable = "a.code<>'ENTERPRISE_ASSISTANT' AND a.launch_mode='chat'"
         if user.get("is_platform_admin"):
             self.cursor.execute(
                 "SELECT a.id,a.code,a.name,a.description FROM agent a "
-                "WHERE a.status='active' ORDER BY a.id"
+                f"WHERE a.status='active' AND {routable} ORDER BY a.id"
             )
         else:
             department_ids = self._department_ids(user)
@@ -242,7 +243,7 @@ class AssistantRepository:
             access_clause, access_parameters = self._agent_access_clause(department_ids)
             self.cursor.execute(
                 "SELECT DISTINCT a.id,a.code,a.name,a.description FROM agent a "
-                f"WHERE a.status='active' AND {access_clause} ORDER BY a.id",
+                f"WHERE a.status='active' AND {routable} AND {access_clause} ORDER BY a.id",
                 access_parameters,
             )
         return self._scope_rows('agents', list(self.cursor.fetchall()))

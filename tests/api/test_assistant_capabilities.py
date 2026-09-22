@@ -100,6 +100,18 @@ def test_catalog_filters_every_capability_before_routing():
     assert [item.id for item in catalog.skills] == [5]
 
 
+@pytest.mark.parametrize("field", [
+    "knowledge_base_ids", "tool_ids", "agent_ids", "skill_ids",
+])
+@pytest.mark.parametrize("invalid_id", [0, -1, "1", True, 1.0])
+def test_capability_selection_requires_strict_positive_integer_ids(field, invalid_id):
+    """Catch model output coercion that turns invalid identifiers into authorized IDs."""
+    from app.domains.assistant.schemas import CapabilitySelection
+
+    with pytest.raises(ValidationError):
+        CapabilitySelection(**{field: [invalid_id]})
+
+
 def test_platform_admin_gets_every_enabled_capability_and_unassigned_employee_gets_none():
     """Catches special-casing one capability class differently from the established admin boundary."""
     from app.domains.assistant.capabilities import CapabilityCatalog
@@ -322,6 +334,35 @@ def test_sql_repository_preserves_implicit_agent_and_tool_access_via_visible_kno
 
     assert [row["id"] for row in repository.list_agents(EMPLOYEE)] == [7]
     assert [row["id"] for row in repository.list_tools(EMPLOYEE)] == [11]
+
+
+def test_professional_agent_candidates_exclude_reserved_and_workflow_agents():
+    """Catch the root assistant or legacy workflow being delegated as a professional agent."""
+    import sqlite3
+    from app.domains.assistant.repository import AssistantRepository
+
+    database = sqlite3.connect(":memory:")
+    database.row_factory = sqlite3.Row
+    database.execute("CREATE TABLE agent(id,code,name,description,status,launch_mode)")
+    database.executemany("INSERT INTO agent VALUES(?,?,?,?,?,?)", [
+        (7, "BID", "标书助手", "分析标书", "active", "chat"),
+        (8, "LEGACY_FLOW", "历史流程", "兼容流程", "active", "workflow"),
+        (99, "ENTERPRISE_ASSISTANT", "企业总助手", "平台入口", "active", "chat"),
+    ])
+
+    class Cursor:
+        def execute(self, statement, parameters=None):
+            self.result = database.execute(statement.replace("%s", "?"), parameters or ())
+
+        def fetchall(self):
+            return [dict(row) for row in self.result.fetchall()]
+
+    try:
+        rows = AssistantRepository(Cursor()).list_agents(ADMIN)
+    finally:
+        database.close()
+
+    assert [(row["id"], row["code"]) for row in rows] == [(7, "BID")]
 
 
 def test_sql_repository_reloads_active_user_departments_and_admin_identity():

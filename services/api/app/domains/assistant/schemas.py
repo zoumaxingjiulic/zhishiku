@@ -1,6 +1,6 @@
 """Stable data contracts for the authorized assistant capability catalog."""
 
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 
 from jsonschema.exceptions import SchemaError
 from jsonschema.validators import validator_for
@@ -151,11 +151,14 @@ class CapabilityCatalogSnapshot(BaseModel):
     skills: tuple[CapabilityRef, ...] = ()
 
 
+PositiveCapabilityId = Annotated[int, Field(strict=True, gt=0)]
+
+
 class CapabilitySelection(BaseModel):
-    knowledge_base_ids: list[int] = Field(default_factory=list)
-    tool_ids: list[int] = Field(default_factory=list)
-    agent_ids: list[int] = Field(default_factory=list)
-    skill_ids: list[int] = Field(default_factory=list)
+    knowledge_base_ids: list[PositiveCapabilityId] = Field(default_factory=list)
+    tool_ids: list[PositiveCapabilityId] = Field(default_factory=list)
+    agent_ids: list[PositiveCapabilityId] = Field(default_factory=list)
+    skill_ids: list[PositiveCapabilityId] = Field(default_factory=list)
 
 
 IntentType = Literal[

@@ -1,6 +1,6 @@
 # 企业智能体平台与部门知识库
 
-1.1 升级内容：智能体工作室、配置版本、检索调试与评测、后台回答任务、步骤式工作流、父子分段及 PPTX/DXF 解析。使用方法、数据库变化和限制见 [平台 1.1 说明](docs/platform-v11.md)，实际验证范围见 [部署验收记录](docs/verification-v11.md)。
+当前 API 版本为 `1.2.0`。1.2 在 1.1 的智能体、评测和持久化任务能力上增加企业总助手、显式意图识别、声明式 Skill 与统一工作台；1.1 的使用方法和历史验证范围仍见 [平台 1.1 说明](docs/platform-v11.md) 与 [部署验收记录](docs/verification-v11.md)。
 
 面向企业内网的单机部署知识库与企业智能体平台。当前已具备部门隔离、资料管理、文件夹、异步入库、混合检索、多轮 AI 问答、MCP 企业系统工具、账号管理、运行追踪及审计能力。
 
@@ -27,7 +27,7 @@
        ├─ DeepSeek API：最终回答与工具选择
        └─ MCP：按智能体授权的 ERP、OA、PLM、MOM 只读工具
 
-Worker：从 MySQL ingestion_job 领取任务，执行解析/OCR、切片、向量化和全文索引。chat-runner 从 MySQL 领取对话、工作流和评测任务。
+Worker：从 MySQL ingestion_job 领取任务，执行解析/OCR、切片、向量化和全文索引。chat-runner 从 MySQL 领取总助手对话、专业智能体对话、兼容工作流和评测任务。
 ~~~
 
 | 组件 | 版本/用途 |
@@ -39,6 +39,39 @@ Worker：从 MySQL ingestion_job 领取任务，执行解析/OCR、切片、向�
 | Redis 7 | 预留缓存基础设施；当前任务持久化在 MySQL |
 | Infinity CPU | BAAI/bge-m3、BAAI/bge-reranker-v2-m3 |
 | DeepSeek | 当前阶段的外部 LLM 生成服务 |
+
+## 企业总助手（API 1.2.0）
+
+首页总助手是统一调度入口，不替代专业智能体。每次请求都按下列顺序执行，并把能力快照、意图、执行摘要和审计事件持久化：
+
+~~~text
+用户问题
+→ 重新加载当前用户与部门权限
+→ 构造授权能力目录（知识库、只读 MCP、Skill、专业智能体）
+→ 结构化意图识别
+→ 后端校验候选 ID、参数、当前授权与预算
+→ 必要时澄清；否则执行获授权能力
+→ 汇总回答、引用、来源与执行摘要
+→ 原子保存消息、任务结果、运行记录和审计日志
+~~~
+
+固定意图类型如下：
+
+| 意图 | 行为 |
+| --- | --- |
+| `general_chat` | 不使用企业数据的普通对话 |
+| `knowledge_query` | 在获授权知识库中检索并返回引用 |
+| `system_query` | 调用获授权且声明为只读的 MCP 工具 |
+| `agent_task` | 委托一个已发布的专业智能体 |
+| `multi_capability` | 在同一预算内组合两种以上能力 |
+| `clarification` | 缺少必要参数或置信度不足，先向用户澄清 |
+| `forbidden` | 越权或系统写操作，拒绝自动执行并记录审计 |
+
+第一版只自动执行 `readOnlyHint=true` 且当前用户获授权的系统工具。总助手不能写入 ERP、OA、MOM 或 PLM，不能通过 Skill 绕过部门、知识库、智能体或工具授权；执行前和发布回答前都会复核权限。专业智能体委托沿用用户身份、根运行 ID 与剩余预算，保留来源链路。
+
+Skill 是管理员维护、带版本的声明式业务能力包，包含说明、触发示例、系统指令、输入 JSON Schema 和允许组合的知识库、只读工具、专业智能体及部门。Skill 不能执行 Shell、原始 SQL、任意 URL 或未授权代码；复杂算法与长任务仍由经过测试的专业智能体承担。
+
+低代码建设已冻结：工作室不再提供新建工作流智能体的入口，也未引入画布、节点市场或新的工作流执行引擎。已有 `workflow_run`、历史数据、读取/API 和顺序执行代码继续作为兼容层保留；迁移 013 不删除这些内容。
 
 ## 问答链路
 
@@ -137,7 +170,7 @@ deploy/
   verify-platform-v11.py          平台 1.1 集成与权限隔离验收
   apply-mysql-migration.sh        单个迁移执行器
   queue-reindex.py                既有文档重建索引任务
-database/mysql/                   001~012 MySQL 初始化与增量迁移
+database/mysql/                   001~013 MySQL 初始化与增量迁移
 services/api/                     FastAPI 管理、检索、问答、审计
   app/application.py              应用工厂、生命周期、异常处理和路由装配
   app/core/                       配置、事务、安全、审计和出站策略
@@ -207,7 +240,10 @@ chmod 600 .env
 nano .env
 mkdir -p data
 sysctl -w vm.max_map_count=262144
-docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
+docker compose --env-file .env \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.models.yml \
+  up -d --build
 ~~~
 
 vm.max_map_count=262144 是 OpenSearch 必需内核参数，应在生产系统配置中持久化。
@@ -330,12 +366,106 @@ PY
 
 不要执行 docker compose down -v，也不要对生产数据目录执行 rm -rf，除非已完成备份并明确需要清库。
 
-## 数据库迁移、验收和排查
+## 1.2 增量部署、健康检查与回滚
 
-全新 MySQL 数据目录会由官方 MySQL 镜像按文件名顺序自动执行挂载目录中的全部 SQL，即当前的 `001_initial_schema.sql` 至 `012_platform_quality_runtime.sql`；数据目录初始化后不会再次自动执行。既有环境的后续迁移每个文件只能执行一次：
+以下命令是生产/验收环境的可复制步骤，本地测试不会自动执行。先确认当前提交、目标环境与维护窗口；不要在未授权环境运行备份、迁移、构建或重启。
+
+### 1. 备份并应用 013
+
+013 只新增企业总助手种子、意图决策表、Skill 表和绑定表。它不修改或重建知识库、文档、切片、MinIO 对象、Milvus 集合、OpenSearch 索引，也不删除历史工作流。既有环境只能执行一次；已执行的迁移文件不得修改。
 
 ~~~bash
-bash deploy/apply-mysql-migration.sh database/mysql/012_platform_quality_runtime.sql
+cd /home/ai/zhishiku
+mkdir -p backup
+docker compose --env-file .env \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.models.yml \
+  exec -T mysql sh -c \
+  'exec mysqldump --single-transaction --routines --triggers -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"' \
+  > "backup/mysql-before-013-$(date +%Y%m%d-%H%M%S).sql"
+
+bash deploy/apply-mysql-migration.sh database/mysql/013_enterprise_assistant.sql
+~~~
+
+迁移后应检查新表和保留数据，不输出凭据或业务正文：
+
+~~~bash
+docker compose --env-file .env -f deploy/docker-compose.yml exec -T mysql sh -c \
+  'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" -e \
+  "SHOW TABLES LIKE '\''assistant_%'\''; SELECT id,code,status FROM agent WHERE code='\''ENTERPRISE_ASSISTANT'\''; SELECT COUNT(*) AS workflow_runs FROM workflow_run;"'
+~~~
+
+### 2. 构建并使用双 Compose 文件启动
+
+本地 Infinity 只定义在 `deploy/docker-compose.models.yml`，所以构建、启动、查看状态和后续重启都必须同时带两个文件；当前仓库没有为此定义 Compose profile。
+
+~~~bash
+docker compose --env-file .env \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.models.yml \
+  build api worker frontend
+
+docker compose --env-file .env \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.models.yml \
+  up -d
+~~~
+
+### 3. 区分 liveness 与 readiness
+
+~~~bash
+docker compose --env-file .env \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.models.yml ps
+
+# API liveness：进程可响应，不代表依赖已就绪
+curl -fsS http://127.0.0.1:8000/healthz
+
+# API readiness：MySQL、MinIO、Milvus、OpenSearch 与模型依赖可用
+curl -fsS http://127.0.0.1:8000/readyz
+
+# 前端稳定健康端点；不依赖首页标题或其他页面文案
+docker compose --env-file .env \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.models.yml \
+  exec -T frontend wget -qO- http://127.0.0.1/healthz
+
+# Infinity 模型目录，应包含 embedding 与 rerank 模型
+docker compose --env-file .env \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.models.yml \
+  exec -T api python -c \
+  'import httpx; r=httpx.get("http://infinity:7997/models",timeout=30); r.raise_for_status(); print(r.json())'
+~~~
+
+如果 `.env` 使用其他 `API_PORT`，相应替换上面的 `8000`。`/healthz` 是 liveness；只有 `/readyz` 成功且前端、Infinity 与容器状态均正常，才进入账号业务验收。
+
+### 4. 停止发布与回滚
+
+任一迁移、readiness、权限隔离或真实账号验收失败时，立即停止发布，不把新版本加入办公网流量。先保存提交号、迁移时间、镜像标签、容器状态和仅含错误类型的日志；不要在日志中复制 Token、密码或业务结果。
+
+013 是向后兼容的增量表结构，优先把应用回滚到上一个已验收提交/镜像，并保留 013 新表等待修复，旧版本会忽略它们：
+
+~~~bash
+git checkout <previous-tested-commit>
+docker compose --env-file .env \
+  -f deploy/docker-compose.yml \
+  -f deploy/docker-compose.models.yml \
+  up -d --build
+~~~
+
+不要临时 `DROP` 013 表。只有确认迁移造成必须恢复的数据问题、停止写入并经过变更审批后，才在维护窗口从 `backup/mysql-before-013-*.sql` 恢复整个 MySQL 备份；恢复会覆盖备份时间之后的数据库写入，必须先评估和保全增量数据。不得执行 `docker compose down -v`，也不得删除 `data/`。
+
+### 5. 真实账号验收清单
+
+使用管理员和两个不同部门普通账号验证：能力目录差异、总助手会话/任务隔离、知识问答与引用、ERP/OA/纵横标书只读调用、专业智能体委托、页面切换后任务恢复、越权与写操作拒绝、运行追踪和审计记录。记录 Git 提交、迁移时间、镜像、命令结果和未通过项；“页面可打开”不等于业务验收通过。
+
+## 数据库迁移、验收和排查
+
+全新 MySQL 数据目录会由官方 MySQL 镜像按文件名顺序自动执行挂载目录中的全部 SQL，即当前的 `001_initial_schema.sql` 至 `013_enterprise_assistant.sql`；数据目录初始化后不会再次自动执行。既有环境的后续迁移每个文件只能执行一次，例如 1.2：
+
+~~~bash
+bash deploy/apply-mysql-migration.sh database/mysql/013_enterprise_assistant.sql
 ~~~
 
 历史迁移见 [database/mysql/README.md](database/mysql/README.md)。已执行过的迁移绝不能修改或重写。

@@ -83,6 +83,28 @@ def test_example_file_does_not_exempt_real_secret_patterns(hygiene, monkeypatch,
     assert "api-key" in capsys.readouterr().out
 
 
+def test_rejects_bearer_mcp_and_runtime_known_fragments_without_echoing(
+    hygiene, monkeypatch, tmp_path, capsys,
+):
+    """Catch committed credentials while keeping every matched value out of diagnostics."""
+    bearer = "Bearer " + "D4" * 16
+    mcp_token = "mcp_" + "E5" * 16
+    known = "internal-fragment-" + "F6" * 8
+    monkeypatch.setenv("REPOSITORY_SECRET_FRAGMENTS", known)
+    tracked_files(monkeypatch, hygiene, tmp_path, {
+        "config/bearer.txt": "Authorization: " + bearer,
+        "config/mcp.txt": "MCP_TOKEN=" + mcp_token,
+        "notes.txt": "prefix " + known + " suffix",
+    })
+
+    assert hygiene.main(tmp_path) == 1
+    output = capsys.readouterr().out
+    assert "config/bearer.txt: bearer-token" in output
+    assert "config/mcp.txt: mcp-token" in output
+    assert "notes.txt: known-secret-fragment" in output
+    assert all(secret not in output for secret in (bearer, mcp_token, known))
+
+
 def test_ignores_tracked_files_deleted_in_the_current_change(hygiene, monkeypatch, tmp_path, capsys):
     """Catch scanners that make a legitimate staged deletion fail the quality gate."""
     monkeypatch.setattr(

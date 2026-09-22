@@ -242,8 +242,8 @@ def locked_catalog_database():
       CREATE TABLE app_user(id,status,deleted_at); INSERT INTO app_user VALUES(8,1,NULL);
       CREATE TABLE user_department(user_id,department_id,is_primary); INSERT INTO user_department VALUES(8,2,1);
       CREATE TABLE department(id,code,name,status); INSERT INTO department VALUES(2,'EMP','Employee',1);
-      CREATE TABLE agent(id,code,name,description,status,settings_json,config_version,llm_gateway_profile_id);
-      INSERT INTO agent VALUES(99,'ENTERPRISE_ASSISTANT','root','','active','{}',1,NULL),(7,'expert','Expert','','active','{"explicit_acl":true}',1,NULL);
+      CREATE TABLE agent(id,code,name,description,status,launch_mode,settings_json,config_version,llm_gateway_profile_id);
+      INSERT INTO agent VALUES(99,'ENTERPRISE_ASSISTANT','root','','active','chat','{}',1,NULL),(7,'expert','Expert','','active','chat','{"explicit_acl":true}',1,NULL);
       CREATE TABLE agent_department_acl(agent_id,department_id,permission); INSERT INTO agent_department_acl VALUES(7,2,'use');
       CREATE TABLE agent_knowledge_base(agent_id,knowledge_base_id); INSERT INTO agent_knowledge_base VALUES(7,1);
       CREATE TABLE knowledge_base(id,code,name,description,status); INSERT INTO knowledge_base VALUES(1,'kb','KB','','active');
