@@ -12,6 +12,7 @@ from .schemas import CapabilityCatalogSnapshot, CapabilitySelection, IntentDecis
 CONFIDENCE_THRESHOLD = 0.65
 _WRITE_ACTIONS = ("新增", "删除", "修改", "提交", "审批", "入库", "出库")
 _GENERIC_SYSTEM_MARKERS = ("erp", "oa", "sap", "系统", "库存", "仓库")
+_KNOWLEDGE_NOUNS = ("流程", "制度", "规定", "指南", "说明", "政策")
 _KNOWLEDGE_PATTERNS = (
     re.compile(r"(?:如何|怎么|怎样|何时|什么是|能否介绍|请说明).*(?:流程|制度|规定|指南|操作|提交|审批)"),
     re.compile(r"(?:流程|制度|规定|指南|教程|说明).*(?:是什么|有哪些|如何|怎么|怎样|吗|？|\?)"),
@@ -59,7 +60,10 @@ def _capability_summary(snapshot: CapabilityCatalogSnapshot) -> dict[str, list[d
 
 
 def _is_knowledge_question(question: str) -> bool:
-    return any(pattern.search(question) for pattern in _KNOWLEDGE_PATTERNS)
+    return (
+        any(noun in question for noun in _KNOWLEDGE_NOUNS)
+        or any(pattern.search(question) for pattern in _KNOWLEDGE_PATTERNS)
+    )
 
 
 def _is_explicit_system_write(question: str, snapshot: CapabilityCatalogSnapshot) -> bool:
@@ -94,6 +98,19 @@ def _has_unknown_ids(decision: IntentDecision, snapshot: CapabilityCatalogSnapsh
     }
     selected = decision.selection.model_dump()
     return any(not set(selected[kind]).issubset(ids) for kind, ids in authorized.items())
+
+
+def _selection_matches_intent(decision: IntentDecision) -> bool:
+    allowed_by_intent = {
+        "knowledge_query": {"knowledge_base_ids"},
+        "system_query": {"tool_ids"},
+        "agent_task": {"agent_ids"},
+        "multi_capability": {
+            "knowledge_base_ids", "tool_ids", "agent_ids", "skill_ids",
+        },
+    }
+    allowed = allowed_by_intent.get(decision.intent_type, set())
+    return all(not ids or kind in allowed for kind, ids in decision.selection.model_dump().items())
 
 
 class IntentRouter:
@@ -142,7 +159,7 @@ class IntentRouter:
             )
         if decision.confidence < self.confidence_threshold:
             return _safe_decision("clarification", reason="Intent confidence is below the execution threshold", clarify=True)
-        if decision.missing_parameters:
+        if decision.needs_clarification or decision.missing_parameters or decision.intent_type == "clarification":
             return IntentDecision(
                 intent_type="clarification",
                 confidence=decision.confidence,
@@ -152,8 +169,12 @@ class IntentRouter:
                 risk=decision.risk,
                 reason=decision.reason,
             )
-        if decision.intent_type == "clarification":
-            return decision.model_copy(update={"selection": _empty_selection(), "needs_clarification": True})
         if decision.intent_type in {"general_chat", "forbidden"}:
             return decision.model_copy(update={"selection": _empty_selection()})
+        if not _selection_matches_intent(decision):
+            return _safe_decision(
+                "clarification",
+                reason="Intent selection does not match the declared capability class",
+                clarify=True,
+            )
         return decision

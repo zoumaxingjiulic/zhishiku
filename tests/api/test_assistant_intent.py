@@ -199,3 +199,85 @@ def test_knowledge_question_about_write_process_is_not_forbidden():
     assert decision.intent_type == "knowledge_query"
     assert decision.selection.knowledge_base_ids == [2]
     assert len(model.requests) == 1
+
+
+def test_knowledge_nouns_bypass_system_write_precheck_without_fixed_question_order():
+    """Catches policy or procedure phrases being mistaken for enterprise-system writes."""
+    from app.domains.assistant.intent import IntentRouter
+
+    for question in ("OA 审批流程", "ERP 入库制度", "提交规定"):
+        model = FakeModel(_response("knowledge_query", selection={"knowledge_base_ids": [2]}))
+
+        decision = IntentRouter().route(question, _catalog(), model=model)
+
+        assert decision.intent_type == "knowledge_query"
+        assert decision.selection.knowledge_base_ids == [2]
+        assert len(model.requests) == 1
+
+
+def test_model_clarification_flag_always_clears_executable_selection():
+    """Catches a model-declared clarification retaining a tool that downstream code could execute."""
+    from app.domains.assistant.intent import IntentRouter
+
+    decision = IntentRouter().route(
+        "查上海组织的库存",
+        _catalog(),
+        model=FakeModel(_response(
+            "system_query",
+            selection={"tool_ids": [11]},
+            needs_clarification=True,
+        )),
+    )
+
+    assert decision.intent_type == "clarification"
+    assert decision.needs_clarification is True
+    assert decision.selection.model_dump() == {
+        "knowledge_base_ids": [], "tool_ids": [], "agent_ids": [], "skill_ids": [],
+    }
+
+
+def test_executable_intent_rejects_selection_from_another_capability_class():
+    """Catches a valid catalog ID bypassing the execution branch implied by the declared intent."""
+    from app.domains.assistant.intent import IntentRouter
+
+    cases = [
+        ("knowledge_query", {"tool_ids": [11]}),
+        ("system_query", {"knowledge_base_ids": [2]}),
+        ("agent_task", {"skill_ids": [5]}),
+    ]
+
+    for intent_type, selection in cases:
+        decision = IntentRouter().route(
+            "route this",
+            _catalog(),
+            model=FakeModel(_response(intent_type, selection=selection)),
+        )
+
+        assert decision.intent_type == "clarification"
+        assert decision.needs_clarification is True
+        assert all(not ids for ids in decision.selection.model_dump().values())
+
+
+def test_non_executing_intents_clear_selection_and_multi_capability_accepts_skills():
+    """Catches terminal intents carrying executable IDs or skills being rejected from a declared combination."""
+    from app.domains.assistant.intent import IntentRouter
+
+    for intent_type in ("general_chat", "clarification", "forbidden"):
+        decision = IntentRouter().route(
+            "route this",
+            _catalog(),
+            model=FakeModel(_response(intent_type, selection={"tool_ids": [11]})),
+        )
+        assert all(not ids for ids in decision.selection.model_dump().values())
+
+    combined = IntentRouter().route(
+        "解释制度并按声明式技能处理",
+        _catalog(),
+        model=FakeModel(_response(
+            "multi_capability",
+            selection={"knowledge_base_ids": [2], "skill_ids": [5]},
+        )),
+    )
+    assert combined.intent_type == "multi_capability"
+    assert combined.selection.knowledge_base_ids == [2]
+    assert combined.selection.skill_ids == [5]
