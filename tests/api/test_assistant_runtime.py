@@ -20,6 +20,7 @@ class Store:
         self.events = []
         self.revoked = False
         self.snapshot = CapabilityCatalogSnapshot(
+            tool_authority={'11': [7]},
             knowledge_bases=(CapabilityRef(id=1, code='kb', name='知识'),),
             tools=(ToolCapabilityRef(id=11, code='erp.stock', name='库存', connector_id=2),),
             agents=(CapabilityRef(id=7, code='expert', name='专家'),),

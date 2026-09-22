@@ -2,12 +2,46 @@ import hashlib
 import math
 import re
 from collections import defaultdict
+from urllib.parse import urlsplit
 
 import httpx
 from pymilvus import Collection, connections, utility
 
 from .core.config import settings
-from .core.deadline import remaining_timeout
+from .core.deadline import DeadlineExceeded, remaining_timeout
+from .core.errors import ValidationError
+from .core.outbound import OutboundPolicy, pinned_client
+
+
+def _retrieval_post(url, *, deadline=None, opensearch=False, **kwargs):
+    """Use one network deadline for DNS, connect, TLS, writes and every read.
+
+    Ordinary callers retain their existing transport defaults. Assistant model
+    endpoints use the model allowlist; OpenSearch is restricted to the configured
+    service origin and RFC1918/ULA service networks (metadata remains forbidden).
+    """
+    if deadline is None:
+        return httpx.post(url, **kwargs)
+    if opensearch:
+        configured, requested = urlsplit(settings.opensearch_url), urlsplit(url)
+        def origin(value):
+            return (value.scheme, value.hostname, value.port or (443 if value.scheme == 'https' else 80))
+        if origin(configured) != origin(requested):
+            raise ValidationError('OpenSearch destination differs from configured service')
+        policy = OutboundPolicy((configured.hostname,), ('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16', 'fc00::/7'))
+    else:
+        policy = OutboundPolicy(settings.model_allowed_hosts, settings.model_allowed_cidrs)
+    policy.validate(url, deadline=deadline)
+    verify = kwargs.pop('verify', True)
+    timeout = kwargs.pop('timeout')
+    try:
+        with pinned_client(policy, deadline=deadline, verify=verify,
+                           timeout=remaining_timeout(deadline, timeout)) as client:
+            response = client.post(url, **kwargs)
+    except httpx.TimeoutException:
+        raise DeadlineExceeded('Retrieval network deadline exceeded') from None
+    remaining_timeout(deadline, timeout)
+    return response
 
 
 def local_hash_embedding(text: str, dimension: int | None = None) -> list[float]:
@@ -32,8 +66,9 @@ def embedding(text: str, *, deadline=None, check_active=None) -> list[float] | N
     headers = {"Content-Type": "application/json"}
     if settings.embedding_api_key:
         headers["Authorization"] = f"Bearer {settings.embedding_api_key}"
-    response = httpx.post(
+    response = _retrieval_post(
         settings.embedding_base_url.rstrip("/") + "/embeddings",
+        deadline=deadline,
         headers=headers,
         json={"model": settings.embedding_model, "input": text},
         timeout=remaining_timeout(deadline, 90, check_active),
@@ -81,6 +116,8 @@ def vector_candidates(
         )
         remaining_timeout(deadline, 60, check_active)
         return [int(hit.entity.get("content_unit_id")) for hit in hits[0]]
+    except DeadlineExceeded:
+        raise
     except Exception:
         remaining_timeout(deadline, 60, check_active)
         if strict:
@@ -115,8 +152,9 @@ def keyword_candidates(
     if document_ids is not None:
         body["query"]["bool"]["filter"].append({"terms": {"document_id": document_ids}})
     try:
-        response = httpx.post(
+        response = _retrieval_post(
             f"{settings.opensearch_url.rstrip('/')}/{settings.opensearch_index}/_search",
+            deadline=deadline, opensearch=True,
             auth=(settings.opensearch_username, settings.opensearch_password),
             verify=False,
             json=body,
@@ -127,6 +165,8 @@ def keyword_candidates(
             return []
         response.raise_for_status()
         return [int(hit["_source"]["content_unit_id"]) for hit in response.json()["hits"]["hits"]]
+    except DeadlineExceeded:
+        raise
     except Exception:
         remaining_timeout(deadline, 30, check_active)
         if strict:
@@ -164,8 +204,9 @@ def rerank(
         if settings.rerank_api_key:
             headers["Authorization"] = f"Bearer {settings.rerank_api_key}"
         try:
-            response = httpx.post(
+            response = _retrieval_post(
                 settings.rerank_base_url.rstrip("/") + "/rerank",
+                deadline=deadline,
                 headers=headers,
                 json={
                     "model": settings.rerank_model,
@@ -188,6 +229,8 @@ def rerank(
                 unit["_rerank_score"] = score
                 ranked.append(unit)
             return ranked, "model"
+        except DeadlineExceeded:
+            raise
         except Exception:
             remaining_timeout(deadline, 90, check_active)
             # Model scores and lexical overlap do not share a threshold scale.

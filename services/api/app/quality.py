@@ -10,7 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from .retrieval import keyword_candidates, vector_candidates, reciprocal_rank_fusion, rerank
 from .core.database import connect
-from .core.deadline import remaining_timeout
+from .core.deadline import DeadlineExceeded, remaining_timeout
 
 
 class RetrievalPolicy(BaseModel):
@@ -63,8 +63,9 @@ def retrieve(question, kb_ids, departments, document_ids, user, config, hydrate,
         document_ids = sorted(permitted if document_ids is None else permitted.intersection(document_ids))
     warnings, outputs = [], {'vector': [], 'keyword': []}
     check()
-    with ThreadPoolExecutor(max_workers=2) as pool:
-        futures = {}
+    pool = ThreadPoolExecutor(max_workers=2, thread_name_prefix='kb-retrieval')
+    futures = {}
+    try:
         if config['mode'] != 'keyword':
             futures['vector'] = pool.submit(vector_candidates, question, kb_ids, document_ids, config['candidate_k'], True, **options)
         if config['mode'] != 'vector':
@@ -72,9 +73,21 @@ def retrieve(question, kb_ids, departments, document_ids, user, config, hydrate,
         for name, future in futures.items():
             try:
                 outputs[name] = future.result(timeout=remaining_timeout(deadline, 60) if deadline is not None else None)
+            except DeadlineExceeded:
+                raise
+            except TimeoutError:
+                if deadline is not None and not future.done():
+                    raise DeadlineExceeded('Retrieval execution deadline exceeded') from None
+                check()
+                warnings.append(name + '_unavailable')
             except Exception:
                 check()
                 warnings.append(name + '_unavailable')
+    finally:
+        # Do not let context-manager shutdown wait past the caller's deadline.
+        # Running operations share that deadline at the socket/gRPC boundary;
+        # pending work is cancelled and completed workers release themselves.
+        pool.shutdown(wait=deadline is None, cancel_futures=True)
     check()
     if len(warnings) == len(futures):
         raise RuntimeError('RETRIEVAL_UNAVAILABLE')

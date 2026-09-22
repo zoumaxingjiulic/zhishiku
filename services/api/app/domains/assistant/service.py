@@ -36,7 +36,7 @@ class AssistantService(AgentService):
         fresh = repository.load_current_user(user['id'])
         if fresh is None:
             raise NotFoundError("用户不可用")
-        return CapabilityCatalog(repository).for_user(fresh).model_dump(mode='json', exclude={'tool_authority_agent_ids'})
+        return CapabilityCatalog(repository).for_user(fresh).model_dump(mode='json', exclude={'tool_authority_agent_ids', 'tool_authority'})
 
     def sessions(self, user):
         aid = self.assistant()['id']

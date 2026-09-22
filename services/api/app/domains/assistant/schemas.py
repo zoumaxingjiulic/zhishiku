@@ -154,7 +154,7 @@ class ToolCapabilityRef(CapabilityRef):
 
 
 class CapabilityCatalogSnapshot(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, arbitrary_types_allowed=True)
 
     knowledge_bases: tuple[CapabilityRef, ...] = ()
     tools: tuple[ToolCapabilityRef, ...] = ()
@@ -162,6 +162,19 @@ class CapabilityCatalogSnapshot(BaseModel):
     skills: tuple[CapabilityRef, ...] = ()
     # Internal, persisted grant lineage; never a delegation candidate.
     tool_authority_agent_ids: tuple[int, ...] = ()
+    tool_authority: FrozenDict = Field(default_factory=FrozenDict)
+
+    @field_validator('tool_authority', mode='before')
+    @classmethod
+    def restore_tool_authority(cls, value):
+        if not isinstance(value, dict):
+            raise ValueError('tool authority must be a mapping')
+        result = {}
+        for key, ids in value.items():
+            if int(key) <= 0 or not isinstance(ids, (tuple, list)) or any(type(i) is not int or i <= 0 for i in ids):
+                raise ValueError('invalid tool authority edge')
+            result[str(int(key))] = tuple(sorted(set(ids)))
+        return FrozenDict(result)
 
 
 PositiveCapabilityId = Annotated[int, Field(strict=True, gt=0)]

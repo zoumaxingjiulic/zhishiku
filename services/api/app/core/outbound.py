@@ -165,13 +165,16 @@ class PinnedNetworkBackend(httpcore.SyncBackend):
     ``server_hostname`` and builds the Host header from the untouched request URL.
     """
 
-    def __init__(self, policy: OutboundPolicy, backend=None, *, clock=time.monotonic) -> None:
+    def __init__(self, policy: OutboundPolicy, backend=None, *, clock=time.monotonic, deadline=None) -> None:
         self.policy = policy
         self.backend = backend or httpcore.SyncBackend()
         self.clock = clock
+        self.deadline = deadline
 
     def connect_tcp(self, host, port, timeout=None, local_address=None, socket_options=None):
         deadline = None if timeout is None else self.clock() + max(0.0, timeout)
+        if self.deadline is not None:
+            deadline = self.deadline if deadline is None else min(deadline, self.deadline)
         try:
             target = self.policy.resolve_host(host, port, deadline=deadline)
         except ValidationError:
@@ -231,7 +234,7 @@ class PinnedHTTPTransport(httpx.HTTPTransport):
     """HTTPX transport whose sockets are pinned to validated DNS answers."""
 
     def __init__(self, policy: OutboundPolicy, *, verify: ssl.SSLContext | str | bool = True,
-                 network_backend=None) -> None:
+                 network_backend=None, deadline=None) -> None:
         # Build our own pool: no environment proxy and no keepalive reuse across
         # policy/DNS decisions. The request URL is never rewritten.
         super().__init__(verify=verify, trust_env=False)
@@ -242,11 +245,12 @@ class PinnedHTTPTransport(httpx.HTTPTransport):
             max_keepalive_connections=0,
             http1=True,
             http2=False,
-            network_backend=network_backend or PinnedNetworkBackend(policy),
+            network_backend=network_backend or PinnedNetworkBackend(policy, deadline=deadline),
         )
 
 
-def pinned_client(policy: OutboundPolicy, **kwargs) -> httpx.Client:
+def pinned_client(policy: OutboundPolicy, *, deadline=None, verify=True, **kwargs) -> httpx.Client:
     return httpx.Client(
-        transport=PinnedHTTPTransport(policy), follow_redirects=False, trust_env=False, **kwargs
+        transport=PinnedHTTPTransport(policy, deadline=deadline, verify=verify),
+        follow_redirects=False, trust_env=False, **kwargs
     )

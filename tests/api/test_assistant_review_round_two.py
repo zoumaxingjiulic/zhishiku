@@ -84,6 +84,7 @@ def test_run_finish_and_history_preserve_transitive_authority(monkeypatch, sourc
     from app.domains.assistant.capabilities import CapabilityCatalog
     from app.runtime.chat import tool_binding_version
     full = CapabilityCatalogSnapshot(
+        tool_authority={'11': [7]},
         knowledge_bases=(CapabilityRef(id=1, code='kb', name='KB'),),
         tools=(ToolCapabilityRef(id=11, code='erp.stock', name='Stock', connector_id=2),),
         agents=(CapabilityRef(id=7, code='expert', name='Expert'),),
@@ -122,7 +123,7 @@ def test_run_finish_and_history_preserve_transitive_authority(monkeypatch, sourc
         def load_current_user(self, *a): return USER
         def list_knowledge_bases(self, user): return [r.model_dump() for r in state.snapshot.knowledge_bases]
         def list_agents(self, user): return [r.model_dump() for r in state.snapshot.agents]
-        def list_tools(self, user): return [r.model_dump() for r in state.snapshot.tools]
+        def list_tools(self, user): return [dict(r.model_dump(), authority_agent_id=7) for r in state.snapshot.tools]
         def list_skills(self, user): return [r.model_dump() for r in state.snapshot.skills]
         def tool_rows(self, ids, **k): return [raw_tool] if 11 in ids else []
         def skill(self, sid): return skill_row

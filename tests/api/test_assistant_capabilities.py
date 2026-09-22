@@ -47,6 +47,7 @@ class StubRepository:
         self.calls.append(("tools", user["id"]))
         rows = [{
             "id": 11,
+            "authority_agent_id": 7,
             "code": "ERP.inventory",
             "name": "库存查询",
             "description": "查询库存",

@@ -77,7 +77,7 @@ def test_retrieval_transport_uses_remaining_absolute_deadline(monkeypatch):
     seen = []
     monkeypatch.setattr(retrieval, 'settings', replace(retrieval.settings,
         embedding_provider='remote', embedding_base_url='https://embedding.example', embedding_model='embed'))
-    monkeypatch.setattr(retrieval.httpx, 'post', lambda *a, **k: seen.append(k['timeout']) or SimpleNamespace(
+    monkeypatch.setattr(retrieval, '_retrieval_post', lambda *a, **k: seen.append(k['timeout']) or SimpleNamespace(
         raise_for_status=lambda: None, json=lambda: {'data': [{'embedding': [1.0]}]}))
     assert retrieval.embedding('query', deadline=budget.deadline) == [1.0]
     assert seen == [5.0]
@@ -249,7 +249,7 @@ def test_production_retrieval_passes_shared_deadline_to_every_transport(monkeypa
         elif url.endswith('/rerank'): data = {'results': [{'index': 0, 'relevance_score': 1}]}
         else: data = {'hits': {'hits': [{'_source': {'content_unit_id': 1}}]}}
         return SimpleNamespace(status_code=200, raise_for_status=lambda: None, json=lambda: data)
-    monkeypatch.setattr(retrieval.httpx, 'post', post)
+    monkeypatch.setattr(retrieval, '_retrieval_post', post)
     def operation(name, value=None):
         def invoke(*args, **kwargs): calls.append((name, kwargs['timeout'])); return value
         return invoke

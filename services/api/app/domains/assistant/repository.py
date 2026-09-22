@@ -48,7 +48,8 @@ class AssistantRepository:
         active_departments = [d for d in departments if d['status'] == 1]
         self._locked_user = {'id': user_id, 'department_ids': [d['id'] for d in active_departments],
                              'is_platform_admin': any(d['code'] == 'PLATFORM_ADMIN' for d in active_departments)}
-        agent_ids = sorted({root_id, *(r.id for r in snapshot.agents), *snapshot.tool_authority_agent_ids})
+        agent_ids = sorted({root_id, *(r.id for r in snapshot.agents), *snapshot.tool_authority_agent_ids,
+                            *(aid for ids in snapshot.tool_authority.values() for aid in ids)})
         agents = self._lock_rows('agent', 'id', agent_ids)
         self.locked_agents = {r['id']: r for r in agents}
         root = self.locked_agents.get(root_id)
@@ -265,7 +266,7 @@ class AssistantRepository:
             access_clause, access_parameters = self._agent_access_clause(department_ids)
             locked_agents_clause = ''
             if self._locked_scope is not None:
-                locked_ids = list(self._locked_scope.tool_authority_agent_ids) or [r.id for r in self._locked_scope.agents]
+                locked_ids = sorted({aid for ids in self._locked_scope.tool_authority.values() for aid in ids})
                 if not locked_ids:
                     return []
                 locked_agents_clause = 'AND a.id IN (' + ','.join(['%s'] * len(locked_ids)) + ') '
@@ -281,6 +282,10 @@ class AssistantRepository:
         tools: list[dict] = []
         for raw_row in self.cursor.fetchall():
             row = dict(raw_row)
+            if self._locked_scope is not None and not user.get('is_platform_admin'):
+                original = self._locked_scope.tool_authority.get(str(row['id']), ())
+                if row.get('authority_agent_id') not in original:
+                    continue
             if _parse_object(row.pop("annotations_json", None)).get("readOnlyHint") is not True:
                 continue
             row["code"] = f"{row.pop('connector_code')}.{row['tool_name']}"
