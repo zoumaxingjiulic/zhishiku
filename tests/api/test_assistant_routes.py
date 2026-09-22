@@ -30,6 +30,9 @@ class MemoryRepository:
     def list_sessions(self, aid, uid):
         return [s for s in self.sessions.values() if s['user_id'] == uid and s['agent_id'] == aid]
 
+    def latest_task(self, aid, sid, uid):
+        return next((t for t in reversed(list(self.tasks.values())) if t['agent_id'] == aid and t['session_id'] == sid and t['user_id'] == uid), None)
+
     def list_messages(self, sid):
         return list(self.messages[sid])
 

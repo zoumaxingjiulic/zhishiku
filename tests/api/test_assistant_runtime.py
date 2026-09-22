@@ -28,6 +28,9 @@ class Store:
     def load_current_user(self, user_id):
         return USER
 
+    def context(self, task, user, snapshot):
+        return {'history': [], 'clarification': None}
+
     def capabilities(self, user):
         return self.snapshot
 
@@ -40,6 +43,7 @@ class Store:
         if self.revoked:
             raise AuthorizationError('revoked')
         self.events.append('validated')
+        return USER
 
     def check_active(self, task):
         pass
@@ -211,6 +215,8 @@ def test_production_tool_adapter_uses_schema_and_current_readonly_permission(mon
                 input_schema={'type': 'object', 'properties': {'material_code': {'type': 'string'}}, 'required': ['material_code']},
                 output_schema={}, annotations={'readOnlyHint': True}, tool_status='active', connector_status='active')
     monkeypatch.setattr(runtime, 'UnitOfWork', lambda: nullcontext(SimpleNamespace(cursor=None)))
+    monkeypatch.setattr(runtime, 'AgentRepository', lambda cursor: SimpleNamespace(get_agent=lambda aid: {
+        'id': 99, 'code': 'ENTERPRISE_ASSISTANT', 'system_prompt': 'root', 'config_version': 1}))
     monkeypatch.setattr(runtime, 'AssistantRepository', lambda cursor: SimpleNamespace(
         tool_rows=lambda ids: [dict(tool)], load_current_user=lambda uid: USER,
         list_tools=lambda user: [tool],
@@ -299,7 +305,12 @@ def test_final_publication_rechecks_permissions_and_is_atomic(monkeypatch, failu
     )
     monkeypatch.setattr(runtime, 'UnitOfWork', Uow)
     monkeypatch.setattr(runtime, 'AgentRepository', lambda c: repo)
-    monkeypatch.setattr(runtime, 'AssistantRepository', lambda c: SimpleNamespace(tool_rows=lambda *a, **kw: []))
+    def lock_authority(*args):
+        if failure == 'agent_disabled':
+            raise NotFoundError('总助手停用')
+        return USER
+    monkeypatch.setattr(runtime, 'AssistantRepository', lambda c: SimpleNamespace(
+        lock_authority=lock_authority, tool_rows=lambda *a, **kw: []))
     monkeypatch.setattr(runtime, 'AuthService', lambda *a: SimpleNamespace(load_user=lambda *a, **kw: USER))
     monkeypatch.setattr(runtime, 'CapabilityCatalog', lambda r: SimpleNamespace(
         validate_selection=lambda *a: None, for_user=lambda u: Store().snapshot))

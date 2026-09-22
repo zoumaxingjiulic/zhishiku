@@ -152,6 +152,7 @@ class IntentRouter:
         catalog: CapabilityCatalogSnapshot,
         *,
         model: Any,
+        history: list[dict] | None = None,
     ) -> IntentDecision:
         if _is_explicit_system_write(question, catalog):
             return IntentDecision(
@@ -168,6 +169,7 @@ class IntentRouter:
                 capabilities=_capability_summary(catalog),
                 response_schema=IntentDecision.model_json_schema(),
                 timeout_seconds=self.timeout_seconds,
+                **({'history': history} if history else {}),
             )
             decision = _parse_decision(raw_decision)
         except TimeoutError:

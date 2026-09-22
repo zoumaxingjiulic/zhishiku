@@ -19,6 +19,61 @@ def _parse_object(value: Any) -> dict[str, Any]:
 class AssistantRepository:
     def __init__(self, cursor: Any) -> None:
         self.cursor = cursor
+        self._locked_scope = None
+        self._locked_user = None
+
+    def _lock_rows(self, table: str, column: str, ids: list[int]) -> list[dict]:
+        if not ids:
+            return []
+        unique = sorted(set(ids))
+        placeholders = ','.join(['%s'] * len(unique))
+        self.cursor.execute(f"SELECT * FROM {table} WHERE {column} IN ({placeholders}) ORDER BY {column} FOR UPDATE", unique)
+        return list(self.cursor.fetchall())
+
+    def lock_authority(self, user_id, snapshot, root_id):
+        """Lock the original authorization graph before starting a consistent read.
+
+        Locking reads see the latest committed state under MySQL REPEATABLE READ.
+        All ACL ranges and parents stay locked through answer publication. A new
+        agent outside the captured graph cannot become a substitute tool grant.
+        """
+        from ...core.errors import AuthorizationError, NotFoundError
+        users = self._lock_rows('app_user', 'id', [user_id])
+        if not users or users[0]['status'] != 1 or users[0].get('deleted_at') is not None:
+            raise AuthorizationError('用户已停用')
+        memberships = self._lock_rows('user_department', 'user_id', [user_id])
+        departments = self._lock_rows('department', 'id', [m['department_id'] for m in memberships])
+        active_departments = [d for d in departments if d['status'] == 1]
+        self._locked_user = {'id': user_id, 'department_ids': [d['id'] for d in active_departments],
+                             'is_platform_admin': any(d['code'] == 'PLATFORM_ADMIN' for d in active_departments)}
+        agent_ids = sorted({root_id, *(r.id for r in snapshot.agents)})
+        agents = self._lock_rows('agent', 'id', agent_ids)
+        self.locked_agents = {r['id']: r for r in agents}
+        root = self.locked_agents.get(root_id)
+        if not root or root['status'] != 'active' or root['code'] != 'ENTERPRISE_ASSISTANT':
+            raise NotFoundError('企业总助手未启用')
+        self._lock_rows('agent_department_acl', 'agent_id', agent_ids)
+        agent_kbs = self._lock_rows('agent_knowledge_base', 'agent_id', agent_ids)
+        self.locked_bindings = self._lock_rows('agent_connector_tool', 'agent_id', agent_ids)
+        kb_ids = sorted({*(r.id for r in snapshot.knowledge_bases), *(r['knowledge_base_id'] for r in agent_kbs)})
+        self._lock_rows('knowledge_base', 'id', kb_ids)
+        self._lock_rows('knowledge_base_department_acl', 'knowledge_base_id', kb_ids)
+        tool_ids = [r.id for r in snapshot.tools]
+        tools = self._lock_rows('connector_tool', 'id', tool_ids)
+        self._lock_rows('system_connector', 'id', [r['connector_id'] for r in tools])
+        skill_ids = [r.id for r in snapshot.skills]
+        self.locked_skills = {r['id']: r for r in self._lock_rows('assistant_skill', 'id', skill_ids)}
+        for table in ('assistant_skill_department', 'assistant_skill_knowledge_base', 'assistant_skill_tool', 'assistant_skill_agent'):
+            self._lock_rows(table, 'skill_id', skill_ids)
+        self._lock_rows('llm_gateway_profile', 'id', [r['llm_gateway_profile_id'] for r in agents if r.get('llm_gateway_profile_id')])
+        self._locked_scope = snapshot
+        return self._locked_user
+
+    def _scope_rows(self, kind, rows):
+        if self._locked_scope is None:
+            return rows
+        allowed = {r.id for r in getattr(self._locked_scope, kind)}
+        return [r for r in rows if r['id'] in allowed]
 
     def save_decision(self, task: dict, user: dict, snapshot, decision) -> None:
         self.cursor.execute(
@@ -48,7 +103,7 @@ class AssistantRepository:
         return rows
 
     def skill(self, skill_id: int) -> dict | None:
-        self.cursor.execute("SELECT id,instruction,input_schema_json FROM assistant_skill WHERE id=%s AND status='active'", (skill_id,))
+        self.cursor.execute("SELECT id,instruction,input_schema_json,version FROM assistant_skill WHERE id=%s AND status='active'", (skill_id,))
         row = self.cursor.fetchone()
         if not row:
             return None
@@ -60,6 +115,15 @@ class AssistantRepository:
             self.cursor.execute(f"SELECT {column} FROM {table} WHERE skill_id=%s ORDER BY {column}", (skill_id,))
             row[key] = [item[column] for item in self.cursor.fetchall()]
         return row
+
+    def previous_result(self, task: dict) -> dict:
+        self.cursor.execute(
+            "SELECT result_json FROM chat_task WHERE session_id=%s AND agent_id=%s AND user_id=%s "
+            "AND user_message_id<%s AND status='succeeded' ORDER BY user_message_id DESC LIMIT 1",
+            (task['session_id'], task['agent_id'], task['user_id'], task['user_message_id']),
+        )
+        row = self.cursor.fetchone()
+        return _parse_object(row.get('result_json')) if row else {}
 
     @staticmethod
     def _department_ids(user: dict[str, Any]) -> list[int]:
@@ -83,6 +147,8 @@ class AssistantRepository:
         return clause, [*department_ids, *department_ids]
 
     def load_current_user(self, user_id: int) -> dict[str, Any] | None:
+        if self._locked_user is not None:
+            return self._locked_user if self._locked_user['id'] == user_id else None
         self.cursor.execute(
             "SELECT id,status,deleted_at FROM app_user WHERE id=%s",
             (user_id,),
@@ -121,7 +187,7 @@ class AssistantRepository:
                 f"WHERE k.status='active' AND acl.department_id IN ({placeholders}) ORDER BY k.id",
                 department_ids,
             )
-        return list(self.cursor.fetchall())
+        return self._scope_rows('knowledge_bases', list(self.cursor.fetchall()))
 
     def list_agents(self, user: dict[str, Any]) -> list[dict]:
         if user.get("is_platform_admin"):
@@ -139,7 +205,7 @@ class AssistantRepository:
                 f"WHERE a.status='active' AND {access_clause} ORDER BY a.id",
                 access_parameters,
             )
-        return list(self.cursor.fetchall())
+        return self._scope_rows('agents', list(self.cursor.fetchall()))
 
     def list_tools(self, user: dict[str, Any]) -> list[dict]:
         select = (
@@ -156,12 +222,19 @@ class AssistantRepository:
             if not department_ids:
                 return []
             access_clause, access_parameters = self._agent_access_clause(department_ids)
+            locked_agents_clause = ''
+            if self._locked_scope is not None:
+                locked_ids = [r.id for r in self._locked_scope.agents]
+                if not locked_ids:
+                    return []
+                locked_agents_clause = 'AND a.id IN (' + ','.join(['%s'] * len(locked_ids)) + ') '
+                access_parameters.extend(locked_ids)
             self.cursor.execute(
                 select
                 + "JOIN agent_connector_tool act ON act.connector_tool_id=ct.id AND act.permission='read' "
                 + "JOIN agent a ON a.id=act.agent_id AND a.status='active' "
                 + f"WHERE ct.status='active' AND c.status='active' "
-                + f"AND {access_clause} ORDER BY ct.id",
+                + f"AND {access_clause} " + locked_agents_clause + "ORDER BY ct.id",
                 access_parameters,
             )
         tools: list[dict] = []
@@ -173,7 +246,7 @@ class AssistantRepository:
             row["name"] = row.pop("title") or row["tool_name"]
             row["read_only"] = True
             tools.append(row)
-        return tools
+        return self._scope_rows('tools', tools)
 
     def list_skills(self, user: dict[str, Any]) -> list[dict]:
         if user.get("is_platform_admin"):
@@ -193,4 +266,4 @@ class AssistantRepository:
                 f"WHERE s.status='active' AND sd.department_id IN ({placeholders}) ORDER BY s.id",
                 department_ids,
             )
-        return list(self.cursor.fetchall())
+        return self._scope_rows('skills', list(self.cursor.fetchall()))

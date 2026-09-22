@@ -70,20 +70,23 @@ def run_chat_task(task: dict) -> None:
 def run_assistant_task(task: dict) -> None:
     from ..domains.assistant.orchestrator import AssistantOrchestrator, AssistantPersistence, ProductionAdapters, ProductionIntentModel
     token = active_task.set(task)
+    adapters = None
     try:
         if task.get('cancel_requested'):
             raise TaskCancelled()
         store = AssistantPersistence()
+        adapters = ProductionAdapters(task, store, progress)
         AssistantOrchestrator(store, model=ProductionIntentModel(task['agent_id']),
-                              adapters=ProductionAdapters(task, store, progress)).run(task)
+                              adapters=adapters).run(task)
     except Exception as exc:
         state = 'cancelled' if isinstance(exc, TaskCancelled) else 'failed'
+        audit = adapters.audit_state() if adapters else {'events': [], 'counts': {}, 'timings': {}}
         with UnitOfWork() as uow:
             repository = AgentRepository(uow.cursor)
             repository.mark_task_failed(task['id'], state, type(exc).__name__)
             repository.write_audit(task['user_id'], 'assistant.task_' + state, 'chat_task', task['id'],
-                                   {'error_type': type(exc).__name__}, 'background')
-            repository.update_run_failed(task['id'], {}, {}, [], type(exc).__name__)
+                                   {'error_type': type(exc).__name__, **audit}, 'background')
+            repository.update_run_failed(task['id'], audit['counts'], audit['timings'], audit['events'], type(exc).__name__)
             uow.commit()
         log.error('assistant task failed task_id=%s error_type=%s', task['id'], type(exc).__name__)
     finally:

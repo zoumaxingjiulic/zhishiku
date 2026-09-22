@@ -34,13 +34,20 @@ class AssistantService(AgentService):
         return CapabilityCatalog(repository).for_user(fresh).model_dump(mode='json')
 
     def sessions(self, user):
-        return self.list_conversations(user, self.assistant()['id'])
+        aid = self.assistant()['id']
+        rows = self.list_conversations(user, aid)
+        for row in rows:
+            row['latest_task'] = task_view(self.repository.latest_task(aid, row['id'], user['id']))
+        return rows
 
     def create(self, user, ip):
         return self.create_conversation(user, self.assistant()['id'], ip)
 
     def messages(self, user, sid):
-        return self.get_conversation(user, self.assistant()['id'], sid)
+        aid = self.assistant()['id']
+        detail = self.get_conversation(user, aid, sid)
+        detail['latest_task'] = task_view(self.repository.latest_task(aid, sid, user['id']))
+        return detail
 
     def rename(self, user, sid, title):
         aid = self.assistant()['id']
