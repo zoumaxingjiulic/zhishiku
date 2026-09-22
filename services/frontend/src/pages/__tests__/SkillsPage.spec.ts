@@ -57,7 +57,7 @@ describe("SkillsPage", () => {
   it("refreshes the skill list after a successful save", async () => {
     let listReads = 0;
     apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
-      if (path === "/api/v1/assistant/skills" && !options) {
+      if (path === "/api/v1/admin/skills" && !options) {
         listReads += 1;
         return listReads === 1 ? [] : [skill];
       }
@@ -65,7 +65,7 @@ describe("SkillsPage", () => {
       if (path === "/api/v1/connectors") return { items: [] };
       if (path === "/api/v1/studio/agents") return [];
       if (path === "/api/v1/departments") return [];
-      if (path === "/api/v1/assistant/skills" && options?.method === "POST") return skill;
+      if (path === "/api/v1/admin/skills" && options?.method === "POST") return skill;
       throw new Error(`Unexpected API call: ${path}`);
     });
 
@@ -79,5 +79,43 @@ describe("SkillsPage", () => {
 
     await waitFor(() => expect(listReads).toBe(2));
     expect(await screen.findByText("库存查询")).toBeInTheDocument();
+  });
+
+  it("shows a disabled historical tool binding and lets the administrator remove it", async () => {
+    const historicalSkill = { ...skill, tool_ids: [3] };
+    let savedBody: any = null;
+    apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path === "/api/v1/admin/skills" && !options) return [historicalSkill];
+      if (path === "/api/v1/admin/skills/7" && !options) return historicalSkill;
+      if (path === "/api/v1/knowledge-bases") return [];
+      if (path === "/api/v1/connectors") return {
+        items: [{
+          id: 1,
+          name: "旧 ERP",
+          status: "disabled",
+          tools: [{ id: 3, title: "库存工具", status: "active", annotations: { readOnlyHint: true } }],
+        }],
+      };
+      if (path === "/api/v1/studio/agents") return [];
+      if (path === "/api/v1/departments") return [];
+      if (path === "/api/v1/admin/skills/7" && options?.method === "PUT") {
+        savedBody = JSON.parse(String(options.body));
+        return { ...historicalSkill, tool_ids: [], version: 2 };
+      }
+      throw new Error(`Unexpected API call: ${path}`);
+    });
+
+    render(SkillsPage);
+    await fireEvent.click(await screen.findByRole("button", { name: /库存查询/ }));
+    const historicalBinding = await screen.findByRole("checkbox", {
+      name: "旧 ERP / 库存工具（已停用/不可用）",
+    });
+    expect(historicalBinding).toBeChecked();
+
+    await fireEvent.click(historicalBinding);
+    await fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => expect(savedBody?.tool_ids).toEqual([]));
+    expect(screen.queryByText("旧 ERP / 库存工具（已停用/不可用）")).not.toBeInTheDocument();
   });
 });

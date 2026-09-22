@@ -2,6 +2,8 @@
 
 from typing import Any, Literal
 
+from jsonschema.exceptions import SchemaError
+from jsonschema.validators import validator_for
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
@@ -17,7 +19,7 @@ _SAFE_FORMATS = {"date", "date-time", "email", "uuid"}
 
 def _contains_remote_url(value: Any) -> bool:
     if isinstance(value, str):
-        return value.lower().startswith(("http://", "https://"))
+        return value.strip().lower().startswith(("http://", "https://"))
     if isinstance(value, dict):
         return any(_contains_remote_url(item) for item in value.values())
     if isinstance(value, list):
@@ -32,13 +34,18 @@ def _validate_local_schema(node: Any, *, root: bool = False) -> None:
     if unknown:
         raise ValueError(f"input_schema 包含不允许的字段: {sorted(unknown)[0]}")
     schema_type = node.get("type")
+    if not isinstance(schema_type, str):
+        raise ValueError("input_schema.type 必须是字符串")
     if schema_type not in _SAFE_TYPES:
         raise ValueError("input_schema 仅支持本地声明式 JSON 类型")
     if root and schema_type != "object":
         raise ValueError("input_schema 根节点必须是 object")
     schema_format = node.get("format")
-    if schema_format is not None and schema_format not in _SAFE_FORMATS:
-        raise ValueError("input_schema 不允许 URL、命令或 SQL 格式")
+    if schema_format is not None:
+        if not isinstance(schema_format, str):
+            raise ValueError("input_schema.format 必须是字符串")
+        if schema_format not in _SAFE_FORMATS:
+            raise ValueError("input_schema 不允许 URL、命令或 SQL 格式")
     if _contains_remote_url(node):
         raise ValueError("input_schema 不允许远程 URL")
     properties = node.get("properties", {})
@@ -54,7 +61,7 @@ def _validate_local_schema(node: Any, *, root: bool = False) -> None:
             raise ValueError("input_schema.required 必须是字符串数组")
         if not set(required).issubset(properties):
             raise ValueError("input_schema.required 必须引用已声明属性")
-        if node.get("additionalProperties", False) not in (False, None):
+        if "additionalProperties" in node and node["additionalProperties"] is not False:
             raise ValueError("input_schema 不允许未声明属性")
     elif "properties" in node or "required" in node or "additionalProperties" in node:
         raise ValueError("只有 object 类型可以声明 properties")
@@ -86,7 +93,11 @@ class SkillWrite(BaseModel):
 
     @model_validator(mode="after")
     def validate_declarative_contract(self) -> "SkillWrite":
-        _validate_local_schema(self.input_schema, root=True)
+        try:
+            _validate_local_schema(self.input_schema, root=True)
+            validator_for(self.input_schema).check_schema(self.input_schema)
+        except (SchemaError, TypeError) as exc:
+            raise ValueError("input_schema 不是有效的本地 JSON Schema") from exc
         if any(not item.strip() or len(item) > 500 for item in self.trigger_examples):
             raise ValueError("trigger_examples 每项必须为 1 到 500 个字符")
         for values in (

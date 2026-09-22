@@ -20,6 +20,7 @@ from .core.errors import ApplicationError
 from .core.redaction import sanitize_validation_errors
 from .core.security import hash_password
 from .domains.agents.router import router as agents_router
+from .domains.assistant.admin_router import router as assistant_admin_router
 from .domains.assistant.router import router as assistant_router
 from .domains.auth.router import router as auth_router
 from .domains.connectors.router import router as connectors_router
@@ -43,6 +44,7 @@ ROUTERS = (
     documents_router,
     agents_router,
     assistant_router,
+    assistant_admin_router,
     prompts_router,
     requests_router,
     model_gateway_router,

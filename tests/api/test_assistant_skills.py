@@ -63,7 +63,7 @@ class StubSkillService:
 def skill_client(identity):
     from app.application import application_error_handler
     from app.core.errors import ApplicationError
-    from app.domains.assistant.router import get_assistant_service, router
+    from app.domains.assistant.admin_router import get_assistant_service, router
     from app.domains.auth.router import current_user
 
     application = FastAPI()
@@ -76,8 +76,8 @@ def skill_client(identity):
 
 def test_management_routes_require_platform_admin_for_list_and_guessed_detail():
     with skill_client(EMPLOYEE) as client:
-        listed = client.get("/api/v1/assistant/skills")
-        detail = client.get("/api/v1/assistant/skills/7")
+        listed = client.get("/api/v1/admin/skills")
+        detail = client.get("/api/v1/admin/skills/7")
 
     assert listed.status_code == 403
     assert detail.status_code == 403
@@ -85,10 +85,11 @@ def test_management_routes_require_platform_admin_for_list_and_guessed_detail():
 
 def test_admin_can_create_update_disable_and_read_current_version():
     with skill_client(ADMIN) as client:
-        created = client.post("/api/v1/assistant/skills", json=skill_payload())
-        updated = client.put("/api/v1/assistant/skills/7", json=skill_payload(version=2, name="库存查询（新版）"))
-        disabled = client.delete("/api/v1/assistant/skills/7", params={"version": 3})
-        detail = client.get("/api/v1/assistant/skills/7")
+        created = client.post("/api/v1/admin/skills", json=skill_payload())
+        updated = client.put("/api/v1/admin/skills/7", json=skill_payload(version=2, name="库存查询（新版）"))
+        disabled = client.delete("/api/v1/admin/skills/7", params={"version": 3})
+        detail = client.get("/api/v1/admin/skills/7")
+        unpublished_path = client.get("/api/v1/assistant/skills/7")
 
     assert created.status_code == 200 and created.json()["version"] == 1
     assert updated.status_code == 200 and updated.json()["version"] == 3
@@ -96,6 +97,7 @@ def test_admin_can_create_update_disable_and_read_current_version():
         "id": 7, "code": "INVENTORY_LOOKUP", "status": "disabled", "version": 4,
     }
     assert detail.status_code == 200 and detail.json()["version"] == 2
+    assert unpublished_path.status_code == 404
 
 
 @pytest.mark.parametrize(
@@ -105,6 +107,7 @@ def test_admin_can_create_update_disable_and_read_current_version():
         {"type": "object", "properties": {"target": {"$dynamicRef": "https://example.test/schema"}}},
         {"type": "object", "properties": {"target": {"type": "string", "format": "uri"}}},
         {"type": "object", "properties": {"target": {"type": "string", "enum": ["https://example.test"]}}},
+        {"type": "object", "properties": {"target": {"type": "string", "enum": ["  HTTPS://example.test"]}}},
         {"type": "object", "properties": {"command": {"type": "shell"}}},
         {"type": "object", "properties": {"statement": {"type": "raw_sql"}}},
     ],
@@ -123,6 +126,33 @@ def test_skill_schema_rejects_unknown_binding_types_and_create_version_changes()
         SkillWrite(**skill_payload(connector_ids=[9]))
     with pytest.raises(PydanticValidationError):
         SkillWrite(**skill_payload(version=0))
+
+
+INVALID_LOCAL_SCHEMAS = [
+    {"type": "object", "properties": {"target": {"type": "string", "minLength": -1}}},
+    {"type": "object", "properties": {"target": {"type": "string", "pattern": "["}}},
+    {"type": "object", "properties": {}, "additionalProperties": None},
+    {"type": ["object"], "properties": {}},
+    {"type": "object", "properties": {"target": {"type": "string", "format": []}}},
+]
+
+
+@pytest.mark.parametrize("input_schema", INVALID_LOCAL_SCHEMAS)
+def test_skill_model_converts_invalid_json_schema_values_to_validation_errors(input_schema):
+    from app.domains.assistant.schemas import SkillWrite
+
+    with pytest.raises(PydanticValidationError):
+        SkillWrite(**skill_payload(input_schema=input_schema))
+
+
+@pytest.mark.parametrize("input_schema", INVALID_LOCAL_SCHEMAS)
+def test_skill_api_returns_422_for_invalid_json_schema_values(input_schema):
+    with skill_client(ADMIN) as client:
+        response = client.post(
+            "/api/v1/admin/skills", json=skill_payload(input_schema=input_schema)
+        )
+
+    assert response.status_code == 422
 
 
 class MemorySkillRepository:

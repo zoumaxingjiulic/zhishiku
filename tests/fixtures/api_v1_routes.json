@@ -1,5 +1,35 @@
 [
   {
+    "path": "/api/v1/admin/skills",
+    "method": "GET",
+    "operation_id": "admin_managed_skills",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/admin/skills",
+    "method": "POST",
+    "operation_id": "admin_create_skill",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/admin/skills/{skill_id}",
+    "method": "DELETE",
+    "operation_id": "admin_disable_skill",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/admin/skills/{skill_id}",
+    "method": "GET",
+    "operation_id": "admin_skill_detail",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/admin/skills/{skill_id}",
+    "method": "PUT",
+    "operation_id": "admin_update_skill",
+    "deprecated": false
+  },
+  {
     "path": "/api/v1/agent-requests",
     "method": "GET",
     "operation_id": "list_agent_requests_api_v1_agent_requests_get",
@@ -141,36 +171,6 @@
     "path": "/api/v1/assistant/sessions/{session_id}/messages",
     "method": "POST",
     "operation_id": "assistant_submit_message",
-    "deprecated": false
-  },
-  {
-    "path": "/api/v1/assistant/skills",
-    "method": "GET",
-    "operation_id": "assistant_managed_skills",
-    "deprecated": false
-  },
-  {
-    "path": "/api/v1/assistant/skills",
-    "method": "POST",
-    "operation_id": "assistant_create_skill",
-    "deprecated": false
-  },
-  {
-    "path": "/api/v1/assistant/skills/{skill_id}",
-    "method": "DELETE",
-    "operation_id": "assistant_disable_skill",
-    "deprecated": false
-  },
-  {
-    "path": "/api/v1/assistant/skills/{skill_id}",
-    "method": "GET",
-    "operation_id": "assistant_skill_detail",
-    "deprecated": false
-  },
-  {
-    "path": "/api/v1/assistant/skills/{skill_id}",
-    "method": "PUT",
-    "operation_id": "assistant_update_skill",
     "deprecated": false
   },
   {
