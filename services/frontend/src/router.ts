@@ -8,7 +8,7 @@ export const router = createRouter({
     { path: '/skills', name: 'skills', component: () => import('./pages/SkillsPage.vue'), meta: { title: '能力配置', subtitle: '管理声明式 Skill 与授权绑定', section: 'skills', admin: true, toast: true } },
     { path: "/", redirect: "/workbench" },
     { path: "/login", name: "login", component: () => import("./pages/LoginRoute.vue"), meta: { public: true, title: "登录", section: "login" } },
-    { path: "/workbench", name: "workbench", component: () => import("./pages/DashboardPage.vue"), meta: { title: "工作台", subtitle: "企业知识服务运行概览", section: "workbench", navigate: true } },
+    { path: "/workbench", name: "workbench", component: () => import("./pages/DashboardPage.vue"), meta: { title: "企业总助手", subtitle: "统一访问企业知识、只读系统工具与专业智能体", section: "workbench", navigate: true } },
     { path: "/knowledge-bases", name: "knowledge", component: () => import("./pages/KnowledgePage.vue"), meta: { title: "知识库", subtitle: "资料、文件夹与索引生命周期管理", section: "knowledge", passUser: true, toast: true } },
     { path: "/agents", name: "agents", component: () => import("./pages/AgentsPage.vue"), meta: { title: "智能体", subtitle: "统一使用问答、流程与数据处理智能体", section: "agents", toast: true } },
     { path: "/agents/:agentId(\\d+)", name: "agent", component: () => import("./pages/AgentsPage.vue"), meta: { title: "智能体", subtitle: "统一使用问答、流程与数据处理智能体", section: "agents", toast: true } },
