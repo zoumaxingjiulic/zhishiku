@@ -63,7 +63,8 @@ async function closeDrawer() {
   drawerTrigger = null;
 }
 
-function trapDrawerFocus(event: KeyboardEvent, panel: HTMLElement | null) {
+function trapDrawerFocus(event: KeyboardEvent, panel: HTMLElement | null, isOpen: boolean) {
+  if (!isNarrow.value || !isOpen) return;
   if (event.key === "Escape") {
     event.preventDefault();
     void closeDrawer();
@@ -84,7 +85,7 @@ function trapDrawerFocus(event: KeyboardEvent, panel: HTMLElement | null) {
 }
 
 async function handleSend(question: string) {
-  if (await sendMessage(question)) draft.value = "";
+  await sendMessage(question);
 }
 
 async function chooseSession(sessionId: string) {
@@ -113,7 +114,7 @@ onBeforeUnmount(() => window.removeEventListener("resize", syncViewport));
       :aria-modal="isNarrow ? 'true' : undefined"
       :aria-hidden="isNarrow ? !sessionsOpen : undefined"
       :inert="isNarrow && !sessionsOpen ? true : undefined"
-      @keydown="trapDrawerFocus($event, sessionPanel)"
+      @keydown="trapDrawerFocus($event, sessionPanel, sessionsOpen)"
     >
       <button v-if="isNarrow" class="assistant-drawer-close" type="button" aria-label="关闭会话列表" @click="closeDrawer"><BaseIcon name="close" /></button>
       <AssistantConversationList
@@ -146,7 +147,7 @@ onBeforeUnmount(() => window.removeEventListener("resize", syncViewport));
       :aria-modal="isNarrow ? 'true' : undefined"
       :aria-hidden="isNarrow ? !capabilitiesOpen : undefined"
       :inert="isNarrow && !capabilitiesOpen ? true : undefined"
-      @keydown="trapDrawerFocus($event, capabilityPanel)"
+      @keydown="trapDrawerFocus($event, capabilityPanel, capabilitiesOpen)"
     >
       <button v-if="isNarrow" class="assistant-drawer-close" type="button" aria-label="关闭能力面板" @click="closeDrawer"><BaseIcon name="close" /></button>
       <CapabilityPanel :capabilities="capabilities" :task="activeTask" :loading="loading" :error="capabilityError" />

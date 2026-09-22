@@ -1,5 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/vue";
-import { defineComponent } from "vue";
+import { defineComponent, nextTick } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { useAssistantChat } from "../useAssistantChat";
 
@@ -11,10 +11,12 @@ const Harness = defineComponent({
   template: `<div>
     <button v-for="session in sessions" :key="session.id" @click="selectSession(session.id)">打开 {{ session.id }}</button>
     <span v-for="session in sessions" :key="'title-' + session.id">{{ session.title }}</span>
-    <button @click="sendMessage('查询库存')">发送</button><button @click="stopAnswer">停止</button>
+    <input aria-label="会话草稿" v-model="draft"><button @click="sendMessage(draft || '查询库存')">发送</button><button @click="stopAnswer">停止</button>
+    <button @click="createSession">新建测试会话</button>
     <button @click="renameSession('s1', '库存查询')">重命名</button><button @click="deleteSession('s2')">删除 s2</button>
     <p data-testid="active">{{ activeSessionId }}</p><p data-testid="waiting">{{ isAwaitingAnswer }}</p>
     <p data-testid="task-id">{{ activeTask?.id }}</p><p data-testid="ready">{{ activeSessionReady }}</p>
+    <p data-testid="background-task">{{ tasksBySession.s2?.status }}</p>
     <p data-testid="summary">{{ activeTask?.execution_summary?.intent_type }}</p>
     <p v-for="message in messages" :key="message.id">{{ message.content }}</p><p role="alert">{{ error }}</p>
   </div>`,
@@ -332,5 +334,122 @@ describe("useAssistantChat", () => {
 
     await vi.waitFor(() => expect(screen.getByText("终态回答")).toBeInTheDocument());
     expect(screen.getByText("服务端标题")).toBeInTheDocument();
+  });
+
+  it("retries a failed restore for a running background session", async () => {
+    vi.useFakeTimers();
+    let backgroundReads = 0;
+    const s2 = session("s2", "running", "t2");
+    apiMock.mockImplementation(async (path: string) => {
+      if (path.endsWith("/capabilities")) return { knowledge_bases: [], tools: [], agents: [], skills: [] };
+      if (path.endsWith("/sessions")) return [session("s1"), s2];
+      if (path.endsWith("/tasks/t2")) {
+        backgroundReads += 1;
+        if (backgroundReads === 1) throw new Error("恢复连接中断");
+        return { id: "t2", session_id: "s2", status: "succeeded", stage: "后台完成" };
+      }
+      if (path.endsWith("/s1/messages")) return { id: "s1", messages: [], latest_task: null };
+      if (path.endsWith("/s2/messages")) return { id: "s2", messages: [], latest_task: { id: "t2", session_id: "s2", status: "succeeded" } };
+      throw new Error(`Unexpected API call: ${path}`);
+    });
+    render(Harness);
+    await vi.waitFor(() => expect(screen.getByTestId("active")).toHaveTextContent("s1"));
+
+    await vi.advanceTimersByTimeAsync(100);
+
+    await vi.waitFor(() => expect(backgroundReads).toBeGreaterThanOrEqual(2));
+    expect(screen.getByTestId("background-task")).toHaveTextContent("succeeded");
+  });
+
+  it("clears only the submitted session draft when another session becomes active", async () => {
+    let resolveSubmit!: (value: unknown) => void;
+    apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path.endsWith("/capabilities")) return { knowledge_bases: [], tools: [], agents: [], skills: [] };
+      if (path.endsWith("/sessions") && !options) return [session("s1"), session("s2")];
+      if (path.endsWith("/messages") && !options) return { id: path.includes("s2") ? "s2" : "s1", messages: [], latest_task: null };
+      if (path.endsWith("/s1/messages") && options?.method === "POST") return await new Promise(resolve => { resolveSubmit = resolve; });
+      throw new Error(`Unexpected API call: ${path}`);
+    });
+    render(Harness);
+    await waitFor(() => expect(screen.getByTestId("ready")).toHaveTextContent("true"));
+    const input = screen.getByRole("textbox", { name: "会话草稿" });
+    await fireEvent.update(input, "s1 问题");
+    await fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await fireEvent.click(screen.getByRole("button", { name: "打开 s2" }));
+    await waitFor(() => expect(screen.getByTestId("ready")).toHaveTextContent("true"));
+    await fireEvent.update(input, "s2 草稿");
+
+    resolveSubmit({ id: "t1", session_id: "s1", status: "queued" });
+    await Promise.resolve();
+
+    expect(input).toHaveValue("s2 草稿");
+    await fireEvent.click(screen.getByRole("button", { name: "打开 s1" }));
+    expect(input).toHaveValue("");
+  });
+
+  it("does not clear a same-session draft edited while its submission is pending", async () => {
+    let resolveSubmit!: (value: unknown) => void;
+    apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path.endsWith("/capabilities")) return { knowledge_bases: [], tools: [], agents: [], skills: [] };
+      if (path.endsWith("/sessions") && !options) return [session("s1")];
+      if (path.endsWith("/s1/messages") && !options) return { id: "s1", messages: [], latest_task: null };
+      if (path.endsWith("/s1/messages") && options?.method === "POST") return await new Promise(resolve => { resolveSubmit = resolve; });
+      throw new Error(`Unexpected API call: ${path}`);
+    });
+    render(Harness);
+    await waitFor(() => expect(screen.getByTestId("ready")).toHaveTextContent("true"));
+    const input = screen.getByRole("textbox", { name: "会话草稿" });
+    await fireEvent.update(input, "已提交问题");
+    await fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await fireEvent.update(input, "继续编辑的草稿");
+
+    resolveSubmit({ id: "t1", session_id: "s1", status: "queued" });
+    await Promise.resolve();
+
+    expect(input).toHaveValue("继续编辑的草稿");
+  });
+
+  it("discards an old terminal session list after create and rename mutations", async () => {
+    vi.useFakeTimers();
+    let sessionReads = 0;
+    let taskReads = 0;
+    let refreshStarted = false;
+    let resolveOldList!: (value: unknown) => void;
+    const initial = session("s1", "running", "t1");
+    apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path.endsWith("/capabilities")) return { knowledge_bases: [], tools: [], agents: [], skills: [] };
+      if (path.endsWith("/sessions") && !options) {
+        sessionReads += 1;
+        if (sessionReads === 1) return [initial];
+        refreshStarted = true;
+        return await new Promise(resolve => { resolveOldList = resolve; });
+      }
+      if (path.endsWith("/sessions") && options?.method === "POST") return session("s2");
+      if (path.endsWith("/sessions/s1") && options?.method === "PATCH") return { id: "s1", title: "库存查询" };
+      if (path.endsWith("/tasks/t1")) {
+        taskReads += 1;
+        return { id: "t1", session_id: "s1", status: taskReads > 1 ? "succeeded" : "running" };
+      }
+      if (path.endsWith("/s1/messages")) return { id: "s1", messages: [], latest_task: { id: "t1", session_id: "s1", status: taskReads > 1 ? "succeeded" : "running" } };
+      if (path.endsWith("/s2/messages")) return { id: "s2", messages: [], latest_task: null };
+      throw new Error(`Unexpected API call: ${path}`);
+    });
+    render(Harness);
+    await vi.waitFor(() => expect(screen.getByTestId("ready")).toHaveTextContent("true"));
+    await vi.advanceTimersByTimeAsync(25);
+    await vi.waitFor(() => expect(refreshStarted).toBe(true));
+
+    await fireEvent.click(screen.getByRole("button", { name: "新建测试会话" }));
+    await fireEvent.click(screen.getByRole("button", { name: "重命名" }));
+    await vi.waitFor(() => expect(screen.getByText("库存查询")).toBeInTheDocument());
+    resolveOldList([session("s1", "running", "t1")]);
+    await vi.advanceTimersByTimeAsync(0);
+    await Promise.resolve();
+    await Promise.resolve();
+    await nextTick();
+
+    expect(screen.getByText("会话 s2")).toBeInTheDocument();
+    expect(screen.getByText("库存查询")).toBeInTheDocument();
+    expect(screen.getByTestId("active")).toHaveTextContent("s2");
   });
 });

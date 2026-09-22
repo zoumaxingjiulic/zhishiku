@@ -36,10 +36,13 @@ export function useAssistantChat(options: AssistantChatOptions = {}) {
   const tasksBySession = reactive<Record<string, AssistantTask | undefined>>({});
   const readyBySession = reactive<Record<string, boolean>>({});
   const draftsBySession = reactive<Record<string, string>>({});
+  const draftVersions = new Map<string, number>();
   const pollers = new Map<string, { timer: number; taskId: string; epoch: number }>();
   const epochs = new Map<string, number>();
   const retryCounts = new Map<string, number>();
   const retrySubmissions = new Map<string, { content: string; key: string }>();
+  let sessionsRevision = 0;
+  let sessionsRequestGeneration = 0;
   let disposed = false;
 
   const messages = computed(() => messagesBySession[activeSessionId.value] ?? []);
@@ -48,7 +51,12 @@ export function useAssistantChat(options: AssistantChatOptions = {}) {
   const activeSessionReady = computed(() => Boolean(readyBySession[activeSessionId.value]));
   const draft = computed({
     get: () => draftsBySession[activeSessionId.value] ?? "",
-    set: value => { if (activeSessionId.value) draftsBySession[activeSessionId.value] = value; },
+    set: value => {
+      const sessionId = activeSessionId.value;
+      if (!sessionId) return;
+      draftsBySession[sessionId] = value;
+      draftVersions.set(sessionId, (draftVersions.get(sessionId) ?? 0) + 1);
+    },
   });
 
   function clearError() {
@@ -85,6 +93,16 @@ export function useAssistantChat(options: AssistantChatOptions = {}) {
     stopPolling(sessionId);
     const timer = window.setTimeout(() => void pollTask(sessionId, taskId, epoch), delay);
     pollers.set(sessionId, { timer, taskId, epoch });
+  }
+
+  function scheduleTaskRetry(sessionId: string, taskId: string, expectedEpoch: number, cause: unknown) {
+    if (!isCurrent(sessionId, expectedEpoch, taskId)) return;
+    const key = `${sessionId}:${taskId}`;
+    const failures = (retryCounts.get(key) ?? 0) + 1;
+    retryCounts.set(key, failures);
+    error.value = `连接中断，正在重试：${messageFor(cause)}`;
+    const delay = Math.min(pollInterval * (2 ** Math.min(failures, 4)), 5000);
+    schedulePoll(sessionId, taskId, expectedEpoch, delay);
   }
 
   async function loadMessages(sessionId: string, expectedEpoch = epochFor(sessionId), expectedTaskId?: string) {
@@ -130,9 +148,10 @@ export function useAssistantChat(options: AssistantChatOptions = {}) {
   }
 
   async function refreshSessionsFromServer(sessionId: string, expectedEpoch: number) {
-    const truth = await api<AssistantSession[]>("/api/v1/assistant/sessions");
+    const truth = await requestSessionsTruth();
+    if (!truth) return;
     if (!isCurrent(sessionId, expectedEpoch)) return;
-    sessions.value = truth;
+    applySessionsTruth(truth);
   }
 
   async function finishTask(sessionId: string, taskId: string, expectedEpoch: number) {
@@ -158,13 +177,7 @@ export function useAssistantChat(options: AssistantChatOptions = {}) {
       if (ACTIVE_STATUSES.has(task.status)) schedulePoll(sessionId, taskId, expectedEpoch);
       else await finishTask(sessionId, taskId, expectedEpoch);
     } catch (cause) {
-      if (!isCurrent(sessionId, expectedEpoch, taskId)) return;
-      const key = `${sessionId}:${taskId}`;
-      const failures = (retryCounts.get(key) ?? 0) + 1;
-      retryCounts.set(key, failures);
-      error.value = `连接中断，正在重试：${messageFor(cause)}`;
-      const delay = Math.min(pollInterval * (2 ** Math.min(failures, 4)), 5000);
-      schedulePoll(sessionId, taskId, expectedEpoch, delay);
+      scheduleTaskRetry(sessionId, taskId, expectedEpoch, cause);
     }
   }
 
@@ -179,8 +192,27 @@ export function useAssistantChat(options: AssistantChatOptions = {}) {
       if (ACTIVE_STATUSES.has(task.status)) schedulePoll(session.id, task.id, expectedEpoch);
       else if (task.status !== latest.status) await loadMessages(session.id, expectedEpoch, task.id);
     } catch (cause) {
-      error.value = messageFor(cause);
+      scheduleTaskRetry(session.id, latest.id, expectedEpoch, cause);
     }
+  }
+
+  async function requestSessionsTruth() {
+    const generation = ++sessionsRequestGeneration;
+    const revision = sessionsRevision;
+    const truth = await api<AssistantSession[]>("/api/v1/assistant/sessions");
+    if (generation !== sessionsRequestGeneration || revision !== sessionsRevision) return null;
+    return truth;
+  }
+
+  function applySessionsTruth(truth: AssistantSession[]) {
+    sessions.value = truth;
+    if (!truth.some(item => item.id === activeSessionId.value)) {
+      activeSessionId.value = truth[0]?.id ?? "";
+    }
+  }
+
+  function confirmSessionsMutation() {
+    sessionsRevision += 1;
   }
 
   async function loadCapabilities() {
@@ -194,9 +226,12 @@ export function useAssistantChat(options: AssistantChatOptions = {}) {
   }
 
   async function loadSessions() {
-    sessions.value = await api<AssistantSession[]>("/api/v1/assistant/sessions");
+    const truth = await requestSessionsTruth();
+    if (!truth) return;
+    applySessionsTruth(truth);
     if (!sessions.value.length) {
       const created = await api<AssistantSession>("/api/v1/assistant/sessions", { method: "POST" });
+      confirmSessionsMutation();
       sessions.value = [created];
     }
     if (!sessions.value.some(item => item.id === activeSessionId.value)) {
@@ -229,6 +264,7 @@ export function useAssistantChat(options: AssistantChatOptions = {}) {
     clearError();
     try {
       const created = await api<AssistantSession>("/api/v1/assistant/sessions", { method: "POST" });
+      confirmSessionsMutation();
       sessions.value.unshift(created);
       activeSessionId.value = created.id;
       messagesBySession[created.id] = [];
@@ -259,6 +295,7 @@ export function useAssistantChat(options: AssistantChatOptions = {}) {
       const renamed = await api<Pick<AssistantSession, "id" | "title">>(`/api/v1/assistant/sessions/${sessionId}`, {
         method: "PATCH", body: JSON.stringify({ title: normalized }),
       });
+      confirmSessionsMutation();
       const row = sessions.value.find(item => item.id === sessionId);
       if (row) row.title = renamed.title;
     } catch (cause) { error.value = messageFor(cause); }
@@ -268,12 +305,14 @@ export function useAssistantChat(options: AssistantChatOptions = {}) {
     clearError();
     try {
       await api(`/api/v1/assistant/sessions/${sessionId}`, { method: "DELETE" });
+      confirmSessionsMutation();
       stopPolling(sessionId);
       sessions.value = sessions.value.filter(item => item.id !== sessionId);
       delete messagesBySession[sessionId];
       delete tasksBySession[sessionId];
       delete readyBySession[sessionId];
       delete draftsBySession[sessionId];
+      draftVersions.delete(sessionId);
       epochs.delete(sessionId);
       retrySubmissions.delete(sessionId);
       if (activeSessionId.value === sessionId) {
@@ -291,6 +330,8 @@ export function useAssistantChat(options: AssistantChatOptions = {}) {
     const retry = retrySubmissions.get(sessionId);
     const key = retry?.content === content ? retry.key : requestKey();
     retrySubmissions.set(sessionId, { content, key });
+    const submittedDraft = draftsBySession[sessionId] ?? "";
+    const submittedDraftVersion = draftVersions.get(sessionId) ?? 0;
     const expectedEpoch = advanceEpoch(sessionId);
     const optimistic: AssistantMessage = {
       id: `optimistic-${key}`, role: "user", content, citations: [], tool_calls: [], optimistic: true,
@@ -305,6 +346,7 @@ export function useAssistantChat(options: AssistantChatOptions = {}) {
       tasksBySession[sessionId] = task;
       updateSessionTask(sessionId, task);
       retrySubmissions.delete(sessionId);
+      clearSubmittedDraft(sessionId, content, submittedDraft, submittedDraftVersion);
       schedulePoll(sessionId, task.id, expectedEpoch);
       return true;
     } catch (cause) {
@@ -316,6 +358,7 @@ export function useAssistantChat(options: AssistantChatOptions = {}) {
         if (recovered && ACTIVE_STATUSES.has(recovered.status)) {
           retrySubmissions.delete(sessionId);
           error.value = "";
+          clearSubmittedDraft(sessionId, content, submittedDraft, submittedDraftVersion);
           schedulePoll(sessionId, recovered.id, expectedEpoch);
           return true;
         }
@@ -324,6 +367,13 @@ export function useAssistantChat(options: AssistantChatOptions = {}) {
       messagesBySession[sessionId] = (messagesBySession[sessionId] ?? []).filter(message => message.id !== optimistic.id);
       return false;
     }
+  }
+
+  function clearSubmittedDraft(sessionId: string, content: string, submittedDraft: string, version: number) {
+    if (submittedDraft.trim() !== content) return;
+    if ((draftVersions.get(sessionId) ?? 0) !== version || draftsBySession[sessionId] !== submittedDraft) return;
+    draftsBySession[sessionId] = "";
+    draftVersions.set(sessionId, version + 1);
   }
 
   async function stopAnswer() {

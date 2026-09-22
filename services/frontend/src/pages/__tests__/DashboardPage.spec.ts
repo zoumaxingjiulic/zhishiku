@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/vue";
+import { nextTick } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import DashboardPage from "../DashboardPage.vue";
 
@@ -91,6 +92,29 @@ describe("enterprise assistant workbench", () => {
     expect(trigger).toHaveFocus();
   });
 
+  it("does not trap Tab, Shift+Tab, or Escape in desktop complementary panels", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1360 });
+    render(DashboardPage);
+    const panel = await screen.findByRole("complementary", { name: "会话列表" });
+    const items = within(panel).getAllByRole("button");
+    const first = items[0];
+    const last = items.at(-1)!;
+
+    last.focus();
+    const tab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    last.dispatchEvent(tab);
+    expect(tab.defaultPrevented).toBe(false);
+    expect(last).toHaveFocus();
+
+    first.focus();
+    const shiftTab = new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true });
+    first.dispatchEvent(shiftTab);
+    expect(shiftTab.defaultPrevented).toBe(false);
+    const escape = new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true });
+    first.dispatchEvent(escape);
+    expect(escape.defaultPrevented).toBe(false);
+  });
+
   it("keeps a failed submission in the session draft", async () => {
     apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
       if (path.endsWith("/capabilities")) return { knowledge_bases: [], tools: [], agents: [], skills: [] };
@@ -106,5 +130,58 @@ describe("enterprise assistant workbench", () => {
     await fireEvent.click(screen.getByRole("button", { name: "发送" }));
     await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("提交失败"));
     expect(input).toHaveValue("不要丢失的问题");
+  });
+
+  it("does not clear the active s2 draft when an s1 submission resolves", async () => {
+    let resolveSubmit!: (value: unknown) => void;
+    apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path.endsWith("/capabilities")) return { knowledge_bases: [], tools: [], agents: [], skills: [] };
+      if (path.endsWith("/sessions") && !options) return [
+        { id: "s1", title: "会话 s1", message_count: 0, latest_task: null },
+        { id: "s2", title: "会话 s2", message_count: 0, latest_task: null },
+      ];
+      if (path.endsWith("/messages") && !options) return { id: path.includes("s2") ? "s2" : "s1", messages: [], latest_task: null };
+      if (path.endsWith("/s1/messages") && options?.method === "POST") return await new Promise(resolve => { resolveSubmit = resolve; });
+      throw new Error(`Unexpected API call: ${path}`);
+    });
+    render(DashboardPage);
+    const input = await screen.findByRole("textbox", { name: "向企业总助手提问" });
+    await waitFor(() => expect(input).not.toBeDisabled());
+    await fireEvent.update(input, "s1 问题");
+    await fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await fireEvent.click(screen.getByRole("button", { name: /^会话 s2/ }));
+    await waitFor(() => expect(input).toHaveValue(""));
+    await fireEvent.update(input, "s2 草稿");
+
+    resolveSubmit({ id: "t1", session_id: "s1", status: "queued" });
+    await Promise.resolve();
+    await Promise.resolve();
+    await nextTick();
+
+    expect(input).toHaveValue("s2 草稿");
+  });
+
+  it("does not clear a newer same-session edit when the older submission resolves", async () => {
+    let resolveSubmit!: (value: unknown) => void;
+    apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path.endsWith("/capabilities")) return { knowledge_bases: [], tools: [], agents: [], skills: [] };
+      if (path.endsWith("/sessions") && !options) return [{ id: "s1", title: "会话 s1", message_count: 0, latest_task: null }];
+      if (path.endsWith("/s1/messages") && !options) return { id: "s1", messages: [], latest_task: null };
+      if (path.endsWith("/s1/messages") && options?.method === "POST") return await new Promise(resolve => { resolveSubmit = resolve; });
+      throw new Error(`Unexpected API call: ${path}`);
+    });
+    render(DashboardPage);
+    const input = await screen.findByRole("textbox", { name: "向企业总助手提问" });
+    await waitFor(() => expect(input).not.toBeDisabled());
+    await fireEvent.update(input, "已提交问题");
+    await fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await fireEvent.update(input, "新编辑的草稿");
+
+    resolveSubmit({ id: "t1", session_id: "s1", status: "queued" });
+    await Promise.resolve();
+    await Promise.resolve();
+    await nextTick();
+
+    expect(input).toHaveValue("新编辑的草稿");
   });
 });
