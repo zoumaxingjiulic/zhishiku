@@ -99,7 +99,7 @@ Skill 是管理员维护、带版本的声明式业务能力包，包含说明�
 
 平台支持 MCP Streamable HTTP + Bearer Token。Token 使用与大模型网关相同的 `MODEL_CREDENTIAL_KEY` 做 Fernet 加密，数据库和 API 均不返回明文。连接流程为：
 
-所有 MCP 和模型网关出站访问默认拒绝。部署时必须配置精确主机允许列表；私网 MCP 还必须同时配置允许网段。例如当前 ERP/OA 可配置 `MCP_ALLOWED_HOSTS=192.168.1.33` 与 `MCP_ALLOWED_CIDRS=192.168.1.0/24`，DashScope 可配置 `MODEL_ALLOWED_HOSTS=dashscope.aliyuncs.com`。平台会在实际建立 TCP 连接时重新解析并校验全部 DNS 地址，只连接本次校验通过的具体 IP，同时保留原主机名用于 HTTP Host 与 TLS SNI/证书验证；连接不跨解析结果复用，并拒绝 loopback、link-local、multicast、unspecified、reserved、云 metadata 地址及重定向。应用层策略仍应配合容器/宿主机防火墙或云 NSG 的出站 ACL，形成纵深防御。
+所有 MCP 和模型网关出站访问默认拒绝。部署时必须配置精确主机允许列表；私网 MCP 和模型服务还必须同时配置各自允许网段。例如当前 ERP/OA 可配置 `MCP_ALLOWED_HOSTS=192.168.1.33` 与 `MCP_ALLOWED_CIDRS=192.168.1.0/24`；同时使用 DashScope 和本地 Infinity 时，示例为 `MODEL_ALLOWED_HOSTS=dashscope.aliyuncs.com,infinity` 与 `MODEL_ALLOWED_CIDRS=172.16.0.0/12`（生产按下文收窄到实际 Docker 子网）。平台会在实际建立 TCP 连接时重新解析并校验全部 DNS 地址，只连接本次校验通过的具体 IP，同时保留原主机名用于 HTTP Host 与 TLS SNI/证书验证；连接不跨解析结果复用，并拒绝 loopback、link-local、multicast、unspecified、reserved、云 metadata 地址及重定向。应用层策略仍应配合容器/宿主机防火墙或云 NSG 的出站 ACL，形成纵深防御。
 
 安全传输层显式锁定 `httpcore==1.0.9`，因为 DNS pinning 使用其 `NetworkBackend`/`ConnectionPool` 接口。升级 HTTPX/httpcore 前必须先运行出站策略、IPv4/IPv6、Host/SNI 和总时限兼容测试。
 
@@ -233,6 +233,8 @@ data/models/source/         本地 BGE 模型权重
 
 ## 初次部署
 
+以下复制步骤仅用于新部署，已有 `.env` 不会自动继承 `.env.example`，也不要用示例覆盖现有凭据。启用本地模型前，核对下节的 Infinity 精确主机与 Docker 网段允许列表；自定义 Docker 地址池时必须按实际子网调整。
+
 ~~~bash
 cd /home/ai/zhishiku
 cp .env.example .env
@@ -294,6 +296,8 @@ services:
 当前 .env 的模型部分：
 
 ~~~dotenv
+MODEL_ALLOWED_HOSTS=dashscope.aliyuncs.com,infinity
+MODEL_ALLOWED_CIDRS=172.16.0.0/12
 EMBEDDING_PROVIDER=openai_compatible
 EMBEDDING_BASE_URL=http://infinity:7997
 EMBEDDING_API_KEY=
@@ -302,6 +306,16 @@ MILVUS_COLLECTION=kb_content_units_bge_m3_v1
 RERANK_BASE_URL=http://infinity:7997
 RERANK_API_KEY=
 RERANK_MODEL=BAAI/bge-reranker-v2-m3
+~~~
+
+模型请求（包括企业总助手的绝对 deadline 检索路径）同样执行 fail-closed 出站策略。已有 `.env` 不会自动继承 `.env.example`；升级时务必在重启前把 `infinity` 加入现有 `MODEL_ALLOWED_HOSTS`，并配置 `MODEL_ALLOWED_CIDRS`，保留仍在使用的其他精确模型主机。仅配置模型 URL 不足以授权私网访问。
+
+示例的 `172.16.0.0/12` 覆盖常见 Docker 动态 bridge 的 `172.17.*` 至 `172.31.*` 地址分配；它仅与精确主机允许列表同时生效，不会放行其他私网主机。生产应查询 `enterprise-kb-internal` 实际子网，将 `MODEL_ALLOWED_CIDRS` 收窄为该子网（例如 `172.18.0.0/16`）。若服务器的自定义地址池、地址池耗尽后的分配或 IPv6 子网不在示例范围内，必须显式调整，不能假定示例覆盖所有服务器。禁止配置全网通配 CIDR 或放行 metadata、loopback；这些地址类别仍由策略强制拒绝。
+
+以下命令只输出网络子网，不打印 `.env`、容器环境或任何凭据；更改 `COMPOSE_PROJECT_NAME` 时替换网络名。首次部署网络尚未创建时可先使用经核对的地址池范围，创建后收窄，并在重新创建 API 前更新 `.env`。
+
+~~~bash
+docker network inspect enterprise-kb-internal --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}'
 ~~~
 
 ## 日常运维
@@ -431,6 +445,8 @@ docker compose --env-file .env -f deploy/docker-compose.yml exec -T mysql sh -c 
 ~~~
 
 ### 2. 构建并使用双 Compose 文件启动
+
+重启前先更新现有 `.env`：它不会自动继承新版 `.env.example`。本地模型必须在 `MODEL_ALLOWED_HOSTS` 中包含 `infinity`，并将 `MODEL_ALLOWED_CIDRS` 配置为网络实际子网；核对命令为 `docker network inspect enterprise-kb-internal --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}'`，只输出子网、不输出秘密。示例 `172.16.0.0/12` 仅覆盖上述常见 Docker 范围；实际网络不在其中时须调整。保留现有凭据与仍在使用的精确外部模型主机，不要覆盖整个 `.env`。
 
 本地 Infinity 只定义在 `deploy/docker-compose.models.yml`，所以构建、启动、查看状态和后续重启都必须同时带两个文件；当前仓库没有为此定义 Compose profile。
 
