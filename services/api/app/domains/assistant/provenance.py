@@ -33,6 +33,9 @@ def normalize(source):
                 raise AuthorizationError('来源版本无效')
             data = {version_key: version}
             if kind == 'agents':
+                # The version identifies the Agent configuration. These IDs are
+                # only dependencies exposed/used under the caller's permissions,
+                # not a copy of the Agent's complete configured binding sets.
                 data.update({f: ids(entry.get(f, [])) for f in ('knowledge_base_ids', 'tool_ids')})
             else:
                 data['selection'] = {f: ids(entry.get('selection', {}).get(f, [])) for f in FIELDS[:3]}
@@ -86,8 +89,10 @@ def validate_dependencies(source, repository, assistant_repository, *, locked=Fa
         actual = (assistant_repository.locked_agents.get(aid) if locked else repository.get_agent(aid))
         if not actual or actual.get('status') != 'active' or actual.get('config_version') != expected['config_version']:
             raise AuthorizationError('历史智能体配置已变更')
-        kbs = repository.agent_knowledge_base_ids(aid)
-        if set(kbs) != set(expected['knowledge_base_ids']):
+        configured_kbs = repository.agent_knowledge_base_ids(aid)
+        # The catalog separately enforces original-snapshot AND current-user
+        # access. Unused, invisible configured KBs must not become dependencies.
+        if not set(expected['knowledge_base_ids']).issubset(configured_kbs):
             raise AuthorizationError('历史智能体知识绑定已变更')
         bindings = (assistant_repository.locked_bindings if locked else repository.bound_tools(aid))
         bound_ids = {b.get('connector_tool_id', b.get('id')) for b in bindings
