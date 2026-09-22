@@ -14,9 +14,12 @@ import BaseSkeleton from "../BaseSkeleton.vue";
 
 vi.mock("../../../api", () => ({ api: vi.fn() }));
 
+const originalViewportWidth = window.innerWidth;
+
 afterEach(() => {
   cleanup();
   vi.clearAllMocks();
+  Object.defineProperty(window, "innerWidth", { configurable: true, value: originalViewportWidth });
 });
 
 describe("base components", () => {
@@ -117,7 +120,7 @@ function shellRouter() {
 }
 
 describe("application shell", () => {
-  it("exposes a closable narrow-screen drawer, groups navigation and closes after routing", async () => {
+  it("moves focus into the narrow drawer, traps Tab and restores focus after explicit close", async () => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
     setAuthUser({ id: 1, display_name: "管理员", departments: [], is_platform_admin: true });
     const router = shellRouter();
@@ -127,34 +130,71 @@ describe("application shell", () => {
 
     const toggle = screen.getByRole("button", { name: "打开导航菜单" });
     const sidebar = document.getElementById("app-sidebar");
+    const main = toggle.closest("main");
     expect(toggle).toHaveAttribute("aria-expanded", "false");
     expect(sidebar).toHaveAttribute("aria-hidden", "true");
+    toggle.focus();
     await fireEvent.click(toggle);
-    expect(screen.getByRole("button", { name: "关闭导航菜单" })).toHaveAttribute("aria-expanded", "true");
+    expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(sidebar).toHaveAttribute("aria-hidden", "false");
+    expect(main).toHaveAttribute("inert");
+    expect(screen.getByRole("link", { name: /工作台/ })).toHaveFocus();
     expect(screen.getByRole("navigation", { name: "平台导航" })).toBeInTheDocument();
     expect(screen.getByText("工作")).toBeInTheDocument();
     expect(screen.getByText("资源")).toBeInTheDocument();
     expect(screen.getByText("管理")).toBeInTheDocument();
     expect(screen.getByRole("link", { name: /能力配置/ })).toBeInTheDocument();
 
+    const close = screen.getByRole("button", { name: "关闭导航侧栏" });
+    const lastLink = screen.getByRole("link", { name: /审计日志/ });
+    lastLink.focus();
+    await fireEvent.keyDown(sidebar!, { key: "Tab" });
+    expect(close).toHaveFocus();
+    await fireEvent.keyDown(sidebar!, { key: "Tab", shiftKey: true });
+    expect(lastLink).toHaveFocus();
+
+    await fireEvent.keyDown(sidebar!, { key: "Escape" });
+    await waitFor(() => expect(toggle).toHaveAttribute("aria-expanded", "false"));
+    expect(toggle).toHaveFocus();
+    expect(main).not.toHaveAttribute("inert");
+
+    await fireEvent.click(toggle);
+    await fireEvent.click(screen.getByRole("button", { name: "关闭导航侧栏" }));
+    await waitFor(() => expect(toggle).toHaveFocus());
+  });
+
+  it("closes the drawer after routing and focuses the new page heading", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
+    setAuthUser({ id: 1, display_name: "管理员", departments: [], is_platform_admin: true });
+    const router = shellRouter();
+    await router.push("/workbench");
+    await router.isReady();
+    render(App, { global: { plugins: [router] } });
+
+    const toggle = screen.getByRole("button", { name: "打开导航菜单" });
+    await fireEvent.click(toggle);
     await fireEvent.click(screen.getByRole("link", { name: /知识库/ }));
     await waitFor(() => expect(router.currentRoute.value.name).toBe("knowledge"));
-    expect(screen.getByRole("button", { name: "打开导航菜单" })).toHaveAttribute("aria-expanded", "false");
-    expect(sidebar).toHaveAttribute("aria-hidden", "true");
+    expect(toggle).toHaveAttribute("aria-expanded", "false");
+    expect(document.getElementById("app-sidebar")).toHaveAttribute("aria-hidden", "true");
+    expect(screen.getByRole("heading", { level: 1, name: "知识库" })).toHaveFocus();
+    expect(toggle).not.toHaveFocus();
   });
 
   it("keeps management navigation hidden from regular employees", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
     setAuthUser({ id: 8, display_name: "员工", departments: [], is_platform_admin: false });
     const router = shellRouter();
     await router.push("/workbench");
     await router.isReady();
     render(App, { global: { plugins: [router] } });
 
-    expect(screen.getByText("工作")).toBeInTheDocument();
-    expect(screen.getByText("资源")).toBeInTheDocument();
+    for (const label of ["工作台", "智能体", "智能体申请", "知识库", "提示词模板", "系统连接"]) {
+      expect(screen.getByRole("link", { name: label })).toBeInTheDocument();
+    }
     expect(screen.queryByText("管理")).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /能力配置/ })).not.toBeInTheDocument();
-    expect(screen.queryByRole("link", { name: /用户与部门/ })).not.toBeInTheDocument();
+    for (const label of ["智能体工作室", "能力配置", "大模型网关", "用户与部门", "运行监控", "审计日志"]) {
+      expect(screen.queryByRole("link", { name: label })).not.toBeInTheDocument();
+    }
   });
 });

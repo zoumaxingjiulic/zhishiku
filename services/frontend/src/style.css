@@ -84,16 +84,19 @@
   color: var(--color-text);
 }
 .drawer-toggle:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
-
-.modal-backdrop { padding: var(--space-6); background: rgba(11, 23, 43, .62); }
-.vue-modal {
-  border-radius: var(--radius-lg);
-  background: var(--color-surface);
-  box-shadow: var(--shadow-md);
+.sidebar-close {
+  display: inline-grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 36px;
+  height: 36px;
+  margin-left: auto;
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: var(--radius-sm);
+  background: var(--color-nav-active);
+  color: var(--color-on-primary);
 }
-.vue-modal:focus { outline: none; }
-.vue-modal:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 3px; }
-.icon-button:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+.sidebar-close:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
 
 .boot-screen {
   min-height: 100vh;
@@ -111,17 +114,20 @@
   z-index: 20;
   display: grid;
   place-items: center;
-  padding: 24px;
+  padding: var(--space-6);
   background: rgba(11, 23, 43, .62);
 }
 .vue-modal {
   width: min(600px, 92vw);
   max-height: min(82vh, 760px);
   overflow: auto;
-  border-radius: 14px;
-  background: #fff;
-  box-shadow: 0 20px 70px rgba(27, 42, 69, .4);
+  border-radius: var(--radius-lg);
+  background: var(--color-surface);
+  box-shadow: var(--shadow-md);
 }
+.vue-modal:focus { outline: none; }
+.vue-modal:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 3px; }
+.icon-button:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
 .button-link {
   display: inline-flex;
   align-items: center;

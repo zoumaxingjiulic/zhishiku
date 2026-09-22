@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onErrorCaptured, reactive, ref, watch } from "vue";
+import { computed, nextTick, onBeforeUnmount, onErrorCaptured, reactive, ref, watch } from "vue";
 import { RouterLink, RouterView, useRoute, useRouter } from "vue-router";
 import { api } from "./api";
 import { authReady, authUser, clearAuthUser, setAuthUser } from "./auth";
@@ -13,6 +13,9 @@ const loginError = ref("");
 const passwordModal = ref(false);
 const sidebarOpen = ref(false);
 const isNarrow = ref(window.innerWidth < 1024);
+const sidebar = ref<HTMLElement | null>(null);
+const drawerToggle = ref<HTMLButtonElement | null>(null);
+const pageTitle = ref<HTMLElement | null>(null);
 const toastState = reactive({ message: "", bad: false, visible: false });
 const loginForm = reactive({ username: "", password: "" });
 const passwordForm = reactive({ current_password: "", new_password: "", confirmation: "" });
@@ -66,8 +69,56 @@ function syncLayout() {
   if (!isNarrow.value) sidebarOpen.value = false;
 }
 
-function toggleSidebar() {
-  sidebarOpen.value = !sidebarOpen.value;
+const sidebarFocusableSelector = [
+  "button:not([disabled])",
+  "a[href]",
+  "[tabindex]:not([tabindex='-1'])",
+].join(",");
+
+function sidebarFocusableElements() {
+  return sidebar.value
+    ? Array.from(sidebar.value.querySelectorAll<HTMLElement>(sidebarFocusableSelector))
+    : [];
+}
+
+async function openSidebar() {
+  sidebarOpen.value = true;
+  await nextTick();
+  const currentLink = sidebar.value?.querySelector<HTMLElement>("a[aria-current='page']");
+  (currentLink ?? sidebarFocusableElements()[0])?.focus();
+}
+
+async function closeSidebar(restoreToggleFocus: boolean) {
+  const wasOpen = sidebarOpen.value;
+  sidebarOpen.value = false;
+  await nextTick();
+  if (wasOpen && restoreToggleFocus) drawerToggle.value?.focus();
+}
+
+async function toggleSidebar() {
+  if (sidebarOpen.value) await closeSidebar(true);
+  else await openSidebar();
+}
+
+function handleSidebarKeydown(event: KeyboardEvent) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    void closeSidebar(true);
+    return;
+  }
+  if (event.key !== "Tab") return;
+
+  const focusable = sidebarFocusableElements();
+  if (!focusable.length) return;
+  const first = focusable[0];
+  const last = focusable[focusable.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
 }
 
 function toast(message: string, bad = false) {
@@ -151,7 +202,12 @@ onErrorCaptured((error: any) => {
 });
 window.addEventListener("auth-expired", onAuthExpired);
 window.addEventListener("resize", syncLayout);
-watch(() => route.fullPath, () => { sidebarOpen.value = false; });
+watch(() => route.fullPath, async () => {
+  if (!isNarrow.value || !sidebarOpen.value) return;
+  sidebarOpen.value = false;
+  await nextTick();
+  pageTitle.value?.focus();
+});
 onBeforeUnmount(() => {
   window.removeEventListener("auth-expired", onAuthExpired);
   window.removeEventListener("resize", syncLayout);
@@ -177,21 +233,35 @@ onBeforeUnmount(() => {
   </main>
 
   <div v-else class="app-shell">
-    <button
+    <div
       v-if="isNarrow && sidebarOpen"
       class="sidebar-backdrop"
-      type="button"
-      aria-label="点击遮罩关闭导航菜单"
-      @click="sidebarOpen = false"
+      aria-hidden="true"
+      @click="closeSidebar(true)"
     />
     <aside
       id="app-sidebar"
+      ref="sidebar"
       class="sidebar"
       :class="{ open: !isNarrow || sidebarOpen }"
       :aria-hidden="isNarrow ? !sidebarOpen : undefined"
-      :inert="isNarrow && !sidebarOpen"
+      :inert="isNarrow && !sidebarOpen ? true : undefined"
+      @keydown="handleSidebarKeydown"
     >
-      <div class="logo"><div class="brand-mark small">智</div><div><strong>企业智能体</strong><small>KNOWLEDGE OS</small></div></div>
+      <div class="logo">
+        <div class="brand-mark small">智</div>
+        <div><strong>企业智能体</strong><small>KNOWLEDGE OS</small></div>
+        <button
+          v-if="isNarrow"
+          class="sidebar-close"
+          type="button"
+          aria-label="关闭导航侧栏"
+          data-sidebar-close
+          @click="closeSidebar(true)"
+        >
+          <BaseIcon name="close" :size="20" />
+        </button>
+      </div>
       <nav aria-label="平台导航">
         <section v-for="group in navGroups" :key="group.label" class="nav-section">
           <h2>{{ group.label }}</h2>
@@ -210,10 +280,11 @@ onBeforeUnmount(() => {
       <div class="sidebar-foot"><span class="health-dot"></span>服务运行正常</div>
     </aside>
 
-    <main class="main">
+    <main class="main" :inert="isNarrow && sidebarOpen ? true : undefined">
       <header class="topbar">
         <button
           v-if="isNarrow"
+          ref="drawerToggle"
           class="drawer-toggle"
           type="button"
           :aria-label="sidebarOpen ? '关闭导航菜单' : '打开导航菜单'"
@@ -223,7 +294,7 @@ onBeforeUnmount(() => {
         >
           <BaseIcon :name="sidebarOpen ? 'close' : 'menu'" :size="22" />
         </button>
-        <div><h1>{{ currentMeta.title }}</h1><p>{{ currentMeta.subtitle }}</p></div>
+        <div><h1 ref="pageTitle" tabindex="-1">{{ currentMeta.title }}</h1><p>{{ currentMeta.subtitle }}</p></div>
         <div class="user-area">
           <div class="avatar">{{ avatar }}</div>
           <div><strong>{{ authUser.display_name }}</strong><small>{{ departments }}</small></div>
