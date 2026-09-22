@@ -3,7 +3,7 @@
 When MySQL starts with an empty data directory, the official image executes every
 `*.sql` file mounted in `/docker-entrypoint-initdb.d` in filename order. With this
 repository's Compose file that means `001_initial_schema.sql` through
-`012_platform_quality_runtime.sql`, in order. These files are not rerun after the
+`013_enterprise_assistant.sql`, in order. These files are not rerun after the
 data directory has been initialized.
 
 For an already running environment, apply each later numbered migration exactly once from the project root:
@@ -42,3 +42,5 @@ Apply a single migration from the project root with `bash deploy/apply-mysql-mig
 `011_mcp_agent_runtime_observability.sql` adds encrypted MCP connector credentials, discovered tool schemas, per-agent read-only tool grants, assistant tool-call metadata, and privacy-preserving agent run traces. It seeds ERP/OA connector metadata only; bearer tokens must be configured at deployment time and are never committed.
 
 `012_platform_quality_runtime.sql` adds versioned agent configurations, durable chat/workflow tasks, retrieval evaluation sets/results, user feedback and optional parent text/knowledge-base processing settings. Back up first; apply exactly once before deploying 1.1 services. It does not rebuild or delete existing documents/vectors.
+
+`013_enterprise_assistant.sql` adds the reserved enterprise assistant, intent-decision records, the reusable Skill catalog, and permission mappings. It does not delete or alter existing workflows, workflow runs, knowledge bases, documents, vectors, or full-text indexes.

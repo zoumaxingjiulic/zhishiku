@@ -70,3 +70,11 @@ def test_frontend_healthcheck_uses_explicit_ipv4_loopback(configurations):
     dockerfile = (ROOT / "services/frontend/Dockerfile").read_text(encoding="utf-8")
     assert "http://127.0.0.1/healthz" in dockerfile
     assert "http://localhost/healthz" not in dockerfile
+
+
+def test_enterprise_assistant_migration_is_registered():
+    sql = (ROOT / "database/mysql/013_enterprise_assistant.sql").read_text(encoding="utf-8")
+    assert "ENTERPRISE_ASSISTANT" in sql
+    assert "CREATE TABLE assistant_intent_decision" in sql
+    assert "CREATE TABLE assistant_skill" in sql
+    assert "CREATE TABLE assistant_skill_department" in sql

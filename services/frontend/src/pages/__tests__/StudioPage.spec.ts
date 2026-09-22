@@ -1,0 +1,56 @@
+import { cleanup, fireEvent, render, screen } from "@testing-library/vue";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import StudioPage from "../StudioPage.vue";
+
+const apiMock = vi.hoisted(() => vi.fn());
+
+vi.mock("../../api", () => ({ api: apiMock }));
+
+const legacyWorkflow = {
+  id: 7,
+  code: "LEGACY_WORKFLOW",
+  name: "历史工作流",
+  launch_mode: "workflow",
+  config_version: 3,
+  status: "active",
+  steps: [],
+};
+
+describe("StudioPage launch modes", () => {
+  beforeEach(() => {
+    apiMock.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/studio/agents") return [legacyWorkflow];
+      if (path === "/api/v1/departments") return [];
+      if (path === "/api/v1/knowledge-bases") return [];
+      if (path === "/api/v1/model-gateway/profiles") return [];
+      if (path === "/api/v1/connectors") return { items: [] };
+      throw new Error(`Unexpected API call: ${path}`);
+    });
+  });
+
+  afterEach(() => {
+    cleanup();
+    vi.clearAllMocks();
+  });
+
+  it("only offers chat mode when creating an agent", async () => {
+    render(StudioPage);
+
+    await screen.findByText("历史工作流");
+    await fireEvent.click(screen.getByRole("button", { name: "＋ 新建智能体" }));
+
+    const launchMode = screen.getByLabelText("运行方式") as HTMLSelectElement;
+    expect(launchMode.value).toBe("chat");
+    expect(screen.queryByRole("option", { name: "步骤式工作流" })).not.toBeInTheDocument();
+  });
+
+  it("shows existing workflow agents as read-only compatibility records", async () => {
+    render(StudioPage);
+
+    expect(await screen.findByText("历史兼容模式，不能新建或扩展")).toBeInTheDocument();
+    const launchMode = screen.getByLabelText("运行方式") as HTMLSelectElement;
+    expect(launchMode.value).toBe("workflow");
+    expect(launchMode).toBeDisabled();
+    expect(screen.getByRole("option", { name: "兼容模式" })).toBeInTheDocument();
+  });
+});
