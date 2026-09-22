@@ -105,6 +105,65 @@ def test_rejects_bearer_mcp_and_runtime_known_fragments_without_echoing(
     assert all(secret not in output for secret in (bearer, mcp_token, known))
 
 
+@pytest.mark.parametrize("name,template,rule", [
+    ("config/json.json", '{{"Authorization": "Bearer {secret}"}}', "bearer-token"),
+    ("config/python.py", "{{'Authorization': 'Bearer {secret}'}}", "bearer-token"),
+    ("config/settings.yaml", 'Authorization: "Bearer {secret}"', "bearer-token"),
+    ("config/service.env", "Authorization=Bearer {secret}", "bearer-token"),
+    ("config/mcp.json", '{{"MCP_TOKEN": "{secret}"}}', "mcp-token"),
+    ("config/mcp.py", "{{'MCP_TOKEN': '{secret}'}}", "mcp-token"),
+    ("config/mcp.yaml", 'MCP_TOKEN: "{secret}"', "mcp-token"),
+    ("config/mcp.env", "MCP_TOKEN={secret}", "mcp-token"),
+])
+def test_rejects_common_quoted_and_dotenv_credential_forms_without_echoing(
+    hygiene, monkeypatch, tmp_path, capsys, name, template, rule,
+):
+    """Cover JSON, Python, YAML, and dotenv literals without committing a real secret."""
+    fake_secret = "fake_" + "A7" * 16
+    tracked_files(monkeypatch, hygiene, tmp_path, {name: template.format(secret=fake_secret)})
+
+    assert hygiene.main(tmp_path) == 1
+    output = capsys.readouterr().out
+    assert output.strip() == f"{name}: {rule}"
+    assert fake_secret not in output
+
+
+def test_allows_dynamic_credentials_and_explicit_placeholders(
+    hygiene, monkeypatch, tmp_path, capsys,
+):
+    tracked_files(monkeypatch, hygiene, tmp_path, {
+        "config/dynamic.env": "MCP_TOKEN=${MCP_TOKEN}\nAuthorization=Bearer ${API_TOKEN}\n",
+        "config/runtime.py": 'token = os.getenv("MCP_TOKEN")\n',
+        "config/placeholders.json": (
+            '{"Authorization": "Bearer <token>", '
+            '"MCP_TOKEN": "example-token-value-not-a-secret"}\n'
+        ),
+        "config/placeholders.yaml": 'Authorization: "Bearer <token>"\nMCP_TOKEN: <token>\n',
+    })
+
+    assert hygiene.main(tmp_path) == 0
+    captured = capsys.readouterr()
+    assert captured.out == ""
+    assert captured.err == ""
+
+
+@pytest.mark.parametrize("separator", [";", ":"])
+def test_known_fragment_list_supports_windows_and_posix_separators(
+    hygiene, monkeypatch, tmp_path, capsys, separator,
+):
+    first = "known-fragment-" + "B8" * 8
+    second = "known-fragment-" + "C9" * 8
+    monkeypatch.setattr(hygiene.os, "pathsep", separator)
+    monkeypatch.setenv("REPOSITORY_SECRET_FRAGMENTS", separator.join((first, second)))
+    tracked_files(monkeypatch, hygiene, tmp_path, {"config/runtime.txt": second})
+
+    assert hygiene.main(tmp_path) == 1
+    output = capsys.readouterr().out
+    assert output.strip() == "config/runtime.txt: known-secret-fragment"
+    assert first not in output
+    assert second not in output
+
+
 def test_ignores_tracked_files_deleted_in_the_current_change(hygiene, monkeypatch, tmp_path, capsys):
     """Catch scanners that make a legitimate staged deletion fail the quality gate."""
     monkeypatch.setattr(

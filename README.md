@@ -325,8 +325,15 @@ docker compose --env-file .env \
 docker compose --env-file .env \
   -f deploy/docker-compose.yml \
   -f deploy/docker-compose.models.yml ps
-curl -s http://127.0.0.1:18000/healthz
-curl -s http://127.0.0.1:18000/readyz
+read_dotenv_value() {
+  sed -n "s/^$1=//p" .env | tail -n 1 | tr -d '\r'
+}
+api_health_host="${HOST_BIND_IP:-$(read_dotenv_value HOST_BIND_IP)}"
+api_health_port="${API_PORT:-$(read_dotenv_value API_PORT)}"
+api_health_host="${api_health_host:-127.0.0.1}"
+api_health_port="${api_health_port:-8000}"
+curl -fsS "http://${api_health_host}:${api_health_port}/healthz"
+curl -fsS "http://${api_health_host}:${api_health_port}/readyz"
 docker compose --env-file .env \
   -f deploy/docker-compose.yml \
   -f deploy/docker-compose.models.yml \
@@ -374,18 +381,46 @@ PY
 
 013 只新增企业总助手种子、意图决策表、Skill 表和绑定表。它不修改或重建知识库、文档、切片、MinIO 对象、Milvus 集合、OpenSearch 索引，也不删除历史工作流。既有环境只能执行一次；已执行的迁移文件不得修改。
 
+先用同版本、同配置的完整备份在隔离环境做恢复演练，确认可以登录并核对关键表；只有恢复演练通过后才能把 `BACKUP_RESTORE_VERIFIED` 设为 `yes`。下面脚本启用 fail-fast：转储先写入权限受限的临时文件，只有命令成功、文件非空且包含 MySQL 转储头和完成标记时才原子改名；任一步失败或恢复验证闸门未打开都不会执行 013。首次不设置闸门运行会安全停在迁移前，可用打印出的最终文件做恢复演练；通过后设置闸门重新运行，脚本会再生成并保留一份迁移前有效备份。
+
 ~~~bash
 cd /home/ai/zhishiku
-mkdir -p backup
+set -euo pipefail
+umask 077
+
+backup_dir=backup
+mkdir -p "$backup_dir"
+chmod 700 "$backup_dir"
+backup_stamp="$(date +%Y%m%d-%H%M%S)"
+backup_tmp="$(mktemp "${backup_dir}/.mysql-before-013-${backup_stamp}.XXXXXX")"
+backup_final="${backup_dir}/mysql-before-013-${backup_stamp}.sql"
+
+cleanup_backup() { rm -f -- "$backup_tmp"; }
+trap cleanup_backup EXIT HUP INT TERM
+
 docker compose --env-file .env \
   -f deploy/docker-compose.yml \
   -f deploy/docker-compose.models.yml \
-  exec -T mysql sh -c \
+  exec -T mysql sh -ec \
   'exec mysqldump --single-transaction --routines --triggers -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"' \
-  > "backup/mysql-before-013-$(date +%Y%m%d-%H%M%S).sql"
+  > "$backup_tmp"
 
+test -s "$backup_tmp"
+grep -aFq -- '-- MySQL dump ' "$backup_tmp"
+grep -aFq -- '-- Dump completed on ' "$backup_tmp"
+chmod 600 "$backup_tmp"
+test ! -e "$backup_final"
+mv -- "$backup_tmp" "$backup_final"
+trap - EXIT HUP INT TERM
+printf 'backup ready: %s\n' "$backup_final"
+
+test -s "$backup_final"
+grep -aFq -- '-- Dump completed on ' "$backup_final"
+test "${BACKUP_RESTORE_VERIFIED:-no}" = yes
 bash deploy/apply-mysql-migration.sh database/mysql/013_enterprise_assistant.sql
 ~~~
+
+不要删除或覆盖打印出的 `backup_final`；至少保留到 013、应用回滚窗口和真实账号验收全部结束。恢复演练必须使用隔离数据库/环境，不得覆盖生产库；记录备份文件名、校验值和演练结果，但不要记录密码或业务数据。`MYSQL_ROOT_PASSWORD` 只在 MySQL 容器内由 `.env` 注入并展开，不出现在宿主机命令参数或日志中。
 
 迁移后应检查新表和保留数据，不输出凭据或业务正文：
 
@@ -418,11 +453,20 @@ docker compose --env-file .env \
   -f deploy/docker-compose.yml \
   -f deploy/docker-compose.models.yml ps
 
+# 仅读取仓库实际使用的 HOST_BIND_IP/API_PORT；不 source 含凭据的 .env
+read_dotenv_value() {
+  sed -n "s/^$1=//p" .env | tail -n 1 | tr -d '\r'
+}
+api_health_host="${HOST_BIND_IP:-$(read_dotenv_value HOST_BIND_IP)}"
+api_health_port="${API_PORT:-$(read_dotenv_value API_PORT)}"
+api_health_host="${api_health_host:-127.0.0.1}"
+api_health_port="${api_health_port:-8000}"
+
 # API liveness：进程可响应，不代表依赖已就绪
-curl -fsS http://127.0.0.1:8000/healthz
+curl -fsS "http://${api_health_host}:${api_health_port}/healthz"
 
 # API readiness：MySQL、MinIO、Milvus、OpenSearch 与模型依赖可用
-curl -fsS http://127.0.0.1:8000/readyz
+curl -fsS "http://${api_health_host}:${api_health_port}/readyz"
 
 # 前端稳定健康端点；不依赖首页标题或其他页面文案
 docker compose --env-file .env \
@@ -438,7 +482,7 @@ docker compose --env-file .env \
   'import httpx; r=httpx.get("http://infinity:7997/models",timeout=30); r.raise_for_status(); print(r.json())'
 ~~~
 
-如果 `.env` 使用其他 `API_PORT`，相应替换上面的 `8000`。`/healthz` 是 liveness；只有 `/readyz` 成功且前端、Infinity 与容器状态均正常，才进入账号业务验收。
+API 地址使用仓库 Compose 已定义的 `HOST_BIND_IP` 与 `API_PORT`，变量未设置时分别回退到 `.env.example` 的 `127.0.0.1` 与 `8000`；脚本不会 `source` 整份 `.env`。`/healthz` 是 liveness；只有 `/readyz` 成功且前端、Infinity 与容器状态均正常，才进入账号业务验收。
 
 ### 4. 停止发布与回滚
 

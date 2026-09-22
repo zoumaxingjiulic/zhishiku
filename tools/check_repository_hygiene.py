@@ -10,8 +10,25 @@ import sys
 PRIVATE_KEY_HEADER = re.compile(rb"-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----")
 API_KEY = re.compile(rb"\bsk-[A-Za-z0-9_-]{20,}")
 PLACEHOLDER_KEY = re.compile(rb"sk-(?:CHANGE_ME[_-]?)+")
-BEARER_TOKEN = re.compile(rb"(?i)Authorization\s*[:=]\s*Bearer\s+[A-Za-z0-9._~+/=-]{20,}")
-MCP_TOKEN = re.compile(rb"(?i)\bMCP(?:_[A-Z0-9]+)*_?TOKEN\s*[:=]\s*[\"']?[A-Za-z0-9._~+/=-]{20,}")
+LITERAL_PLACEHOLDER = re.compile(
+    rb"(?i)(?:change[_-]?me|example|your[_-](?:token|key|secret)|replace[_-]?me|placeholder)"
+    rb"(?:[-_.][a-z0-9]+)*"
+)
+BEARER_TOKEN = re.compile(
+    rb"(?i)(?<![A-Za-z0-9_])[\"']?Authorization[\"']?\s*[:=]\s*[\"']?\s*"
+    rb"Bearer\s+(?P<token>[A-Za-z0-9._~+/=-]{20,})"
+)
+MCP_TOKEN = re.compile(
+    rb"(?i)(?<![A-Za-z0-9_])[\"']?MCP(?:_[A-Z0-9]+)*_?TOKEN[\"']?\s*[:=]\s*"
+    rb"[\"']?\s*(?P<token>[A-Za-z0-9._~+/=-]{20,})"
+)
+
+
+def contains_literal_secret(pattern: re.Pattern[bytes], content: bytes) -> bool:
+    return any(
+        not LITERAL_PLACEHOLDER.fullmatch(match.group("token"))
+        for match in pattern.finditer(content)
+    )
 
 
 def main(root: Path | None = None) -> int:
@@ -58,9 +75,9 @@ def main(root: Path | None = None) -> int:
                 rules.append("pem-private-key")
             if any(not PLACEHOLDER_KEY.fullmatch(match.group()) for match in API_KEY.finditer(content)):
                 rules.append("api-key")
-            if BEARER_TOKEN.search(content):
+            if contains_literal_secret(BEARER_TOKEN, content):
                 rules.append("bearer-token")
-            if MCP_TOKEN.search(content):
+            if contains_literal_secret(MCP_TOKEN, content):
                 rules.append("mcp-token")
             if any(fragment in content for fragment in known_fragments):
                 rules.append("known-secret-fragment")
