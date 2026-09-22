@@ -1,6 +1,10 @@
-"""Assistant conversations reuse the durable chat queue and ownership constraints."""
+"""Assistant conversations and administrator-owned declarative Skill management."""
 
-from ...core.errors import NotFoundError
+from types import SimpleNamespace
+
+import pymysql
+
+from ...core.errors import AuthorizationError, ConflictError, NotFoundError, ValidationError
 from ..agents.repository import AgentRepository, parse_json
 from ..agents.schemas import ChatTaskSubmit
 from ..agents.service import AgentService, ChatTaskService, task_view
@@ -11,6 +15,7 @@ from .repository import AssistantRepository
 class AssistantService(AgentService):
     def __init__(self, uow, repository=None):
         super().__init__(uow, repository or AgentRepository(uow.cursor))
+        self.skill_repository = repository or AssistantRepository(uow.cursor)
 
     def assistant(self):
         agent = self.repository.assistant_agent()
@@ -87,3 +92,113 @@ class AssistantService(AgentService):
     def cancel(self, user, tid):
         self.owned_task(user, tid, for_update=True)
         return ChatTaskService(self.uow, self.repository, self).cancel_chat_task(user, tid)
+
+    @staticmethod
+    def _require_admin(user):
+        if not user.get("is_platform_admin"):
+            raise AuthorizationError("仅平台管理员可以管理 Skill")
+
+    def list_skills(self, user, status=None):
+        self._require_admin(user)
+        return self.skill_repository.list_managed_skills(status)
+
+    def skill_detail(self, user, skill_id):
+        self._require_admin(user)
+        row = self.skill_repository.get_managed_skill(skill_id)
+        if not row:
+            raise NotFoundError("Skill 不存在")
+        return row
+
+    def _validate_skill_bindings(self, payload):
+        definitions = (
+            ("department", payload.department_ids),
+            ("knowledge_base", payload.knowledge_base_ids),
+            ("connector_tool", payload.tool_ids),
+            ("agent", payload.agent_ids),
+        )
+        for table, values in definitions:
+            unique = list(dict.fromkeys(values))
+            if self.skill_repository.active_reference_ids(table, unique) != set(unique):
+                raise ValidationError(f"{table} 引用不存在或未启用")
+
+    @staticmethod
+    def _audit_detail(row):
+        return {
+            "id": row["id"], "code": row["code"], "version": row["version"],
+            "status": row["status"], "department_ids": row.get("department_ids", []),
+            "knowledge_base_ids": row.get("knowledge_base_ids", []),
+            "tool_ids": row.get("tool_ids", []), "agent_ids": row.get("agent_ids", []),
+        }
+
+    def _replace_skill_bindings(self, skill_id, payload):
+        for table, column, values in (
+            ("assistant_skill_department", "department_id", payload.department_ids),
+            ("assistant_skill_knowledge_base", "knowledge_base_id", payload.knowledge_base_ids),
+            ("assistant_skill_tool", "connector_tool_id", payload.tool_ids),
+            ("assistant_skill_agent", "agent_id", payload.agent_ids),
+        ):
+            self.skill_repository.replace_skill_bindings(skill_id, table, column, values)
+
+    def create_skill(self, user, payload, ip_address):
+        self._require_admin(user)
+        if payload.version != 1:
+            raise ValidationError("新建 Skill 的版本必须为 1")
+        try:
+            skill_id = self.skill_repository.insert_skill(payload, user["id"])
+        except pymysql.err.IntegrityError as exc:
+            raise ConflictError("Skill 编码已存在") from exc
+        if not skill_id:
+            raise ConflictError("Skill 编码已存在")
+        self._validate_skill_bindings(payload)
+        self._replace_skill_bindings(skill_id, payload)
+        row = self.skill_repository.get_managed_skill(skill_id)
+        self.skill_repository.write_audit(
+            user["id"], "assistant_skill.create", "assistant_skill", skill_id,
+            self._audit_detail(row), ip_address,
+        )
+        self.uow.commit()
+        return row
+
+    def _save_skill_update(self, user, skill_id, payload, ip_address, action, *, validate_bindings=True):
+        locked = self.skill_repository.get_managed_skill(skill_id, for_update=True)
+        if not locked:
+            raise NotFoundError("Skill 不存在")
+        if payload.code != locked["code"]:
+            raise ValidationError("Skill 编码不可修改")
+        if payload.version != locked["version"]:
+            raise ConflictError("配置已变更，请刷新后再编辑")
+        if validate_bindings:
+            self._validate_skill_bindings(payload)
+        next_version = payload.version + 1
+        if not self.skill_repository.update_skill(skill_id, payload.version, payload, next_version):
+            raise ConflictError("配置已变更，请刷新后再编辑")
+        self._replace_skill_bindings(skill_id, payload)
+        row = self.skill_repository.get_managed_skill(skill_id)
+        self.skill_repository.write_audit(
+            user["id"], action, "assistant_skill", skill_id, self._audit_detail(row), ip_address,
+        )
+        self.uow.commit()
+        return row
+
+    def update_skill(self, user, skill_id, payload, ip_address):
+        self._require_admin(user)
+        return self._save_skill_update(
+            user, skill_id, payload, ip_address, "assistant_skill.update"
+        )
+
+    def disable_skill(self, user, skill_id, version, ip_address):
+        self._require_admin(user)
+        locked = self.skill_repository.get_managed_skill(skill_id, for_update=True)
+        if not locked:
+            raise NotFoundError("Skill 不存在")
+        payload = SimpleNamespace(
+            code=locked["code"], name=locked["name"], description=locked.get("description"),
+            instruction=locked["instruction"], input_schema=locked["input_schema"],
+            trigger_examples=locked["trigger_examples"], status="disabled", version=version,
+            department_ids=locked.get("department_ids", []),
+            knowledge_base_ids=locked.get("knowledge_base_ids", []),
+            tool_ids=locked.get("tool_ids", []), agent_ids=locked.get("agent_ids", []),
+        )
+        return self._save_skill_update(
+            user, skill_id, payload, ip_address, "assistant_skill.disable", validate_bindings=False
+        )

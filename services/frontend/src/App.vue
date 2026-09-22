@@ -37,6 +37,7 @@ const navItems = computed(() => [
   { section: "connections", to: { name: "connections" }, icon: "⌘", label: "系统连接" },
   ...(isAdmin.value ? [
     { section: 'studio', to: { name: 'studio' }, icon: '⌬', label: '智能体工作室' },
+    { section: 'skills', to: { name: 'skills' }, icon: '◇', label: '能力配置' },
     { section: "model-gateway", to: { name: "model-gateway" }, icon: "◈", label: "大模型网关" },
     { section: "users", to: { name: "users" }, icon: "♟", label: "用户与部门" },
     { section: "observability", to: { name: "observability" }, icon: "◎", label: "运行监控" },
@@ -104,10 +105,10 @@ async function changePassword() {
 function navigate(target: string) {
   const mapping: Record<string, string> = {
     home: "workbench", knowledge: "knowledge", agents: "agents", prompts: "prompts",
-    agentRequests: "agent-requests", connections: "connections", modelGateway: "model-gateway",
+    agentRequests: "agent-requests", connections: "connections", skills: "skills", modelGateway: "model-gateway",
     users: "users", observability: "observability", audit: "audit",
   };
-  if ((target === "users" || target === "audit" || target === "observability" || target === "modelGateway") && !isAdmin.value) return;
+  if ((target === "users" || target === "audit" || target === "observability" || target === "modelGateway" || target === "skills") && !isAdmin.value) return;
   router.push({ name: mapping[target] || target });
 }
 

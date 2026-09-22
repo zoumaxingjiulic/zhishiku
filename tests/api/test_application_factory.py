@@ -55,7 +55,7 @@ def test_factory_registers_public_system_routes_and_complete_api_contract() -> N
     application = create_app(bootstrap=lambda: None)
     contract = route_contract(application.openapi())
 
-    assert len(contract) == 87
+    assert len(contract) == 92
     assert {route.path for route in application.routes}.issuperset({"/healthz", "/readyz"})
 
 

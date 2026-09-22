@@ -144,6 +144,36 @@
     "deprecated": false
   },
   {
+    "path": "/api/v1/assistant/skills",
+    "method": "GET",
+    "operation_id": "assistant_managed_skills",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/assistant/skills",
+    "method": "POST",
+    "operation_id": "assistant_create_skill",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/assistant/skills/{skill_id}",
+    "method": "DELETE",
+    "operation_id": "assistant_disable_skill",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/assistant/skills/{skill_id}",
+    "method": "GET",
+    "operation_id": "assistant_skill_detail",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/assistant/skills/{skill_id}",
+    "method": "PUT",
+    "operation_id": "assistant_update_skill",
+    "deprecated": false
+  },
+  {
     "path": "/api/v1/assistant/tasks/{task_id}",
     "method": "GET",
     "operation_id": "assistant_task",

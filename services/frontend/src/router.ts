@@ -12,11 +12,13 @@ import AuditPage from "./pages/AuditPage.vue";
 import ObservabilityPage from "./pages/ObservabilityPage.vue";
 import LoginRoute from "./pages/LoginRoute.vue";
 import StudioPage from './pages/StudioPage.vue';
+import SkillsPage from './pages/SkillsPage.vue';
 
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
     { path: '/studio', name: 'studio', component: StudioPage, meta: { title: '智能体工作室', subtitle: '编排、发布与质量评测', section: 'studio', admin: true, toast: true } },
+    { path: '/skills', name: 'skills', component: SkillsPage, meta: { title: '能力配置', subtitle: '管理声明式 Skill 与授权绑定', section: 'skills', admin: true, toast: true } },
     { path: "/", redirect: "/workbench" },
     { path: "/login", name: "login", component: LoginRoute, meta: { public: true, title: "登录", section: "login" } },
     { path: "/workbench", name: "workbench", component: DashboardPage, meta: { title: "工作台", subtitle: "企业知识服务运行概览", section: "workbench", navigate: true } },

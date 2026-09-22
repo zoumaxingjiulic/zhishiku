@@ -3,6 +3,8 @@
 import json
 from typing import Any
 
+from ...core.audit import write_audit
+
 
 def _parse_object(value: Any) -> dict[str, Any]:
     if isinstance(value, dict):
@@ -284,3 +286,115 @@ class AssistantRepository:
                 department_ids,
             )
         return self._scope_rows('skills', list(self.cursor.fetchall()))
+
+    def list_managed_skills(self, status: str | None = None) -> list[dict]:
+        where = " WHERE status=%s" if status else ""
+        parameters = (status,) if status else ()
+        self.cursor.execute(
+            "SELECT id,code,name,description,status,version,created_at,updated_at "
+            f"FROM assistant_skill{where} ORDER BY updated_at DESC,id DESC",
+            parameters,
+        )
+        return list(self.cursor.fetchall())
+
+    def get_managed_skill(self, skill_id: int, for_update: bool = False) -> dict | None:
+        lock = " FOR UPDATE" if for_update else ""
+        self.cursor.execute(
+            "SELECT id,code,name,description,instruction,input_schema_json,trigger_examples_json,"
+            "version,status,created_at,updated_at FROM assistant_skill WHERE id=%s" + lock,
+            (skill_id,),
+        )
+        row = self.cursor.fetchone()
+        if not row:
+            return None
+        result = dict(row)
+        result["input_schema"] = _parse_object(result.pop("input_schema_json", None))
+        raw_examples = result.pop("trigger_examples_json", None)
+        try:
+            examples = json.loads(raw_examples) if isinstance(raw_examples, str) else raw_examples
+        except json.JSONDecodeError:
+            examples = []
+        result["trigger_examples"] = examples if isinstance(examples, list) else []
+        for table, column, output in (
+            ("assistant_skill_department", "department_id", "department_ids"),
+            ("assistant_skill_knowledge_base", "knowledge_base_id", "knowledge_base_ids"),
+            ("assistant_skill_tool", "connector_tool_id", "tool_ids"),
+            ("assistant_skill_agent", "agent_id", "agent_ids"),
+        ):
+            self.cursor.execute(
+                f"SELECT {column} FROM {table} WHERE skill_id=%s ORDER BY {column}" + lock,
+                (skill_id,),
+            )
+            result[output] = [item[column] for item in self.cursor.fetchall()]
+        return result
+
+    def active_reference_ids(self, table: str, ids: list[int], for_update: bool = True) -> set[int]:
+        if not ids:
+            return set()
+        definitions = {
+            "department": ("department d", "d.status=1"),
+            "knowledge_base": ("knowledge_base k", "k.status='active'"),
+            "connector_tool": (
+                "connector_tool ct JOIN system_connector c ON c.id=ct.connector_id",
+                "ct.status='active' AND c.status='active' "
+                "AND JSON_EXTRACT(ct.annotations_json,'$.readOnlyHint')=TRUE",
+            ),
+            "agent": ("agent a", "a.status='active'"),
+        }
+        source, condition = definitions[table]
+        alias = {"department": "d", "knowledge_base": "k", "connector_tool": "ct", "agent": "a"}[table]
+        unique = list(dict.fromkeys(ids))
+        placeholders = ",".join(["%s"] * len(unique))
+        lock = " FOR UPDATE" if for_update else ""
+        self.cursor.execute(
+            f"SELECT {alias}.id FROM {source} WHERE {alias}.id IN ({placeholders}) AND {condition}{lock}",
+            unique,
+        )
+        return {row["id"] for row in self.cursor.fetchall()}
+
+    def insert_skill(self, payload: Any, user_id: int) -> int:
+        self.cursor.execute("SELECT id FROM assistant_skill WHERE code=%s FOR UPDATE", (payload.code,))
+        if self.cursor.fetchone():
+            return 0
+        self.cursor.execute(
+            "INSERT INTO assistant_skill(code,name,description,instruction,input_schema_json,"
+            "trigger_examples_json,version,status,created_by) VALUES(%s,%s,%s,%s,%s,%s,1,%s,%s)",
+            (
+                payload.code, payload.name, payload.description, payload.instruction,
+                json.dumps(payload.input_schema, ensure_ascii=False),
+                json.dumps(payload.trigger_examples, ensure_ascii=False), payload.status, user_id,
+            ),
+        )
+        return self.cursor.lastrowid
+
+    def update_skill(self, skill_id: int, expected_version: int, payload: Any, next_version: int) -> bool:
+        self.cursor.execute(
+            "UPDATE assistant_skill SET name=%s,description=%s,instruction=%s,input_schema_json=%s,"
+            "trigger_examples_json=%s,status=%s,version=%s WHERE id=%s AND version=%s",
+            (
+                payload.name, payload.description, payload.instruction,
+                json.dumps(payload.input_schema, ensure_ascii=False),
+                json.dumps(payload.trigger_examples, ensure_ascii=False), payload.status,
+                next_version, skill_id, expected_version,
+            ),
+        )
+        return self.cursor.rowcount == 1
+
+    def replace_skill_bindings(self, skill_id: int, table: str, column: str, values: list[int]) -> None:
+        allowed = {
+            ("assistant_skill_department", "department_id"),
+            ("assistant_skill_knowledge_base", "knowledge_base_id"),
+            ("assistant_skill_tool", "connector_tool_id"),
+            ("assistant_skill_agent", "agent_id"),
+        }
+        if (table, column) not in allowed:
+            raise ValueError("unknown skill binding")
+        self.cursor.execute(f"DELETE FROM {table} WHERE skill_id=%s", (skill_id,))
+        for value in dict.fromkeys(values):
+            self.cursor.execute(
+                f"INSERT INTO {table}(skill_id,{column}) VALUES(%s,%s)", (skill_id, value)
+            )
+
+    def write_audit(self, user_id: int, action: str, resource_type: str,
+                    resource_id: int | None, detail=None, ip_address=None) -> None:
+        write_audit(self.cursor, user_id, action, resource_type, resource_id, detail, ip_address)
