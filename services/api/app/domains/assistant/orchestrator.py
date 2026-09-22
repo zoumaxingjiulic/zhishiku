@@ -26,6 +26,7 @@ from .intent import IntentRouter
 from .repository import AssistantRepository
 from .schemas import CapabilitySelection
 from .parameters import skill_parameters
+from . import provenance
 
 
 _intent_slots = threading.BoundedSemaphore(4)
@@ -153,6 +154,7 @@ class AssistantOrchestrator:
             if hasattr(self.adapters, 'evidence'):
                 self.adapters.evidence['history_citations'] = context.get('history_citations', [])
                 self.adapters.evidence['history_tool_ids'] = context.get('history_tool_ids', [])
+                self.adapters.evidence['history_authority'] = context.get('source_authority', {'version': 1})
         decision = self.router.route(question, snapshot, model=self.model, history=context['history'])
         self.repository.persist_decision(task, user, snapshot, decision)
         self.repository.validate(user, snapshot, decision.selection)
@@ -215,8 +217,12 @@ class AssistantPersistence:
             if not repository.get_owned_session(task['session_id'], task['agent_id'], user['id']):
                 raise NotFoundError('会话不存在')
             rows = repository.list_messages(task['session_id'], task['user_message_id'], 20)
-            history = filter_authorized_history(repository, user, snapshot, rows)
-            previous = AssistantRepository(uow.cursor).previous_result(task)
+            assistant_repository = AssistantRepository(uow.cursor)
+            authorities = assistant_repository.message_authorities(task, [r['id'] for r in rows if r.get('id')])
+            for row in rows:
+                row['source_authority'] = authorities.get(row.get('id'))
+            history = filter_authorized_history(repository, user, snapshot, rows, assistant_repository)
+            previous = assistant_repository.previous_result(task)
             pending = previous.get('clarification')
             if pending and pending.get('skill_id') not in {s.id for s in snapshot.skills}:
                 pending = None
@@ -226,6 +232,7 @@ class AssistantPersistence:
                 for m in history for e in m.get('tool_calls', [])
             }
             return {'history': history, 'clarification': pending,
+                    'source_authority': provenance.merge(*[m['source_authority'] for m in history if m.get('source_authority')]),
                     'history_citations': [c for m in history for c in m.get('citations', [])],
                     'history_tool_ids': sorted(i for i in history_tool_ids if i)}
 
@@ -256,6 +263,9 @@ class AssistantPersistence:
             catalog = CapabilityCatalog(assistant_repository)
             catalog.validate_selection(fresh, snapshot, selection)
             evidence = result.get('_authority', {})
+            source = provenance.from_execution(task['agent_id'], selection, evidence, result)
+            catalog.validate_selection(fresh, snapshot, CapabilitySelection(**source['selection']))
+            provenance.validate_dependencies(source, repository, assistant_repository, locked=True)
             catalog.validate_selection(fresh, snapshot, CapabilitySelection(**evidence.get('selection', {})))
             for agent_id, expected in evidence.get('agents', {}).items():
                 actual = assistant_repository.locked_agents.get(int(agent_id))
@@ -283,7 +293,8 @@ class AssistantPersistence:
             current = catalog.for_user(fresh)
             allowed_kbs = sorted({c.id for c in snapshot.knowledge_bases} & {c.id for c in current.knowledge_bases})
             departments = [] if fresh.get('is_platform_admin') else fresh.get('department_ids', [])
-            for citation in [*result['citations'], *evidence.get('history_citations', [])]:
+            for citation in [*result['citations'], *evidence.get('history_citations', []),
+                             *[{'document_id': i} for i in source['document_ids']]]:
                 if not repository.citation_document(citation['document_id'], allowed_kbs, departments, for_update=True):
                     raise AuthorizationError('引用资料授权已变更')
             tool_ids = sorted({e['connector_tool_id'] for e in result['tool_calls'] if e.get('connector_tool_id')})
@@ -307,7 +318,8 @@ class AssistantPersistence:
                     or current_task.get('agent_id') != task['agent_id'] or current_task.get('session_id') != task['session_id']):
                 raise TaskCancelled()
             result.pop('_authority', None)
-            repository.insert_message(task['session_id'], 'assistant', result['answer'],
+            result['source_authority'] = source
+            result['assistant_message_id'] = repository.insert_message(task['session_id'], 'assistant', result['answer'],
                                       citations_json=json.dumps(result['citations'], ensure_ascii=False),
                                       tool_calls_json=json.dumps(result['tool_calls'], ensure_ascii=False))
             repository.save_task_result(task['id'], result)
@@ -321,7 +333,7 @@ class AssistantPersistence:
             uow.commit()
 
 
-def filter_authorized_history(repository, user, snapshot, rows):
+def filter_authorized_history(repository, user, snapshot, rows, assistant_repository=None):
     """Apply the existing chat citation/tool-history rules to assistant history."""
     allowed_kbs = [r.id for r in snapshot.knowledge_bases]
     allowed_tools = {r.id for r in snapshot.tools}
@@ -333,6 +345,16 @@ def filter_authorized_history(repository, user, snapshot, rows):
             continue
         if row['role'] == 'assistant':
             try:
+                # Legacy answers lack complete transitive provenance. Do not feed
+                # them to another model; their user messages remain available.
+                source = provenance.normalize(row.get('source_authority'))
+                for field, kind in (('knowledge_base_ids', 'knowledge_bases'), ('tool_ids', 'tools'),
+                                    ('agent_ids', 'agents'), ('skill_ids', 'skills')):
+                    if not set(source['selection'][field]).issubset({r.id for r in getattr(snapshot, kind)}):
+                        raise AuthorizationError('历史来源授权已撤销')
+                provenance.validate_dependencies(source, repository, assistant_repository)
+                if any(not repository.citation_document(i, allowed_kbs, departments) for i in source['document_ids']):
+                    continue
                 if any(not repository.citation_document(c['document_id'], allowed_kbs, departments)
                        for c in parse_json(row.get('citations_json'), [])):
                     continue
@@ -340,9 +362,10 @@ def filter_authorized_history(repository, user, snapshot, rows):
                         else f"{e.get('connector')}.{e.get('tool')}" not in allowed_names)
                        for e in parse_json(row.get('tool_calls_json'), [])):
                     continue
-            except (KeyError, TypeError):
+            except (KeyError, TypeError, ValueError, AuthorizationError):
                 continue
         history.append({'role': row['role'], 'content': row['content'][:4000],
+                        'source_authority': row.get('source_authority'),
                         'citations': parse_json(row.get('citations_json'), []),
                         'tool_calls': parse_json(row.get('tool_calls_json'), [])})
     return history
@@ -373,6 +396,20 @@ class ProductionAdapters:
                 'tool_calls': self.budget.tool_calls, 'delegations': self.budget.delegations},
                 'timings': {'total_ms': round((time.monotonic() - self.budget.started) * 1000, 1)}}
 
+    def _recheck_delegation(self, user, agent, tools):
+        user = self._scope(user, CapabilitySelection(agent_ids=[agent['id']],
+                           knowledge_base_ids=agent['knowledge_base_ids'], tool_ids=[t['id'] for t in tools or []]))
+        with UnitOfWork() as uow:
+            current = AgentService(uow).authorize_agent(user, agent['id'])
+        if (current.get('config_version') != agent.get('config_version')
+                or set(current['knowledge_base_ids']) != set(agent['knowledge_base_ids'])):
+            raise AuthorizationError('专业智能体配置已变更')
+        bindings = {t['id']: t for t in bound_agent_tools(agent['id'])}
+        if any(t['id'] not in bindings or bindings[t['id']].get('_binding_version') != t.get('_binding_version')
+               for t in tools or []):
+            raise AuthorizationError('专业智能体工具绑定已变更')
+        return user
+
     def _generate(self, question, user, *, prompt=None, units=None, tools=None, executor=None, agent=None):
         self.store.check_active(self.task)
         self.budget.remaining()
@@ -381,9 +418,12 @@ class ProductionAdapters:
                 agent = AgentRepository(uow.cursor).get_agent(self.task['agent_id'])
             if not agent or agent.get('code') != 'ENTERPRISE_ASSISTANT':
                 raise NotFoundError('企业总助手不存在')
+        elif agent['id'] != self.task['agent_id']:
+            user = self._recheck_delegation(user, agent, tools)
         self.evidence['agents'][agent['id']] = {
             'config_version': agent.get('config_version'),
             'tool_ids': [t['id'] for t in tools or []] if agent['id'] != self.task['agent_id'] else [],
+            'knowledge_base_ids': list(agent.get('knowledge_base_ids', [])),
         }
         prompt = (agent.get('system_prompt') or '') + ('\n' + prompt if prompt else '')
         if tools:
@@ -395,6 +435,8 @@ class ProductionAdapters:
             self.budget.tool()
             self.store.check_active(self.task)
             self._scope(user, CapabilitySelection(tool_ids=[tool['id']]))
+            if agent['id'] != self.task['agent_id']:
+                self._recheck_delegation(user, agent, tools)
             started = time.monotonic()
             audit = {'kind': 'tool', 'connector_tool_id': tool['id'], 'connector': tool.get('connector_code'),
                      'tool': tool.get('tool_name'), 'called_at': datetime.now(timezone.utc).isoformat(),

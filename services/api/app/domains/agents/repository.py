@@ -256,7 +256,7 @@ class AgentRepository:
     def list_messages(self, session_id: str, before_id: int | None = None, limit: int | None = None) -> list[dict]:
         if before_id is not None and limit is not None:
             self.cursor.execute(
-                "SELECT role,content,citations_json,tool_calls_json FROM "
+                "SELECT id,role,content,citations_json,tool_calls_json FROM "
                 "(SELECT id,role,content,citations_json,tool_calls_json FROM chat_message "
                 "WHERE session_id=%s AND id<%s AND role IN ('user','assistant') ORDER BY id DESC LIMIT %s) recent ORDER BY id",
                 (session_id, before_id, limit),

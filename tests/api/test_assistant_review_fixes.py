@@ -188,13 +188,16 @@ def test_history_drops_revoked_sources_and_never_includes_current_question(monke
             {'role': 'assistant', 'content': 'revoked document', 'citations_json': '[{"document_id":2}]'},
             {'role': 'assistant', 'content': 'revoked tool', 'tool_calls_json': '[{"connector_tool_id":12}]'},
             {'role': 'assistant', 'content': '请补充组织'}]
+    for index, row in enumerate(rows, 1):
+        row['id'] = index
     seen = []
     repository = SimpleNamespace(get_owned_session=lambda *a: {'id': 's1'},
         list_messages=lambda sid, before, limit: seen.append(before) or rows,
         citation_document=lambda *a: None)
     monkeypatch.setattr(runtime, 'UnitOfWork', lambda: nullcontext(SimpleNamespace(cursor=None)))
     monkeypatch.setattr(runtime, 'AgentRepository', lambda c: repository)
-    monkeypatch.setattr(runtime, 'AssistantRepository', lambda c: SimpleNamespace(previous_result=lambda task: {}))
+    monkeypatch.setattr(runtime, 'AssistantRepository', lambda c: SimpleNamespace(previous_result=lambda task: {},
+        message_authorities=lambda *a: {i: {'version': 1} for i in range(1, 5)}))
     context = runtime.AssistantPersistence().context(dict(TASK, user_message_id=4), USER, Store().snapshot)
     assert seen == [4]
     assert [m['content'] for m in context['history']] == ['old question', '请补充组织']
@@ -341,6 +344,7 @@ def test_final_publication_rejects_removed_specialist_binding_even_if_tool_remai
         insert_message=lambda *a, **k: events.append('message'),
         save_task_result=lambda *a: None, mark_task_succeeded=lambda *a: None,
         update_run_succeeded=lambda *a: None, update_session_title=lambda *a: None, write_audit=lambda *a: None)
+    repository.agent_knowledge_base_ids = lambda aid: []
     monkeypatch.setattr(runtime, 'UnitOfWork', Uow)
     monkeypatch.setattr(runtime, 'AssistantRepository', lambda c: locked)
     monkeypatch.setattr(runtime, 'AgentRepository', lambda c: repository)
