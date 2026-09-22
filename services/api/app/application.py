@@ -20,6 +20,7 @@ from .core.errors import ApplicationError
 from .core.redaction import sanitize_validation_errors
 from .core.security import hash_password
 from .domains.agents.router import router as agents_router
+from .domains.assistant.router import router as assistant_router
 from .domains.auth.router import router as auth_router
 from .domains.connectors.router import router as connectors_router
 from .domains.documents.router import router as documents_router
@@ -34,13 +35,14 @@ from .readiness import check_readiness
 
 
 log = logging.getLogger("kb-api")
-API_VERSION = "1.1.0"
+API_VERSION = "1.2.0"
 ROUTERS = (
     auth_router,
     users_router,
     knowledge_router,
     documents_router,
     agents_router,
+    assistant_router,
     prompts_router,
     requests_router,
     model_gateway_router,

@@ -20,6 +20,47 @@ class AssistantRepository:
     def __init__(self, cursor: Any) -> None:
         self.cursor = cursor
 
+    def save_decision(self, task: dict, user: dict, snapshot, decision) -> None:
+        self.cursor.execute(
+            "INSERT INTO assistant_intent_decision(task_id,user_id,intent_type,confidence,capability_snapshot,decision_json) "
+            "VALUES(%s,%s,%s,%s,%s,%s)",
+            (task['id'], user['id'], decision.intent_type, decision.confidence,
+             snapshot.model_dump_json(), decision.model_dump_json()),
+        )
+
+    def tool_rows(self, ids: list[int], *, for_update=False) -> list[dict]:
+        if not ids:
+            return []
+        from ..agents.repository import parse_json
+        placeholders = ','.join(['%s'] * len(ids))
+        self.cursor.execute(
+            "SELECT ct.id,ct.tool_name,ct.title,ct.description,ct.input_schema_json,ct.output_schema_json,"
+            "ct.annotations_json,c.id connector_id,c.code connector_code,c.name connector_name,"
+            "c.base_url,c.credential_ciphertext,c.protocol_version,ct.status tool_status,c.status connector_status FROM connector_tool ct "
+            "JOIN system_connector c ON c.id=ct.connector_id "
+            f"WHERE ct.id IN ({placeholders}) AND ct.status='active' AND c.status='active' "
+            "ORDER BY ct.id" + (' FOR UPDATE' if for_update else ''), ids,
+        )
+        rows = list(self.cursor.fetchall())
+        for row in rows:
+            for name in ('input_schema', 'output_schema', 'annotations'):
+                row[name] = parse_json(row.pop(name + '_json', None), {})
+        return rows
+
+    def skill(self, skill_id: int) -> dict | None:
+        self.cursor.execute("SELECT id,instruction,input_schema_json FROM assistant_skill WHERE id=%s AND status='active'", (skill_id,))
+        row = self.cursor.fetchone()
+        if not row:
+            return None
+        for table, column, key in (
+            ('assistant_skill_knowledge_base', 'knowledge_base_id', 'knowledge_base_ids'),
+            ('assistant_skill_tool', 'connector_tool_id', 'tool_ids'),
+            ('assistant_skill_agent', 'agent_id', 'agent_ids'),
+        ):
+            self.cursor.execute(f"SELECT {column} FROM {table} WHERE skill_id=%s ORDER BY {column}", (skill_id,))
+            row[key] = [item[column] for item in self.cursor.fetchall()]
+        return row
+
     @staticmethod
     def _department_ids(user: dict[str, Any]) -> list[int]:
         return list(dict.fromkeys(int(item) for item in user.get("department_ids") or []))

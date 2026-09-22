@@ -102,6 +102,60 @@
     "deprecated": false
   },
   {
+    "path": "/api/v1/assistant/capabilities",
+    "method": "GET",
+    "operation_id": "assistant_capabilities",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/assistant/sessions",
+    "method": "GET",
+    "operation_id": "assistant_sessions",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/assistant/sessions",
+    "method": "POST",
+    "operation_id": "assistant_create_session",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/assistant/sessions/{session_id}",
+    "method": "DELETE",
+    "operation_id": "assistant_delete_session",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/assistant/sessions/{session_id}",
+    "method": "PATCH",
+    "operation_id": "assistant_rename_session",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/assistant/sessions/{session_id}/messages",
+    "method": "GET",
+    "operation_id": "assistant_messages",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/assistant/sessions/{session_id}/messages",
+    "method": "POST",
+    "operation_id": "assistant_submit_message",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/assistant/tasks/{task_id}",
+    "method": "GET",
+    "operation_id": "assistant_task",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/assistant/tasks/{task_id}/cancel",
+    "method": "POST",
+    "operation_id": "assistant_cancel_task",
+    "deprecated": false
+  },
+  {
     "path": "/api/v1/audit-logs",
     "method": "GET",
     "operation_id": "list_audit_logs_api_v1_audit_logs_get",

@@ -42,7 +42,7 @@ def test_factory_defers_bootstrap_until_lifespan_and_applies_dependency_override
         assert client.get("/healthz").json() == {
             "status": "ok",
             "service": "knowledge-base-api",
-            "version": "1.1.0",
+            "version": "1.2.0",
         }
         assert client.get("/api/v1/auth/me").json()["id"] == 42
 
@@ -55,7 +55,7 @@ def test_factory_registers_public_system_routes_and_complete_api_contract() -> N
     application = create_app(bootstrap=lambda: None)
     contract = route_contract(application.openapi())
 
-    assert len(contract) == 78
+    assert len(contract) == 87
     assert {route.path for route in application.routes}.issuperset({"/healthz", "/readyz"})
 
 

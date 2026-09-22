@@ -229,6 +229,9 @@ class AgentRepository:
         return self.cursor.fetchone()
 
     def get_session(self, session_id: str, agent_id: int, user_id: int, for_update: bool = False) -> dict | None:
+        return self.get_owned_session(session_id, agent_id, user_id, for_update=for_update)
+
+    def get_owned_session(self, session_id: str, agent_id: int, user_id: int, *, for_update: bool = False) -> dict | None:
         lock = " FOR UPDATE" if for_update else ""
         self.cursor.execute(
             "SELECT s.id,s.title,s.agent_id,s.user_id,s.status,"
@@ -242,6 +245,9 @@ class AgentRepository:
         return self.cursor.fetchone()
 
     def create_session(self, session_id: str, agent_id: int, user_id: int, title: str = "新对话") -> None:
+        self.create_owned_session(session_id, agent_id, user_id, title)
+
+    def create_owned_session(self, session_id: str, agent_id: int, user_id: int, title: str = "新对话") -> None:
         self.cursor.execute(
             "INSERT INTO chat_session(id,agent_id,user_id,title) VALUES(%s,%s,%s,%s)",
             (session_id, agent_id, user_id, title),
@@ -300,11 +306,27 @@ class AgentRepository:
 
     def insert_task(self, task_id: str, session_id: str, agent_id: int, user_id: int,
                     message_id: int, request_key: str, request_json: str) -> None:
+        self.enqueue_chat_task(task_id=task_id, session_id=session_id, agent_id=agent_id, user_id=user_id,
+                               user_message_id=message_id, request_key=request_key, request=parse_json(request_json, {}))
+
+    def enqueue_chat_task(self, *, task_id: str, session_id: str, agent_id: int, user_id: int,
+                          user_message_id: int, request_key: str, request: dict) -> dict:
+        if not self.get_owned_session(session_id, agent_id, user_id, for_update=True):
+            from ...core.errors import NotFoundError
+            raise NotFoundError("对话不存在")
         self.cursor.execute(
             "INSERT INTO chat_task(id,session_id,agent_id,user_id,user_message_id,request_key,request_json) "
             "VALUES(%s,%s,%s,%s,%s,%s,%s)",
-            (task_id, session_id, agent_id, user_id, message_id, request_key, request_json),
+            (task_id, session_id, agent_id, user_id, user_message_id, request_key, json.dumps(request, ensure_ascii=False)),
         )
+        return {"id": task_id, "session_id": session_id, "status": "queued"}
+
+    def assistant_agent(self) -> dict | None:
+        self.cursor.execute("SELECT * FROM agent WHERE code='ENTERPRISE_ASSISTANT' AND status='active'")
+        return self.cursor.fetchone()
+
+    def rename_session(self, session_id: str, title: str) -> None:
+        self.cursor.execute("UPDATE chat_session SET title=%s,updated_at=NOW(3) WHERE id=%s", (title, session_id))
 
     def update_session_title(self, session_id: str, title: str) -> None:
         self.cursor.execute(

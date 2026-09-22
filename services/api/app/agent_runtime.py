@@ -64,9 +64,9 @@ def openai_tools(bound_tools: list[dict]) -> tuple[list[dict], dict[str, dict]]:
     return definitions, mapping
 
 
-def _chat(base_url: str, api_key: str, body: dict) -> dict:
+def _chat(base_url: str, api_key: str, body: dict, *, timeout_seconds: float = 120) -> dict:
     policy = OutboundPolicy(settings.model_allowed_hosts, settings.model_allowed_cidrs)
-    deadline = time.monotonic() + 120
+    deadline = time.monotonic() + timeout_seconds
     try:
         policy.validate(base_url, deadline=deadline)
         headers = {"Content-Type": "application/json"}
@@ -80,9 +80,9 @@ def _chat(base_url: str, api_key: str, body: dict) -> dict:
         raise ModelRuntimeError("模型服务调用失败") from None
 
 
-def _stream_chat(base_url, api_key, body, emit):
+def _stream_chat(base_url, api_key, body, emit, *, timeout_seconds=120):
     policy = OutboundPolicy(settings.model_allowed_hosts, settings.model_allowed_cidrs)
-    deadline = time.monotonic() + 120
+    deadline = time.monotonic() + timeout_seconds
     headers = {'Authorization': f'Bearer {api_key}'} if api_key else {}
     result = {'content': '', 'tool_calls': []}
     calls = {}
@@ -134,6 +134,7 @@ def generate_agent_answer(
     emit: Callable | None = None,
     max_tool_rounds: int = 3,
     max_tool_calls: int = 6,
+    budget=None,
 ) -> tuple[str, str, list[dict], list[dict]]:
     context, selected_units = prepare_context(units, context_max_chars)
     tools, mapping = openai_tools(bound_tools)
@@ -174,10 +175,15 @@ def generate_agent_answer(
         if round_index == max_tool_rounds or used >= max_tool_calls:
             current.pop('tools', None)
             current.pop('tool_choice', None)
-        reply = redact_values(
-            _stream_chat(base_url, api_key, current, emit) if emit else _chat(base_url, api_key, current),
-            [api_key],
-        )
+        if budget is not None:
+            current['max_tokens'] = budget.model(current)
+            remaining = budget.remaining()
+            raw_reply = (_stream_chat(base_url, api_key, current, emit, timeout_seconds=remaining)
+                         if emit else _chat(base_url, api_key, current, timeout_seconds=remaining))
+            budget.remaining()
+        else:
+            raw_reply = _stream_chat(base_url, api_key, current, emit) if emit else _chat(base_url, api_key, current)
+        reply = redact_values(raw_reply, [api_key])
         requested = reply.get('tool_calls') or []
         if not requested:
             return reply.get('content') or '模型未返回有效内容。', 'llm_tools' if events else 'llm', events, selected_units

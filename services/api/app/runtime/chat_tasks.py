@@ -67,10 +67,44 @@ def run_chat_task(task: dict) -> None:
         active_task.reset(token)
 
 
+def run_assistant_task(task: dict) -> None:
+    from ..domains.assistant.orchestrator import AssistantOrchestrator, AssistantPersistence, ProductionAdapters, ProductionIntentModel
+    token = active_task.set(task)
+    try:
+        if task.get('cancel_requested'):
+            raise TaskCancelled()
+        store = AssistantPersistence()
+        AssistantOrchestrator(store, model=ProductionIntentModel(task['agent_id']),
+                              adapters=ProductionAdapters(task, store, progress)).run(task)
+    except Exception as exc:
+        state = 'cancelled' if isinstance(exc, TaskCancelled) else 'failed'
+        with UnitOfWork() as uow:
+            repository = AgentRepository(uow.cursor)
+            repository.mark_task_failed(task['id'], state, type(exc).__name__)
+            repository.write_audit(task['user_id'], 'assistant.task_' + state, 'chat_task', task['id'],
+                                   {'error_type': type(exc).__name__}, 'background')
+            repository.update_run_failed(task['id'], {}, {}, [], type(exc).__name__)
+            uow.commit()
+        log.error('assistant task failed task_id=%s error_type=%s', task['id'], type(exc).__name__)
+    finally:
+        active_task.reset(token)
+
+
+def dispatch_chat_task(task: dict) -> None:
+    if task.get('agent_code') == 'ENTERPRISE_ASSISTANT':
+        run_assistant_task(task)
+    else:
+        run_chat_task(task)
+
+
 def claim(table: str) -> dict | None:
     with UnitOfWork() as uow:
-        row = AgentRepository(uow.cursor).claim_task(table)
+        repository = AgentRepository(uow.cursor)
+        row = repository.claim_task(table)
         if row:
+            if table == 'chat_task':
+                agent = repository.get_agent(row['agent_id'])
+                row['agent_code'] = agent['code'] if agent else None
             uow.commit()
         return row
 
@@ -95,7 +129,7 @@ def main() -> None:
     from .workflows import run_evaluation, run_workflow
 
     recover_interrupted_runs()
-    handlers = {"chat_task": run_chat_task, "workflow_run": run_workflow, "evaluation_run": run_evaluation}
+    handlers = {"chat_task": dispatch_chat_task, "workflow_run": run_workflow, "evaluation_run": run_evaluation}
     with ThreadPoolExecutor(max_workers=4) as pool:
         running = set()
         while True:
