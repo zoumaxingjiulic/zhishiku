@@ -2,14 +2,20 @@
 import { onMounted, reactive, ref } from "vue";
 import { api } from "../api";
 import AppModal from "../components/AppModal.vue";
+import BaseButton from "../components/base/BaseButton.vue";
+import BaseCard from "../components/base/BaseCard.vue";
+import BaseEmptyState from "../components/base/BaseEmptyState.vue";
+import BaseSkeleton from "../components/base/BaseSkeleton.vue";
 
 const emit = defineEmits<{ toast: [message: string, bad?: boolean] }>();
 const items = ref<any[]>([]);
 const modal = ref(false);
+const loading = ref(true);
+const loadError = ref("");
 const editingId = ref<number | null>(null);
 const form = reactive({ name: "", description: "", content: "", variablesText: "" });
 
-async function load() { items.value = await api<any[]>("/api/v1/prompt-templates"); }
+async function load() { loading.value=true;loadError.value="";try{items.value = await api<any[]>("/api/v1/prompt-templates");}catch(error:any){loadError.value=error?.message||"提示词模板加载失败";emit("toast",loadError.value,true);}finally{loading.value=false;} }
 function open(item?: any) {
   editingId.value = item?.id || null;
   Object.assign(form, {
@@ -32,15 +38,18 @@ async function remove(item: any) {
   catch (error: any) { emit("toast", error.message, true); }
 }
 async function copy(item: any) {
-  await navigator.clipboard.writeText(item.content);
-  emit("toast", "提示词已复制");
+  try { if (!navigator.clipboard?.writeText) throw new Error("Clipboard unavailable"); await navigator.clipboard.writeText(item.content); emit("toast", "提示词已复制"); }
+  catch { emit("toast", "无法自动复制，请手工选中模板内容并复制", true); }
 }
 onMounted(load);
 </script>
 
 <template>
-  <div class="section-head"><div><h2>我的提示词模板</h2><p>模板仅自己可见，适合沉淀高频任务和标准提问方式</p></div><button class="primary" @click="open()">＋ 新建模板</button></div>
-  <div v-if="items.length" class="template-grid">
+  <div class="page-header"><div><h2>我的提示词模板</h2><p>模板仅自己可见，适合沉淀高频任务和标准提问方式</p></div></div>
+  <div class="page-toolbar"><button class="primary" @click="open()">＋ 新建模板</button></div>
+  <BaseCard v-if="loading" class="content-card page-loading"><BaseSkeleton height="160px" /><BaseSkeleton height="160px" /></BaseCard>
+  <BaseCard v-else-if="loadError" class="content-card"><BaseEmptyState title="提示词模板加载失败" :description="loadError" role="alert"><template #action><BaseButton variant="secondary" @click="load">重试</BaseButton></template></BaseEmptyState></BaseCard>
+  <div v-else-if="items.length" class="template-grid">
     <article v-for="item in items" :key="item.id" class="card template-card">
       <div class="card-header"><div><span class="eyebrow">MY PROMPT</span><h2>{{ item.name }}</h2></div><span class="badge">{{ item.variables.length }} 个变量</span></div>
       <p class="muted">{{ item.description || "未填写说明" }}</p>
@@ -49,7 +58,7 @@ onMounted(load);
       <div class="actions"><button class="primary" @click="copy(item)">复制使用</button><button class="secondary" @click="open(item)">编辑</button><button class="danger" @click="remove(item)">删除</button></div>
     </article>
   </div>
-  <div v-else class="card empty"><strong>还没有提示词模板</strong>把反复使用的提示词保存下来，下次一键复制。</div>
+  <BaseCard v-else class="content-card"><BaseEmptyState title="还没有提示词模板" description="把反复使用的提示词保存下来，下次一键复制。" /></BaseCard>
 
   <AppModal v-if="modal" :title="editingId ? '编辑提示词模板' : '新建提示词模板'" @close="modal=false">
     <form class="form-stack" @submit.prevent="save">

@@ -82,4 +82,25 @@ describe("UsersPage temporary password notice", () => {
     expect(await screen.findByText("SECOND-TEMP-PASSWORD")).toBeInTheDocument();
     expect(screen.queryByText("FIRST-TEMP-PASSWORD")).not.toBeInTheDocument();
   });
+
+  it("keeps the password selectable and explains manual copying when Clipboard is unavailable", async () => {
+    render(UsersPage);
+    await screen.findByText(existingUser.display_name);
+    await fireEvent.click(screen.getByRole("button", { name: "重置密码" }));
+
+    const password = await screen.findByText("SECOND-TEMP-PASSWORD");
+    expect(password).toHaveAttribute("tabindex", "0");
+    await fireEvent.click(screen.getByRole("button", { name: "复制密码" }));
+
+    expect(await screen.findByRole("status")).toHaveTextContent("请手工选中临时密码并复制");
+  });
+
+  it("shows a recoverable error instead of an empty user table", async () => {
+    apiMock.mockRejectedValueOnce(new Error("用户目录加载失败"));
+    render(UsersPage);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("用户目录加载失败");
+    expect(screen.queryByText("暂无账号")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
+  });
 });

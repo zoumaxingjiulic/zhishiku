@@ -128,6 +128,35 @@
 .vue-modal:focus { outline: none; }
 .vue-modal:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 3px; }
 .icon-button:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+.page-header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: var(--space-4);
+  margin-bottom: var(--space-4);
+}
+.page-header h2 { margin: 0; font-size: 1.25rem; }
+.page-header p { margin: var(--space-1) 0 0; color: var(--color-text-muted); font-size: .8125rem; }
+.page-toolbar {
+  min-height: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+  margin-bottom: var(--space-4);
+}
+.content-card { margin-bottom: var(--space-4); }
+.page-loading { display: grid; gap: var(--space-3); padding: var(--space-5); }
+.enterprise-card-grid { grid-template-columns: repeat(auto-fill, minmax(240px, 1fr)); }
+.no-wrap, .table-actions, .table-actions > * { white-space: nowrap; }
+.table-actions { flex-wrap: nowrap; }
+.knowledge-selector { order: -1; }
+.copy-hint { margin: 0; color: var(--color-warning); font-size: .8125rem; }
+.password-once code:focus-visible { outline: 3px solid var(--color-focus); outline-offset: 2px; }
+.content-card > .table-wrap { border: 0; border-radius: inherit; }
+.table-wrap { overscroll-behavior-inline: contain; }
+.table-wrap th:last-child, .table-wrap td:last-child { white-space: nowrap; }
 .button-link {
   display: inline-flex;
   align-items: center;
@@ -193,6 +222,9 @@
 }
 
 @media (max-width: 640px) {
+  .page-header { flex-direction: column; }
+  .page-toolbar { justify-content: stretch; }
+  .page-toolbar > button { width: 100%; }
   .topbar { min-height: 96px; gap: var(--space-3); }
   .topbar .user-area { grid-column: 2 / -1; }
 }

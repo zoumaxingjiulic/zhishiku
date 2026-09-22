@@ -2,6 +2,10 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { api } from "../api";
 import AppModal from "../components/AppModal.vue";
+import BaseButton from "../components/base/BaseButton.vue";
+import BaseCard from "../components/base/BaseCard.vue";
+import BaseEmptyState from "../components/base/BaseEmptyState.vue";
+import BaseSkeleton from "../components/base/BaseSkeleton.vue";
 import { formatDate } from "../utils";
 
 const props = defineProps<{ user?: any }>();
@@ -11,6 +15,8 @@ const bindingData = ref<any>({ agents: [], tools: [], bindings: {} });
 const selectedAgentId = ref<number | null>(null);
 const modal = ref(false);
 const busy = ref(false);
+const loading = ref(true);
+const loadError = ref("");
 const editingId = ref<number | null>(null);
 const form = reactive({ code: "", name: "", connector_type: "custom", description: "", base_url: "", bearer_token: "", protocol_version: "2025-06-18", status: "active" });
 const isAdmin = computed(() => Boolean(props.user?.is_platform_admin));
@@ -18,13 +24,16 @@ const selectedTools = computed(() => selectedAgentId.value ? (bindingData.value.
 
 onMounted(load);
 async function load() {
+  loading.value = true;
+  loadError.value = "";
   try {
     payload.value = await api<any>("/api/v1/connectors");
     if (isAdmin.value) {
       bindingData.value = await api<any>("/api/v1/connectors/admin/bindings");
       if (!selectedAgentId.value && bindingData.value.agents.length) selectedAgentId.value = bindingData.value.agents[0].id;
     }
-  } catch (error: any) { emit("toast", error.message, true); }
+  } catch (error: any) { loadError.value = error?.message || "系统连接加载失败"; emit("toast", loadError.value, true); }
+  finally { loading.value = false; }
 }
 function openCreate() {
   editingId.value = null;
@@ -72,7 +81,11 @@ async function saveBinding() {
 </script>
 
 <template>
-  <div class="section-head"><div><h2>MCP 企业系统连接</h2><p>以 Streamable HTTP 接入企业系统，只向智能体授权明确声明为只读的工具</p></div><button v-if="isAdmin" class="primary" @click="openCreate">＋ 新建连接</button></div>
+  <div class="page-header"><div><h2>MCP 企业系统连接</h2><p>以 Streamable HTTP 接入企业系统，只向智能体授权明确声明为只读的工具</p></div></div>
+  <div class="page-toolbar"><button v-if="isAdmin" class="primary" @click="openCreate">＋ 新建连接</button></div>
+  <BaseCard v-if="loading" class="content-card page-loading"><BaseSkeleton height="120px" /><BaseSkeleton height="120px" /></BaseCard>
+  <BaseCard v-else-if="loadError" class="content-card"><BaseEmptyState title="系统连接加载失败" :description="loadError" role="alert"><template #action><BaseButton variant="secondary" @click="load">重试</BaseButton></template></BaseEmptyState></BaseCard>
+  <template v-else>
   <div class="connector-grid live-connectors">
     <article v-for="item in payload.items" :key="item.id" class="card connector">
       <div class="connector-title"><span class="connector-logo">{{ item.connector_type.toUpperCase() }}</span><span class="badge" :class="item.last_error?'failed':item.status==='active'?'success':'pending'">{{ item.last_error?'连接异常':item.status==='active'?'已启用':'待配置' }}</span></div>
@@ -90,6 +103,7 @@ async function saveBinding() {
     <label class="binding-agent">选择智能体<select v-model="selectedAgentId"><option v-for="agent in bindingData.agents" :key="agent.id" :value="agent.id">{{ agent.name }}（{{ agent.code }}）</option></select></label>
     <div class="tool-binding-grid"><label v-for="tool in bindingData.tools" :key="tool.id" class="tool-binding" :class="{checked:isChecked(tool.id)}"><input type="checkbox" :checked="isChecked(tool.id)" @change="toggleTool(tool.id)"><span><strong>{{ tool.connector_name }} / {{ tool.title || tool.tool_name }}</strong><small>{{ tool.description }}</small></span><i class="badge success">只读</i></label><div v-if="!bindingData.tools.length" class="empty">请先连接 MCP 并发现工具</div></div>
   </section>
+  </template>
 
   <AppModal v-if="modal" :title="editingId?'编辑 MCP 连接':'新建 MCP 连接'" @close="modal=false">
     <form class="form-stack" @submit.prevent="save">

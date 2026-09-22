@@ -1,15 +1,21 @@
 <script setup lang="ts">
 import { onMounted, reactive, ref } from 'vue';
 import { api } from '../api';
+import BaseButton from "../components/base/BaseButton.vue";
+import BaseCard from "../components/base/BaseCard.vue";
+import BaseEmptyState from "../components/base/BaseEmptyState.vue";
+import BaseSkeleton from "../components/base/BaseSkeleton.vue";
 const emit = defineEmits<{toast:[message:string,bad?:boolean]}>();
 const agents=ref<any[]>([]),departments=ref<any[]>([]),kbs=ref<any[]>([]),models=ref<any[]>([]),tools=ref<any[]>([]);
 const tab=ref('config'),editing=ref<number|null>(null),busy=ref(false),revisions=ref<any[]>([]),cases=ref<any[]>([]),runs=ref<any[]>([]),preview=ref<any>(null);
+const loading=ref(true),loadError=ref('');
 const question=ref(''),labels=ref(''),empty=ref(false);
 const form=reactive<any>(defaults()),historicalWorkflow=ref(false);
 function defaults(){return {code:'',name:'',description:'',system_prompt:'你是企业业务助手。仅使用授权资料和工具回答，缺少依据时明确说明，不编造企业事实。',launch_mode:'chat',status:'active',llm_gateway_profile_id:null,department_ids:[],knowledge_base_ids:[],tool_ids:[],steps:[],config_version:1,retrieval:{mode:'hybrid',candidate_k:40,top_k:8,rerank_enabled:true,score_threshold:null,context_max_chars:12000,history_messages:12,query_rewrite:true,parent_context:true,max_tool_rounds:3,max_tool_calls:6}}}
 function open(a?:any){editing.value=a?.id||null;historicalWorkflow.value=!!a?.id&&a.launch_mode==='workflow';Object.assign(form,defaults(),a?JSON.parse(JSON.stringify(a)):{});tab.value='config';preview.value=null;revisions.value=[];cases.value=[];runs.value=[];}
-async function load(){[agents.value,departments.value,kbs.value,models.value]=await Promise.all([api<any[]>('/api/v1/studio/agents'),api<any[]>('/api/v1/departments'),api<any[]>('/api/v1/knowledge-bases'),api<any[]>('/api/v1/model-gateway/profiles')]);const c=await api<any>('/api/v1/connectors');tools.value=c.items.flatMap((x:any)=>x.tools.map((t:any)=>({...t,label:x.name+' / '+t.tool_name})));}
-onMounted(async()=>{await load();open(agents.value[0]);});
+async function load(){loading.value=true;loadError.value='';try{[agents.value,departments.value,kbs.value,models.value]=await Promise.all([api<any[]>('/api/v1/studio/agents'),api<any[]>('/api/v1/departments'),api<any[]>('/api/v1/knowledge-bases'),api<any[]>('/api/v1/model-gateway/profiles')]);const c=await api<any>('/api/v1/connectors');tools.value=c.items.flatMap((x:any)=>x.tools.map((t:any)=>({...t,label:x.name+' / '+t.tool_name})));}catch(e:any){loadError.value=e?.message||'工作室加载失败';emit('toast',loadError.value,true);}finally{loading.value=false;}}
+async function loadPage(){await load();if(!loadError.value)open(agents.value[0]);}
+onMounted(loadPage);
 async function guard(fn:()=>Promise<void>){busy.value=true;try{await fn();}catch(e:any){emit('toast',e.message,true);}finally{busy.value=false;}}
 async function save(){if(historicalWorkflow.value)return;await guard(async()=>{const saved=await api<any>('/api/v1/studio/agents'+(editing.value?'/'+editing.value:''),{method:editing.value?'PUT':'POST',body:JSON.stringify(form)});await load();open(saved);emit('toast','已发布配置版本 v'+saved.config_version);});}
 function addStep(){form.steps.push({key:'step_'+(Date.now().toString(36)),type:'retrieve',instruction:'',tool_id:null,arguments:{}});}
@@ -24,8 +30,11 @@ async function history(){await guard(async()=>{revisions.value=await api<any[]>(
 function restore(r:any){const version=form.config_version;Object.assign(form,JSON.parse(JSON.stringify(r.snapshot)),{config_version:version});tab.value='config';emit('toast','历史配置已载入编辑区，点击发布后生效');}
 </script>
 <template>
- <div class="section-head"><div><h2>智能体工作室</h2><p>配置、编排、检索调试与版本管理</p></div><button class="primary" @click="open()">＋ 新建智能体</button></div>
- <div class="studio-shell">
+ <div class="page-header"><div><h2>智能体工作室</h2><p>配置、检索调试与版本管理；历史工作流仅保留兼容读取</p></div></div>
+ <div class="page-toolbar"><button class="primary" @click="open()">＋ 新建智能体</button></div>
+ <BaseCard v-if="loading" class="content-card page-loading"><BaseSkeleton height="96px" /><BaseSkeleton height="280px" /></BaseCard>
+ <BaseCard v-else-if="loadError" class="content-card"><BaseEmptyState title="工作室加载失败" :description="loadError" role="alert"><template #action><BaseButton variant="secondary" @click="loadPage">重试</BaseButton></template></BaseEmptyState></BaseCard>
+ <div v-else class="studio-shell">
   <aside class="card studio-list"><button v-for="a in agents" :key="a.id" :class="{active:editing===a.id}" @click="open(a)"><strong>{{a.name}}</strong><small>{{a.launch_mode==='workflow'?'流程':'问答'}} · v{{a.config_version}} · {{a.status}}</small></button></aside>
   <section class="card form-stack"><div class="actions"><button class="secondary" @click="tab='config'">配置与编排</button><button v-if="editing" class="secondary" @click="quality">检索调试 / 评测</button><button v-if="editing" class="secondary" @click="history">历史版本</button></div>
    <form v-if="tab==='config'" class="form-stack" @submit.prevent="save">

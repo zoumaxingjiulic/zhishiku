@@ -2,19 +2,25 @@
 import { computed, onMounted, reactive, ref } from "vue";
 import { api } from "../api";
 import AppModal from "../components/AppModal.vue";
+import BaseButton from "../components/base/BaseButton.vue";
+import BaseCard from "../components/base/BaseCard.vue";
+import BaseEmptyState from "../components/base/BaseEmptyState.vue";
+import BaseSkeleton from "../components/base/BaseSkeleton.vue";
 
 const props = defineProps<{ user: any }>();
 const emit = defineEmits<{ toast: [message: string, bad?: boolean] }>();
 const items = ref<any[]>([]);
 const modal = ref(false);
 const reviewModal = ref(false);
+const loading = ref(true);
+const loadError = ref("");
 const selected = ref<any>(null);
 const isAdmin = computed(() => Boolean(props.user?.is_platform_admin));
 const form = reactive({ department_id: 0, title: "", business_problem: "", expected_outcome: "", dataSourcesText: "", frequency: "按需", urgency: "normal" });
 const review = reactive({ status: "reviewing", admin_comment: "" });
 const statusText: Record<string, string> = { submitted: "待评审", reviewing: "评审中", approved: "已批准", rejected: "未采纳", delivered: "已交付", closed: "已关闭" };
 
-async function load() { items.value = await api<any[]>("/api/v1/agent-requests"); }
+async function load() { loading.value=true;loadError.value="";try{items.value = await api<any[]>("/api/v1/agent-requests");}catch(error:any){loadError.value=error?.message||"智能体申请加载失败";emit("toast",loadError.value,true);}finally{loading.value=false;} }
 function openCreate() {
   Object.assign(form, { department_id: props.user?.departments?.[0]?.id || 0, title: "", business_problem: "", expected_outcome: "", dataSourcesText: "", frequency: "按需", urgency: "normal" });
   modal.value = true;
@@ -35,14 +41,17 @@ onMounted(load);
 </script>
 
 <template>
-  <div class="section-head"><div><h2>{{ isAdmin ? "智能体需求池" : "我的智能体申请" }}</h2><p>{{ isAdmin ? "查看全公司的智能体需求并推进评审交付" : "说明业务问题、数据来源和期望结果，平台管理员会统一评估" }}</p></div><button class="primary" @click="openCreate">＋ 提交申请</button></div>
-  <div v-if="items.length" class="request-list">
+  <div class="page-header"><div><h2>{{ isAdmin ? "智能体需求池" : "我的智能体申请" }}</h2><p>{{ isAdmin ? "查看全公司的智能体需求并推进评审交付" : "说明业务问题、数据来源和期望结果，平台管理员会统一评估" }}</p></div></div>
+  <div class="page-toolbar"><button class="primary" @click="openCreate">＋ 提交申请</button></div>
+  <BaseCard v-if="loading" class="content-card page-loading"><BaseSkeleton height="130px" /><BaseSkeleton height="130px" /></BaseCard>
+  <BaseCard v-else-if="loadError" class="content-card"><BaseEmptyState title="智能体申请加载失败" :description="loadError" role="alert"><template #action><BaseButton variant="secondary" @click="load">重试</BaseButton></template></BaseEmptyState></BaseCard>
+  <div v-else-if="items.length" class="request-list">
     <article v-for="item in items" :key="item.id" class="card request-card">
       <div class="request-main"><div class="request-title"><span class="request-no">{{ item.request_no }}</span><h2>{{ item.title }}</h2><span class="badge" :class="{ success: ['approved','delivered'].includes(item.status), pending: ['submitted','reviewing'].includes(item.status), failed: item.status === 'rejected' }">{{ statusText[item.status] || item.status }}</span></div><p>{{ item.business_problem }}</p><small>{{ item.department_name }} · {{ item.applicant_name }} · {{ new Date(item.created_at).toLocaleDateString() }}</small></div>
       <div class="request-result"><small>期望结果</small><p>{{ item.expected_outcome }}</p><div class="tag-row"><span v-for="source in item.data_sources" :key="source">{{ source }}</span></div><button v-if="isAdmin" class="secondary" @click="openReview(item)">评审申请</button></div>
     </article>
   </div>
-  <div v-else class="card empty"><strong>暂无智能体申请</strong>从一个明确、可衡量的业务问题开始。</div>
+  <BaseCard v-else class="content-card"><BaseEmptyState title="暂无智能体申请" description="从一个明确、可衡量的业务问题开始。" /></BaseCard>
 
   <AppModal v-if="modal" title="提交智能体申请" @close="modal=false">
     <form class="form-stack" @submit.prevent="submit">

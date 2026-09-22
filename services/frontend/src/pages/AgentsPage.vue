@@ -3,12 +3,18 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from "vue"
 import { useRoute, useRouter } from "vue-router";
 import { api } from "../api";
 import { formatPageRange, isActiveChatTaskStatus } from "../utils";
+import BaseButton from "../components/base/BaseButton.vue";
+import BaseCard from "../components/base/BaseCard.vue";
+import BaseEmptyState from "../components/base/BaseEmptyState.vue";
+import BaseSkeleton from "../components/base/BaseSkeleton.vue";
 import WorkflowRun from '../components/WorkflowRun.vue';
 
 const emit = defineEmits<{ toast: [message: string, bad?: boolean] }>();
 const route = useRoute();
 const router = useRouter();
 const agents = ref<any[]>([]);
+const loading = ref(true);
+const loadError = ref("");
 const selected = ref<any>(null);
 const question = ref("");
 const sessionId = ref<string | null>(null);
@@ -31,12 +37,20 @@ const isAwaitingAnswer = computed(() => Boolean(
 let pollTimer: number | undefined;
 let routeSyncVersion = 0;
 
-onMounted(async () => {
+onMounted(loadAgents);
+async function loadAgents() {
+  loading.value = true;
+  loadError.value = "";
   try {
     agents.value = await api<any[]>("/api/v1/agents");
     await syncFromRoute();
-  } catch (error: any) { emit("toast", error.message, true); }
-});
+  } catch (error: any) {
+    loadError.value = error?.message || "智能体加载失败";
+    emit("toast", loadError.value, true);
+  } finally {
+    loading.value = false;
+  }
+}
 watch(() => route.fullPath, () => {
   if (agents.value.length) void syncFromRoute();
 });
@@ -232,14 +246,19 @@ async function feedback(message:any,rating:number){try{await api(`/api/v1/messag
 
 <template>
   <template v-if="!selected">
-    <div class="section-head"><div><h2>可用智能体</h2><p>问答、流程、任务和业务看板统一从这里进入</p></div><span class="badge success">{{agents.length}} 个可用</span></div>
-    <div v-if="agents.length" class="agents-grid">
+    <div class="page-header"><div><h2>可用智能体</h2><p>问答、流程、任务和业务看板统一从这里进入</p></div></div>
+    <div class="page-toolbar"><span class="badge success">{{agents.length}} 个可用</span></div>
+    <BaseCard class="content-card" padding="sm">
+      <div v-if="loading" class="page-loading" role="status" aria-label="正在加载智能体"><BaseSkeleton height="84px" /><BaseSkeleton height="84px" /><BaseSkeleton height="84px" /></div>
+      <BaseEmptyState v-else-if="loadError" title="智能体加载失败" :description="loadError" role="alert"><template #action><BaseButton variant="secondary" @click="loadAgents">重试</BaseButton></template></BaseEmptyState>
+      <div v-else-if="agents.length" class="agents-grid enterprise-card-grid">
       <article v-for="agent in agents" :key="agent.id" class="card agent-list-card" @click="open(agent)">
         <div class="agent-card-top"><div class="agent-symbol compact">{{agent.icon||modeMeta[agent.launch_mode]?.icon||'✦'}}</div><span class="badge">{{modeMeta[agent.launch_mode]?.label||agent.agent_type}}</span></div>
         <div class="agent-list-content"><h2>{{agent.name}}</h2><p>{{agent.description||modeMeta[agent.launch_mode]?.hint}}</p><div class="agent-card-foot"><small>{{agent.category||modeMeta[agent.launch_mode]?.hint}}</small><span>打开 →</span></div></div>
       </article>
-    </div>
-    <div v-else class="card empty">暂无可用智能体</div>
+      </div>
+      <BaseEmptyState v-else title="暂无可用智能体" description="当前账号暂未获得智能体使用权限。" />
+    </BaseCard>
   </template>
 
   <template v-else>

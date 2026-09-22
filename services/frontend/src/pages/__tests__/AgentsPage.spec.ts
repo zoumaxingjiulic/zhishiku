@@ -1,4 +1,4 @@
-import { cleanup, render, screen, within } from "@testing-library/vue";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/vue";
 import { reactive } from "vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import AgentsPage from "../AgentsPage.vue";
@@ -28,6 +28,11 @@ const sessions = [
 describe("AgentsPage chat task status", () => {
   beforeEach(() => {
     sessionStorage.clear();
+    Object.assign(routeMock, {
+      name: "agent-chat",
+      fullPath: "/agents/7/chat/running-session",
+      params: { agentId: "7", sessionId: "running-session" },
+    });
     apiMock.mockImplementation(async (path: string) => {
       if (path === "/api/v1/agents") return [{ id: 7, name: "问答助手", launch_mode: "chat" }];
       if (path === "/api/v1/agents/7/chat/sessions") return sessions;
@@ -80,5 +85,36 @@ describe("AgentsPage chat task status", () => {
     expect(within(failedRow).getByTitle("删除对话")).toBeEnabled();
     expect(within(cancelledRow).getByTitle("删除对话")).toBeEnabled();
     expect(within(syncFailedRow).getByTitle("删除对话")).toBeEnabled();
+  });
+
+  it("keeps list loading, empty, and failed states distinct and retries a failed load", async () => {
+    Object.assign(routeMock, { name: "agents", fullPath: "/agents", params: {} });
+    let requests = 0;
+    apiMock.mockImplementation(async (path: string) => {
+      if (path !== "/api/v1/agents") throw new Error(`Unexpected API call: ${path}`);
+      requests += 1;
+      if (requests === 1) throw new Error("智能体服务暂不可用");
+      return [];
+    });
+
+    render(AgentsPage);
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("智能体服务暂不可用");
+    expect(screen.queryByText("暂无可用智能体")).not.toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    await waitFor(() => expect(requests).toBe(2));
+    expect(await screen.findByText("暂无可用智能体")).toBeInTheDocument();
+  });
+
+  it("renders the agent list as the responsive enterprise card grid", async () => {
+    Object.assign(routeMock, { name: "agents", fullPath: "/agents", params: {} });
+    apiMock.mockResolvedValueOnce([
+      { id: 7, name: "问答助手", launch_mode: "chat", description: "查制度" },
+    ]);
+
+    const view = render(AgentsPage);
+
+    await screen.findByText("问答助手");
+    expect(view.container.querySelector(".agents-grid")).toHaveClass("enterprise-card-grid");
   });
 });
