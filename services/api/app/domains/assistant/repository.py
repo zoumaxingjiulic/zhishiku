@@ -1,0 +1,121 @@
+"""SQL reads for the assistant's current authorized capability boundary."""
+
+import json
+from typing import Any
+
+
+def _parse_object(value: Any) -> dict[str, Any]:
+    if isinstance(value, dict):
+        return value
+    if isinstance(value, str):
+        try:
+            decoded = json.loads(value)
+        except json.JSONDecodeError:
+            return {}
+        return decoded if isinstance(decoded, dict) else {}
+    return {}
+
+
+class AssistantRepository:
+    def __init__(self, cursor: Any) -> None:
+        self.cursor = cursor
+
+    @staticmethod
+    def _department_ids(user: dict[str, Any]) -> list[int]:
+        return list(dict.fromkeys(int(item) for item in user.get("department_ids") or []))
+
+    def list_knowledge_bases(self, user: dict[str, Any]) -> list[dict]:
+        if user.get("is_platform_admin"):
+            self.cursor.execute(
+                "SELECT k.id,k.code,k.name,k.description FROM knowledge_base k "
+                "WHERE k.status='active' ORDER BY k.id"
+            )
+        else:
+            department_ids = self._department_ids(user)
+            if not department_ids:
+                return []
+            placeholders = ",".join(["%s"] * len(department_ids))
+            self.cursor.execute(
+                "SELECT DISTINCT k.id,k.code,k.name,k.description FROM knowledge_base k "
+                "JOIN knowledge_base_department_acl acl ON acl.knowledge_base_id=k.id "
+                "JOIN department d ON d.id=acl.department_id AND d.status=1 "
+                f"WHERE k.status='active' AND acl.department_id IN ({placeholders}) ORDER BY k.id",
+                department_ids,
+            )
+        return list(self.cursor.fetchall())
+
+    def list_agents(self, user: dict[str, Any]) -> list[dict]:
+        if user.get("is_platform_admin"):
+            self.cursor.execute(
+                "SELECT a.id,a.code,a.name,a.description FROM agent a "
+                "WHERE a.status='active' ORDER BY a.id"
+            )
+        else:
+            department_ids = self._department_ids(user)
+            if not department_ids:
+                return []
+            placeholders = ",".join(["%s"] * len(department_ids))
+            self.cursor.execute(
+                "SELECT DISTINCT a.id,a.code,a.name,a.description FROM agent a "
+                "JOIN agent_department_acl acl ON acl.agent_id=a.id AND acl.permission='use' "
+                "JOIN department d ON d.id=acl.department_id AND d.status=1 "
+                f"WHERE a.status='active' AND acl.department_id IN ({placeholders}) ORDER BY a.id",
+                department_ids,
+            )
+        return list(self.cursor.fetchall())
+
+    def list_tools(self, user: dict[str, Any]) -> list[dict]:
+        select = (
+            "SELECT DISTINCT ct.id,ct.connector_id,ct.tool_name,ct.title,ct.description,"
+            "ct.input_schema_json,ct.annotations_json,c.code connector_code "
+            "FROM connector_tool ct JOIN system_connector c ON c.id=ct.connector_id "
+        )
+        if user.get("is_platform_admin"):
+            self.cursor.execute(
+                select + "WHERE ct.status='active' AND c.status='active' ORDER BY ct.id"
+            )
+        else:
+            department_ids = self._department_ids(user)
+            if not department_ids:
+                return []
+            placeholders = ",".join(["%s"] * len(department_ids))
+            self.cursor.execute(
+                select
+                + "JOIN agent_connector_tool act ON act.connector_tool_id=ct.id AND act.permission='read' "
+                + "JOIN agent a ON a.id=act.agent_id AND a.status='active' "
+                + "JOIN agent_department_acl acl ON acl.agent_id=a.id AND acl.permission='use' "
+                + "JOIN department d ON d.id=acl.department_id AND d.status=1 "
+                + f"WHERE ct.status='active' AND c.status='active' "
+                + f"AND acl.department_id IN ({placeholders}) ORDER BY ct.id",
+                department_ids,
+            )
+        tools: list[dict] = []
+        for raw_row in self.cursor.fetchall():
+            row = dict(raw_row)
+            if _parse_object(row.pop("annotations_json", None)).get("readOnlyHint") is not True:
+                continue
+            row["code"] = f"{row.pop('connector_code')}.{row['tool_name']}"
+            row["name"] = row.pop("title") or row["tool_name"]
+            row["read_only"] = True
+            tools.append(row)
+        return tools
+
+    def list_skills(self, user: dict[str, Any]) -> list[dict]:
+        if user.get("is_platform_admin"):
+            self.cursor.execute(
+                "SELECT s.id,s.code,s.name,s.description FROM assistant_skill s "
+                "WHERE s.status='active' ORDER BY s.id"
+            )
+        else:
+            department_ids = self._department_ids(user)
+            if not department_ids:
+                return []
+            placeholders = ",".join(["%s"] * len(department_ids))
+            self.cursor.execute(
+                "SELECT DISTINCT s.id,s.code,s.name,s.description FROM assistant_skill s "
+                "JOIN assistant_skill_department sd ON sd.skill_id=s.id "
+                "JOIN department d ON d.id=sd.department_id AND d.status=1 "
+                f"WHERE s.status='active' AND sd.department_id IN ({placeholders}) ORDER BY s.id",
+                department_ids,
+            )
+        return list(self.cursor.fetchall())
