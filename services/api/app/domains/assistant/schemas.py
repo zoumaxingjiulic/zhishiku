@@ -1,6 +1,6 @@
 """Stable data contracts for the authorized assistant capability catalog."""
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -53,3 +53,26 @@ class CapabilitySelection(BaseModel):
     tool_ids: list[int] = Field(default_factory=list)
     agent_ids: list[int] = Field(default_factory=list)
     skill_ids: list[int] = Field(default_factory=list)
+
+
+IntentType = Literal[
+    "general_chat",
+    "knowledge_query",
+    "system_query",
+    "agent_task",
+    "multi_capability",
+    "clarification",
+    "forbidden",
+]
+
+
+class IntentDecision(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    intent_type: IntentType
+    confidence: float = Field(ge=0, le=1)
+    selection: CapabilitySelection
+    missing_parameters: list[str] = Field(default_factory=list)
+    needs_clarification: bool = False
+    risk: Literal["low", "medium", "high"] = "low"
+    reason: str = Field(max_length=500)
