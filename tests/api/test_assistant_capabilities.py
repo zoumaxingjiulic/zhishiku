@@ -20,6 +20,16 @@ class StubRepository:
     def __init__(self) -> None:
         self.revoked_tool_ids: set[int] = set()
         self.calls: list[tuple[str, int]] = []
+        self.current_users = {
+            ADMIN["id"]: dict(ADMIN),
+            EMPLOYEE["id"]: dict(EMPLOYEE),
+            UNASSIGNED["id"]: dict(UNASSIGNED),
+        }
+
+    def load_current_user(self, user_id):
+        self.calls.append(("current_user", user_id))
+        current = self.current_users.get(user_id)
+        return dict(current) if current is not None else None
 
     @staticmethod
     def _authorized(user, *, department_id):
@@ -135,6 +145,8 @@ def test_snapshot_is_immutable_and_contains_only_a_safe_json_schema_summary():
     with pytest.raises(TypeError):
         snapshot.tools[0].input_schema_summary["type"] = "array"
     with pytest.raises(TypeError):
+        snapshot.tools[0].input_schema_summary["required"][0] = "organization"
+    with pytest.raises(TypeError):
         snapshot.tools[0].input_schema_summary["properties"]["material_code"] = "integer"
 
 
@@ -166,6 +178,65 @@ def test_validate_selection_rejects_unknown_and_currently_revoked_ids():
     assert repository.calls.count(("tools", EMPLOYEE["id"])) == 3
 
 
+def test_validate_selection_rejects_department_revoked_after_routing():
+    """Catches execution-time validation reusing pre-routing department memberships."""
+    from app.core.errors import AuthorizationError
+    from app.domains.assistant.capabilities import CapabilityCatalog
+    from app.domains.assistant.schemas import CapabilitySelection
+
+    repository = StubRepository()
+    catalog = CapabilityCatalog(repository)
+    snapshot = catalog.for_user(EMPLOYEE)
+    repository.current_users[EMPLOYEE["id"]]["department_ids"] = []
+
+    with pytest.raises(AuthorizationError):
+        catalog.validate_selection(
+            EMPLOYEE,
+            snapshot,
+            CapabilitySelection(knowledge_base_ids=[2]),
+        )
+
+
+def test_validate_selection_rejects_platform_admin_role_revoked_after_routing():
+    """Catches execution-time validation trusting a stale platform-admin boolean."""
+    from app.core.errors import AuthorizationError
+    from app.domains.assistant.capabilities import CapabilityCatalog
+    from app.domains.assistant.schemas import CapabilitySelection
+
+    repository = StubRepository()
+    catalog = CapabilityCatalog(repository)
+    snapshot = catalog.for_user(ADMIN)
+    repository.current_users[ADMIN["id"]] = {
+        "id": ADMIN["id"], "department_ids": [], "is_platform_admin": False,
+    }
+
+    with pytest.raises(AuthorizationError):
+        catalog.validate_selection(
+            ADMIN,
+            snapshot,
+            CapabilitySelection(knowledge_base_ids=[1]),
+        )
+
+
+def test_validate_selection_rejects_account_disabled_after_routing():
+    """Catches a disabled principal executing from a previously authorized snapshot."""
+    from app.core.errors import AuthorizationError
+    from app.domains.assistant.capabilities import CapabilityCatalog
+    from app.domains.assistant.schemas import CapabilitySelection
+
+    repository = StubRepository()
+    catalog = CapabilityCatalog(repository)
+    snapshot = catalog.for_user(EMPLOYEE)
+    repository.current_users[EMPLOYEE["id"]] = None
+
+    with pytest.raises(AuthorizationError):
+        catalog.validate_selection(
+            EMPLOYEE,
+            snapshot,
+            CapabilitySelection(tool_ids=[11]),
+        )
+
+
 class RecordingCursor:
     def __init__(self) -> None:
         self.statements: list[tuple[str, object]] = []
@@ -190,6 +261,96 @@ class RecordingCursor:
 
     def fetchall(self):
         return list(self.rows)
+
+
+class IdentityCursor:
+    def __init__(self, user, departments=()) -> None:
+        self.user = user
+        self.departments = list(departments)
+        self.rows: list[dict] = []
+        self.statements: list[str] = []
+
+    def execute(self, statement, parameters=None):
+        self.statements.append(statement)
+        if "FROM app_user" in statement:
+            self.rows = [dict(self.user)] if self.user is not None else []
+        elif "FROM department" in statement and "user_department" in statement:
+            self.rows = [dict(row) for row in self.departments]
+        else:
+            raise AssertionError(statement)
+
+    def fetchone(self):
+        return self.rows[0] if self.rows else None
+
+    def fetchall(self):
+        return list(self.rows)
+
+
+class ImplicitAgentAccessCursor:
+    def __init__(self) -> None:
+        self.rows: list[dict] = []
+
+    def execute(self, statement, parameters=None):
+        preserves_implicit_access = all(fragment in statement for fragment in (
+            "JSON_EXTRACT(a.settings_json,'$.explicit_acl')",
+            "agent_knowledge_base",
+            "knowledge_base_department_acl",
+            "k.status='active'",
+        )) and parameters == [2, 2]
+        if "FROM connector_tool" in statement:
+            self.rows = [{
+                "id": 11, "connector_id": 4, "tool_name": "inventory", "title": "库存查询",
+                "description": "查询库存", "input_schema_json": '{"type":"object"}',
+                "annotations_json": '{"readOnlyHint":true}', "connector_code": "ERP",
+            }] if preserves_implicit_access else []
+        elif "FROM agent " in statement:
+            self.rows = [{
+                "id": 7, "code": "BID", "name": "标书助手", "description": "分析标书",
+            }] if preserves_implicit_access else []
+        else:
+            raise AssertionError(statement)
+
+    def fetchall(self):
+        return list(self.rows)
+
+
+def test_sql_repository_preserves_implicit_agent_and_tool_access_via_visible_knowledge_base():
+    """Catches narrowing legacy non-strict Agent authorization to explicit department ACL only."""
+    from app.domains.assistant.repository import AssistantRepository
+
+    repository = AssistantRepository(ImplicitAgentAccessCursor())
+
+    assert [row["id"] for row in repository.list_agents(EMPLOYEE)] == [7]
+    assert [row["id"] for row in repository.list_tools(EMPLOYEE)] == [11]
+
+
+def test_sql_repository_reloads_active_user_departments_and_admin_identity():
+    """Catches reconstructing current authorization from stale caller-owned user fields."""
+    from app.domains.assistant.repository import AssistantRepository
+
+    cursor = IdentityCursor(
+        {"id": 8, "status": 1, "deleted_at": None},
+        ({"id": 2, "code": "HR"}, {"id": 1, "code": "PLATFORM_ADMIN"}),
+    )
+
+    assert AssistantRepository(cursor).load_current_user(8) == {
+        "id": 8,
+        "department_ids": [2, 1],
+        "is_platform_admin": True,
+    }
+    assert "d.status=1" in cursor.statements[1]
+
+
+@pytest.mark.parametrize("row", [None, {"id": 8, "status": 0, "deleted_at": None},
+                                  {"id": 8, "status": 1, "deleted_at": "2026-09-22"}])
+def test_sql_repository_rejects_missing_disabled_or_deleted_current_user(row):
+    """Catches a non-active principal reaching any execution-time capability query."""
+    from app.domains.assistant.repository import AssistantRepository
+
+    cursor = IdentityCursor(row)
+
+    assert AssistantRepository(cursor).load_current_user(8) is None
+    assert len(cursor.statements) == 1
 
 
 def test_sql_repository_applies_existing_acl_relations_and_returns_no_connection_secrets():

@@ -25,6 +25,14 @@ def _json_object(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _freeze_json(value: Any) -> Any:
+    if isinstance(value, dict):
+        return FrozenDict({key: _freeze_json(item) for key, item in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze_json(item) for item in value)
+    return value
+
+
 def _schema_summary(value: Any) -> FrozenDict:
     schema = _json_object(value)
     summary: dict[str, Any] = {}
@@ -35,12 +43,12 @@ def _schema_summary(value: Any) -> FrozenDict:
         summary["required"] = [item for item in required if isinstance(item, str)]
     properties = schema.get("properties")
     if isinstance(properties, dict):
-        summary["properties"] = FrozenDict({
+        summary["properties"] = {
             str(name): definition.get("type", "unknown")
             for name, definition in properties.items()
             if isinstance(definition, dict) and isinstance(name, str)
-        })
-    return FrozenDict(summary)
+        }
+    return _freeze_json(summary)
 
 
 def _capability_ref(row: dict[str, Any]) -> CapabilityRef:
@@ -82,7 +90,10 @@ class CapabilityCatalog:
         snapshot: CapabilityCatalogSnapshot,
         selection: CapabilitySelection,
     ) -> CapabilitySelection:
-        current = self.for_user(user)
+        current_user = self.repository.load_current_user(user["id"])
+        if current_user is None:
+            raise AuthorizationError("User is no longer active")
+        current = self.for_user(current_user)
         selected_by_kind = {
             "knowledge base": selection.knowledge_base_ids,
             "tool": selection.tool_ids,
