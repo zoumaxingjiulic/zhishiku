@@ -1,14 +1,13 @@
 <script setup lang="ts">
-import { computed, onMounted, reactive, ref } from 'vue';
+import { onMounted, reactive, ref } from 'vue';
 import { api } from '../api';
 const emit = defineEmits<{toast:[message:string,bad?:boolean]}>();
 const agents=ref<any[]>([]),departments=ref<any[]>([]),kbs=ref<any[]>([]),models=ref<any[]>([]),tools=ref<any[]>([]);
 const tab=ref('config'),editing=ref<number|null>(null),busy=ref(false),revisions=ref<any[]>([]),cases=ref<any[]>([]),runs=ref<any[]>([]),preview=ref<any>(null);
 const question=ref(''),labels=ref(''),empty=ref(false);
-const form=reactive<any>(defaults());
-const historicalWorkflow=computed(()=>!!editing.value&&form.launch_mode==='workflow');
+const form=reactive<any>(defaults()),historicalWorkflow=ref(false);
 function defaults(){return {code:'',name:'',description:'',system_prompt:'你是企业业务助手。仅使用授权资料和工具回答，缺少依据时明确说明，不编造企业事实。',launch_mode:'chat',status:'active',llm_gateway_profile_id:null,department_ids:[],knowledge_base_ids:[],tool_ids:[],steps:[],config_version:1,retrieval:{mode:'hybrid',candidate_k:40,top_k:8,rerank_enabled:true,score_threshold:null,context_max_chars:12000,history_messages:12,query_rewrite:true,parent_context:true,max_tool_rounds:3,max_tool_calls:6}}}
-function open(a?:any){editing.value=a?.id||null;Object.assign(form,defaults(),a?JSON.parse(JSON.stringify(a)):{});tab.value='config';preview.value=null;revisions.value=[];cases.value=[];runs.value=[];}
+function open(a?:any){editing.value=a?.id||null;historicalWorkflow.value=!!a?.id&&a.launch_mode==='workflow';Object.assign(form,defaults(),a?JSON.parse(JSON.stringify(a)):{});tab.value='config';preview.value=null;revisions.value=[];cases.value=[];runs.value=[];}
 async function load(){[agents.value,departments.value,kbs.value,models.value]=await Promise.all([api<any[]>('/api/v1/studio/agents'),api<any[]>('/api/v1/departments'),api<any[]>('/api/v1/knowledge-bases'),api<any[]>('/api/v1/model-gateway/profiles')]);const c=await api<any>('/api/v1/connectors');tools.value=c.items.flatMap((x:any)=>x.tools.map((t:any)=>({...t,label:x.name+' / '+t.tool_name})));}
 onMounted(async()=>{await load();open(agents.value[0]);});
 async function guard(fn:()=>Promise<void>){busy.value=true;try{await fn();}catch(e:any){emit('toast',e.message,true);}finally{busy.value=false;}}
