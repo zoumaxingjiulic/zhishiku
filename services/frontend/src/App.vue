@@ -1,15 +1,18 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onErrorCaptured, reactive, ref } from "vue";
+import { computed, onBeforeUnmount, onErrorCaptured, reactive, ref, watch } from "vue";
 import { RouterLink, RouterView, useRoute, useRouter } from "vue-router";
 import { api } from "./api";
 import { authReady, authUser, clearAuthUser, setAuthUser } from "./auth";
 import AppModal from "./components/AppModal.vue";
+import BaseIcon from "./components/base/BaseIcon.vue";
 
 const route = useRoute();
 const router = useRouter();
 const loginBusy = ref(false);
 const loginError = ref("");
 const passwordModal = ref(false);
+const sidebarOpen = ref(false);
+const isNarrow = ref(window.innerWidth < 1024);
 const toastState = reactive({ message: "", bad: false, visible: false });
 const loginForm = reactive({ username: "", password: "" });
 const passwordForm = reactive({ current_password: "", new_password: "", confirmation: "" });
@@ -28,22 +31,44 @@ const viewListeners = computed(() => ({
   ...(route.meta.navigate ? { navigate } : {}),
 }));
 
-const navItems = computed(() => [
-  { section: "workbench", to: { name: "workbench" }, icon: "⌂", label: "工作台" },
-  { section: "knowledge", to: { name: "knowledge" }, icon: "▤", label: "知识库" },
-  { section: "agents", to: { name: "agents" }, icon: "✦", label: "智能体" },
-  { section: "prompts", to: { name: "prompts" }, icon: "⌑", label: "提示词模板" },
-  { section: "agent-requests", to: { name: "agent-requests" }, icon: "✎", label: "智能体申请" },
-  { section: "connections", to: { name: "connections" }, icon: "⌘", label: "系统连接" },
-  ...(isAdmin.value ? [
-    { section: 'studio', to: { name: 'studio' }, icon: '⌬', label: '智能体工作室' },
-    { section: 'skills', to: { name: 'skills' }, icon: '◇', label: '能力配置' },
-    { section: "model-gateway", to: { name: "model-gateway" }, icon: "◈", label: "大模型网关" },
-    { section: "users", to: { name: "users" }, icon: "♟", label: "用户与部门" },
-    { section: "observability", to: { name: "observability" }, icon: "◎", label: "运行监控" },
-    { section: "audit", to: { name: "audit" }, icon: "◷", label: "审计日志" },
-  ] : []),
+const navGroups = computed(() => [
+  {
+    label: "工作",
+    items: [
+      { section: "workbench", to: { name: "workbench" }, icon: "home", label: "工作台" },
+      { section: "agents", to: { name: "agents" }, icon: "bot", label: "智能体" },
+      { section: "agent-requests", to: { name: "agent-requests" }, icon: "request", label: "智能体申请" },
+    ],
+  },
+  {
+    label: "资源",
+    items: [
+      { section: "knowledge", to: { name: "knowledge" }, icon: "database", label: "知识库" },
+      { section: "prompts", to: { name: "prompts" }, icon: "file", label: "提示词模板" },
+      { section: "connections", to: { name: "connections" }, icon: "link", label: "系统连接" },
+    ],
+  },
+  ...(isAdmin.value ? [{
+    label: "管理",
+    items: [
+      { section: "studio", to: { name: "studio" }, icon: "studio", label: "智能体工作室" },
+      { section: "skills", to: { name: "skills" }, icon: "sparkles", label: "能力配置" },
+      { section: "model-gateway", to: { name: "model-gateway" }, icon: "cpu", label: "大模型网关" },
+      { section: "users", to: { name: "users" }, icon: "users", label: "用户与部门" },
+      { section: "observability", to: { name: "observability" }, icon: "activity", label: "运行监控" },
+      { section: "audit", to: { name: "audit" }, icon: "shield", label: "审计日志" },
+    ],
+  }] : []),
 ]);
+
+function syncLayout() {
+  isNarrow.value = window.innerWidth < 1024;
+  if (!isNarrow.value) sidebarOpen.value = false;
+}
+
+function toggleSidebar() {
+  sidebarOpen.value = !sidebarOpen.value;
+}
 
 function toast(message: string, bad = false) {
   toastState.message = message;
@@ -106,9 +131,9 @@ function navigate(target: string) {
   const mapping: Record<string, string> = {
     home: "workbench", knowledge: "knowledge", agents: "agents", prompts: "prompts",
     agentRequests: "agent-requests", connections: "connections", skills: "skills", modelGateway: "model-gateway",
-    users: "users", observability: "observability", audit: "audit",
+    studio: "studio", users: "users", observability: "observability", audit: "audit",
   };
-  if ((target === "users" || target === "audit" || target === "observability" || target === "modelGateway" || target === "skills") && !isAdmin.value) return;
+  if ((target === "studio" || target === "users" || target === "audit" || target === "observability" || target === "modelGateway" || target === "skills") && !isAdmin.value) return;
   router.push({ name: mapping[target] || target });
 }
 
@@ -125,8 +150,11 @@ onErrorCaptured((error: any) => {
   return false;
 });
 window.addEventListener("auth-expired", onAuthExpired);
+window.addEventListener("resize", syncLayout);
+watch(() => route.fullPath, () => { sidebarOpen.value = false; });
 onBeforeUnmount(() => {
   window.removeEventListener("auth-expired", onAuthExpired);
+  window.removeEventListener("resize", syncLayout);
   if (toastTimer) window.clearTimeout(toastTimer);
 });
 </script>
@@ -149,16 +177,52 @@ onBeforeUnmount(() => {
   </main>
 
   <div v-else class="app-shell">
-    <aside class="sidebar">
+    <button
+      v-if="isNarrow && sidebarOpen"
+      class="sidebar-backdrop"
+      type="button"
+      aria-label="点击遮罩关闭导航菜单"
+      @click="sidebarOpen = false"
+    />
+    <aside
+      id="app-sidebar"
+      class="sidebar"
+      :class="{ open: !isNarrow || sidebarOpen }"
+      :aria-hidden="isNarrow ? !sidebarOpen : undefined"
+      :inert="isNarrow && !sidebarOpen"
+    >
       <div class="logo"><div class="brand-mark small">智</div><div><strong>企业智能体</strong><small>KNOWLEDGE OS</small></div></div>
       <nav aria-label="平台导航">
-        <RouterLink v-for="item in navItems" :key="item.section" :to="item.to" :class="{ active: route.meta.section === item.section }"><span>{{ item.icon }}</span>{{ item.label }}</RouterLink>
+        <section v-for="group in navGroups" :key="group.label" class="nav-section">
+          <h2>{{ group.label }}</h2>
+          <RouterLink
+            v-for="item in group.items"
+            :key="item.section"
+            :to="item.to"
+            :class="{ active: route.meta.section === item.section }"
+            :aria-current="route.meta.section === item.section ? 'page' : undefined"
+          >
+            <BaseIcon :name="item.icon" :size="18" />
+            <span>{{ item.label }}</span>
+          </RouterLink>
+        </section>
       </nav>
       <div class="sidebar-foot"><span class="health-dot"></span>服务运行正常</div>
     </aside>
 
     <main class="main">
       <header class="topbar">
+        <button
+          v-if="isNarrow"
+          class="drawer-toggle"
+          type="button"
+          :aria-label="sidebarOpen ? '关闭导航菜单' : '打开导航菜单'"
+          :aria-expanded="sidebarOpen"
+          aria-controls="app-sidebar"
+          @click="toggleSidebar"
+        >
+          <BaseIcon :name="sidebarOpen ? 'close' : 'menu'" :size="22" />
+        </button>
         <div><h1>{{ currentMeta.title }}</h1><p>{{ currentMeta.subtitle }}</p></div>
         <div class="user-area">
           <div class="avatar">{{ avatar }}</div>
