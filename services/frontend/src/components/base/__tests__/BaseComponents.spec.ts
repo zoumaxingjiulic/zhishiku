@@ -163,6 +163,31 @@ describe("application shell", () => {
     await waitFor(() => expect(toggle).toHaveFocus());
   });
 
+  it("does not trap boundary Tab navigation in the desktop sidebar", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
+    setAuthUser({ id: 1, display_name: "管理员", departments: [], is_platform_admin: true });
+    const router = shellRouter();
+    await router.push("/workbench");
+    await router.isReady();
+    render(App, { global: { plugins: [router] } });
+
+    const sidebar = document.getElementById("app-sidebar")!;
+    const firstLink = screen.getByRole("link", { name: "工作台" });
+    const lastLink = screen.getByRole("link", { name: "审计日志" });
+
+    lastLink.focus();
+    const forwardTab = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    sidebar.dispatchEvent(forwardTab);
+    expect(forwardTab.defaultPrevented).toBe(false);
+    expect(lastLink).toHaveFocus();
+
+    firstLink.focus();
+    const backwardTab = new KeyboardEvent("keydown", { key: "Tab", shiftKey: true, bubbles: true, cancelable: true });
+    sidebar.dispatchEvent(backwardTab);
+    expect(backwardTab.defaultPrevented).toBe(false);
+    expect(firstLink).toHaveFocus();
+  });
+
   it("closes the drawer after routing and focuses the new page heading", async () => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 800 });
     setAuthUser({ id: 1, display_name: "管理员", departments: [], is_platform_admin: true });

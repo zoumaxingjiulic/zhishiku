@@ -101,6 +101,7 @@ async function toggleSidebar() {
 }
 
 function handleSidebarKeydown(event: KeyboardEvent) {
+  if (!isNarrow.value || !sidebarOpen.value) return;
   if (event.key === "Escape") {
     event.preventDefault();
     void closeSidebar(true);
