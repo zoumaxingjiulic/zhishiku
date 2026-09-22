@@ -3,8 +3,10 @@ import { onMounted, reactive, ref } from "vue";
 import { api } from "../api";
 import AppModal from "../components/AppModal.vue";
 import BaseButton from "../components/base/BaseButton.vue";
+import BaseBadge from "../components/base/BaseBadge.vue";
 import BaseCard from "../components/base/BaseCard.vue";
 import BaseEmptyState from "../components/base/BaseEmptyState.vue";
+import BaseIcon from "../components/base/BaseIcon.vue";
 import BaseSkeleton from "../components/base/BaseSkeleton.vue";
 
 const emit = defineEmits<{ toast: [message: string, bad?: boolean] }>();
@@ -49,23 +51,23 @@ onMounted(load);
 
 <template>
   <div class="page-header"><div><h2>大模型网关</h2><p>统一管理模型配置档案和智能体模型路由</p></div></div>
-  <div class="page-toolbar"><button class="primary" @click="open()">＋ 添加模型配置</button><span class="badge success">{{ profiles.filter(item => item.status === 'active').length }} 个启用</span></div>
+  <div class="page-toolbar"><BaseButton @click="open()"><BaseIcon name="add" />添加模型配置</BaseButton><BaseBadge tone="success">{{ profiles.filter(item => item.status === 'active').length }} 个启用</BaseBadge></div>
   <BaseCard v-if="loading" class="content-card page-loading"><BaseSkeleton height="110px" /><BaseSkeleton height="180px" /></BaseCard>
   <BaseCard v-else-if="loadError" class="content-card"><BaseEmptyState title="模型网关加载失败" :description="loadError" role="alert"><template #action><BaseButton variant="secondary" @click="load">重试</BaseButton></template></BaseEmptyState></BaseCard>
   <template v-else>
-  <div class="gateway-notice"><div class="notice-icon">◈</div><div><strong>模型请求统一从网关路由</strong><p>API Key 加密保存且不会回显；可为每个智能体绑定独立配置，未绑定时沿用服务器环境变量。</p></div></div>
+  <div class="gateway-notice"><div class="notice-icon"><BaseIcon name="cpu" /></div><div><strong>模型请求统一从网关路由</strong><p>API Key 加密保存且不会回显；可为每个智能体绑定独立配置，未绑定时沿用服务器环境变量。</p></div></div>
   <div class="section-head"><div><h2>模型配置档案</h2><p>按厂商、账号、模型或成本中心拆分配置</p></div></div>
   <div v-if="profiles.length" class="gateway-grid">
-    <article v-for="item in profiles" :key="item.id" class="card gateway-card">
-      <div class="card-header"><div><span class="eyebrow">{{ item.provider_type }}</span><h2>{{ item.name }}</h2></div><span class="badge" :class="{ success: item.status === 'active' }">{{ item.status === 'active' ? '已启用' : '已停用' }}</span></div>
+    <BaseCard v-for="item in profiles" :key="item.id" class="gateway-card">
+      <div class="card-header"><div><span class="eyebrow">{{ item.provider_type }}</span><h2>{{ item.name }}</h2></div><BaseBadge :tone="item.status === 'active' ? 'success' : 'neutral'">{{ item.status === 'active' ? '已启用' : '已停用' }}</BaseBadge></div>
       <dl><div><dt>模型</dt><dd>{{ item.model_name }}</dd></div><div><dt>接口</dt><dd>{{ item.base_url }}</dd></div><div><dt>凭据</dt><dd>{{ item.has_api_key ? '已加密配置' : '无 API Key' }}</dd></div><div><dt>绑定</dt><dd>{{ item.agent_count }} 个智能体</dd></div></dl>
-      <button class="secondary" @click="open(item)">编辑配置</button>
-    </article>
+      <BaseButton variant="secondary" @click="open(item)">编辑配置</BaseButton>
+    </BaseCard>
   </div>
-  <div v-else class="card empty"><strong>尚未建立模型配置</strong>添加厂商 API 后，再为智能体选择对应模型路由。</div>
+  <BaseCard v-else class="content-card"><BaseEmptyState title="尚未建立模型配置" description="添加厂商 API 后，再为智能体选择对应模型路由。" /></BaseCard>
 
   <div class="section-head gateway-binding-head"><div><h2>智能体模型路由</h2><p>一个配置可复用，也可以为关键智能体使用独立 API 账号</p></div></div>
-  <div class="table-wrap"><table><thead><tr><th>智能体</th><th>类型</th><th>模型配置</th><th>操作</th></tr></thead><tbody><tr v-for="agent in agents" :key="agent.id"><td><strong>{{ agent.name }}</strong><br><small class="muted">{{ agent.code }}</small></td><td>{{ agent.agent_type }} / {{ agent.launch_mode }}</td><td><select v-model="bindings[agent.id]"><option value="">服务器默认配置</option><option v-for="profile in profiles.filter(item => item.status === 'active')" :key="profile.id" :value="profile.id">{{ profile.name }} · {{ profile.model_name }}</option></select></td><td><button class="secondary" @click="bind(agent)">保存路由</button></td></tr><tr v-if="!agents.length"><td colspan="4"><div class="empty">暂无可配置智能体</div></td></tr></tbody></table></div>
+  <div class="table-wrap"><table><thead><tr><th>智能体</th><th>类型</th><th>模型配置</th><th>操作</th></tr></thead><tbody><tr v-for="agent in agents" :key="agent.id"><td><strong>{{ agent.name }}</strong><br><small class="muted">{{ agent.code }}</small></td><td>{{ agent.agent_type }} / {{ agent.launch_mode }}</td><td><select v-model="bindings[agent.id]"><option value="">服务器默认配置</option><option v-for="profile in profiles.filter(item => item.status === 'active')" :key="profile.id" :value="profile.id">{{ profile.name }} · {{ profile.model_name }}</option></select></td><td><BaseButton size="sm" variant="secondary" @click="bind(agent)">保存路由</BaseButton></td></tr><tr v-if="!agents.length"><td colspan="4"><div class="empty">暂无可配置智能体</div></td></tr></tbody></table></div>
   </template>
 
   <AppModal v-if="modal" :title="editingId ? '编辑模型配置' : '添加模型配置'" @close="modal=false">
@@ -75,7 +77,7 @@ onMounted(load);
       <label>API Base URL<input v-model.trim="form.base_url" required placeholder="https://api.example.com/v1"></label>
       <label>API Key<input v-model="form.api_key" type="password" autocomplete="new-password" :placeholder="editingId ? '留空表示保持现有凭据' : '输入厂商 API Key'"><small class="muted">凭据使用服务器主密钥加密，页面和接口均不回显。</small></label>
       <label>状态<select v-model="form.status"><option value="active">启用</option><option value="disabled">停用</option></select></label>
-      <button class="primary">保存模型配置</button>
+      <BaseButton type="submit">保存模型配置</BaseButton>
     </form>
   </AppModal>
 </template>

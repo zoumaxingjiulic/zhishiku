@@ -3,8 +3,10 @@ import { computed, onMounted, reactive, ref } from "vue";
 import { api } from "../api";
 import AppModal from "../components/AppModal.vue";
 import BaseButton from "../components/base/BaseButton.vue";
+import BaseBadge from "../components/base/BaseBadge.vue";
 import BaseCard from "../components/base/BaseCard.vue";
 import BaseEmptyState from "../components/base/BaseEmptyState.vue";
+import BaseIcon from "../components/base/BaseIcon.vue";
 import BaseSkeleton from "../components/base/BaseSkeleton.vue";
 
 const props = defineProps<{ user: any }>();
@@ -42,14 +44,14 @@ onMounted(load);
 
 <template>
   <div class="page-header"><div><h2>{{ isAdmin ? "智能体需求池" : "我的智能体申请" }}</h2><p>{{ isAdmin ? "查看全公司的智能体需求并推进评审交付" : "说明业务问题、数据来源和期望结果，平台管理员会统一评估" }}</p></div></div>
-  <div class="page-toolbar"><button class="primary" @click="openCreate">＋ 提交申请</button></div>
+  <div class="page-toolbar"><BaseButton @click="openCreate"><BaseIcon name="add" />提交申请</BaseButton></div>
   <BaseCard v-if="loading" class="content-card page-loading"><BaseSkeleton height="130px" /><BaseSkeleton height="130px" /></BaseCard>
   <BaseCard v-else-if="loadError" class="content-card"><BaseEmptyState title="智能体申请加载失败" :description="loadError" role="alert"><template #action><BaseButton variant="secondary" @click="load">重试</BaseButton></template></BaseEmptyState></BaseCard>
   <div v-else-if="items.length" class="request-list">
-    <article v-for="item in items" :key="item.id" class="card request-card">
-      <div class="request-main"><div class="request-title"><span class="request-no">{{ item.request_no }}</span><h2>{{ item.title }}</h2><span class="badge" :class="{ success: ['approved','delivered'].includes(item.status), pending: ['submitted','reviewing'].includes(item.status), failed: item.status === 'rejected' }">{{ statusText[item.status] || item.status }}</span></div><p>{{ item.business_problem }}</p><small>{{ item.department_name }} · {{ item.applicant_name }} · {{ new Date(item.created_at).toLocaleDateString() }}</small></div>
-      <div class="request-result"><small>期望结果</small><p>{{ item.expected_outcome }}</p><div class="tag-row"><span v-for="source in item.data_sources" :key="source">{{ source }}</span></div><button v-if="isAdmin" class="secondary" @click="openReview(item)">评审申请</button></div>
-    </article>
+    <BaseCard v-for="item in items" :key="item.id" class="request-card">
+      <div class="request-main"><div class="request-title"><span class="request-no">{{ item.request_no }}</span><h2>{{ item.title }}</h2><BaseBadge :tone="['approved','delivered'].includes(item.status) ? 'success' : ['submitted','reviewing'].includes(item.status) ? 'warning' : item.status === 'rejected' ? 'danger' : 'neutral'">{{ statusText[item.status] || item.status }}</BaseBadge></div><p>{{ item.business_problem }}</p><small>{{ item.department_name }} · {{ item.applicant_name }} · {{ new Date(item.created_at).toLocaleDateString() }}</small></div>
+      <div class="request-result"><small>期望结果</small><p>{{ item.expected_outcome }}</p><div class="tag-row"><span v-for="source in item.data_sources" :key="source">{{ source }}</span></div><BaseButton v-if="isAdmin" variant="secondary" @click="openReview(item)">评审申请</BaseButton></div>
+    </BaseCard>
   </div>
   <BaseCard v-else class="content-card"><BaseEmptyState title="暂无智能体申请" description="从一个明确、可衡量的业务问题开始。" /></BaseCard>
 
@@ -61,10 +63,10 @@ onMounted(load);
       <label>期望结果<textarea v-model="form.expected_outcome" required placeholder="希望智能体完成哪些动作，输出什么结果"></textarea></label>
       <label>可能涉及的数据来源<input v-model="form.dataSourcesText" placeholder="ERP、PLM、Excel、知识库；用逗号分隔"></label>
       <div class="form-grid"><label>使用频率<select v-model="form.frequency"><option>按需</option><option>每天</option><option>每周</option><option>事件触发</option></select></label><label>优先级<select v-model="form.urgency"><option value="normal">一般</option><option value="urgent">紧急</option><option value="strategic">战略项目</option></select></label></div>
-      <button class="primary">提交申请</button>
+      <BaseButton type="submit">提交申请</BaseButton>
     </form>
   </AppModal>
   <AppModal v-if="reviewModal" title="评审智能体申请" @close="reviewModal=false">
-    <form class="form-stack" @submit.prevent="saveReview"><label>处理状态<select v-model="review.status"><option value="reviewing">评审中</option><option value="approved">已批准</option><option value="rejected">未采纳</option><option value="delivered">已交付</option><option value="closed">已关闭</option></select></label><label>管理员意见<textarea v-model="review.admin_comment" placeholder="记录评估结论、下一步或未采纳原因"></textarea></label><button class="primary">保存评审</button></form>
+    <form class="form-stack" @submit.prevent="saveReview"><label>处理状态<select v-model="review.status"><option value="reviewing">评审中</option><option value="approved">已批准</option><option value="rejected">未采纳</option><option value="delivered">已交付</option><option value="closed">已关闭</option></select></label><label>管理员意见<textarea v-model="review.admin_comment" placeholder="记录评估结论、下一步或未采纳原因"></textarea></label><BaseButton type="submit">保存评审</BaseButton></form>
   </AppModal>
 </template>

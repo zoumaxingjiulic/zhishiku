@@ -3,8 +3,10 @@ import { onMounted, reactive, ref } from "vue";
 import { api } from "../api";
 import AppModal from "../components/AppModal.vue";
 import BaseButton from "../components/base/BaseButton.vue";
+import BaseBadge from "../components/base/BaseBadge.vue";
 import BaseCard from "../components/base/BaseCard.vue";
 import BaseEmptyState from "../components/base/BaseEmptyState.vue";
+import BaseIcon from "../components/base/BaseIcon.vue";
 import BaseSkeleton from "../components/base/BaseSkeleton.vue";
 
 const emit = defineEmits<{ toast: [message: string, bad?: boolean] }>();
@@ -46,17 +48,17 @@ onMounted(load);
 
 <template>
   <div class="page-header"><div><h2>我的提示词模板</h2><p>模板仅自己可见，适合沉淀高频任务和标准提问方式</p></div></div>
-  <div class="page-toolbar"><button class="primary" @click="open()">＋ 新建模板</button></div>
+  <div class="page-toolbar"><BaseButton @click="open()"><BaseIcon name="add" />新建模板</BaseButton></div>
   <BaseCard v-if="loading" class="content-card page-loading"><BaseSkeleton height="160px" /><BaseSkeleton height="160px" /></BaseCard>
   <BaseCard v-else-if="loadError" class="content-card"><BaseEmptyState title="提示词模板加载失败" :description="loadError" role="alert"><template #action><BaseButton variant="secondary" @click="load">重试</BaseButton></template></BaseEmptyState></BaseCard>
   <div v-else-if="items.length" class="template-grid">
-    <article v-for="item in items" :key="item.id" class="card template-card">
-      <div class="card-header"><div><span class="eyebrow">MY PROMPT</span><h2>{{ item.name }}</h2></div><span class="badge">{{ item.variables.length }} 个变量</span></div>
+    <BaseCard v-for="item in items" :key="item.id" class="template-card">
+      <div class="card-header"><div><span class="eyebrow">MY PROMPT</span><h2>{{ item.name }}</h2></div><BaseBadge>{{ item.variables.length }} 个变量</BaseBadge></div>
       <p class="muted">{{ item.description || "未填写说明" }}</p>
       <pre>{{ item.content }}</pre>
       <div v-if="item.variables.length" class="tag-row"><span v-for="variable in item.variables" :key="variable">{{ variable }}</span></div>
-      <div class="actions"><button class="primary" @click="copy(item)">复制使用</button><button class="secondary" @click="open(item)">编辑</button><button class="danger" @click="remove(item)">删除</button></div>
-    </article>
+      <div class="actions"><BaseButton @click="copy(item)"><BaseIcon name="copy" />复制使用</BaseButton><BaseButton variant="secondary" @click="open(item)">编辑</BaseButton><BaseButton variant="danger" @click="remove(item)"><BaseIcon name="trash" />删除</BaseButton></div>
+    </BaseCard>
   </div>
   <BaseCard v-else class="content-card"><BaseEmptyState title="还没有提示词模板" description="把反复使用的提示词保存下来，下次一键复制。" /></BaseCard>
 
@@ -66,7 +68,7 @@ onMounted(load);
       <label>用途说明<input v-model.trim="form.description" maxlength="512" placeholder="这个模板适用于什么场景"></label>
       <label>提示词内容<textarea v-model="form.content" class="prompt-editor" required placeholder="请将以下内容整理为……"></textarea></label>
       <label>变量（选填）<input v-model="form.variablesText" placeholder="主题、受众、字数；用逗号分隔"><small class="muted">用于标记模板中需要替换的内容。</small></label>
-      <button class="primary">保存模板</button>
+      <BaseButton type="submit">保存模板</BaseButton>
     </form>
   </AppModal>
 </template>

@@ -45,7 +45,7 @@ describe("KnowledgePage enterprise layout", () => {
     expect(selector).not.toBeNull();
     expect(workspace).not.toBeNull();
     expect(selector!.compareDocumentPosition(workspace!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-    expect(screen.getByRole("button", { name: "上传并入库" })).toHaveClass("no-wrap");
+    expect(screen.getByRole("button", { name: "上传并入库" })).toHaveClass("base-button");
   });
 
   it("keeps knowledge loading, empty, and failed states distinct and retryable", async () => {
@@ -64,6 +64,49 @@ describe("KnowledgePage enterprise layout", () => {
     await fireEvent.click(screen.getByRole("button", { name: "重试" }));
     await waitFor(() => expect(reads).toBe(2));
     expect(await screen.findByText("暂无可访问知识库")).toBeInTheDocument();
+  });
+
+  it("keeps a selected upload file after reindex refreshes the current folder", async () => {
+    const documentItem = {
+      id: 9,
+      title: "既有资料",
+      original_filename: "existing.pdf",
+      file_size_bytes: 128,
+      chunk_count: 1,
+      vector_count: 1,
+      fulltext_count: 1,
+      row_version: 1,
+    };
+    const uploadBodies: FormData[] = [];
+    apiMock.mockImplementation(async (path: string, options: RequestInit = {}) => {
+      if (path === "/api/v1/knowledge-bases") return [knowledgeBase];
+      if (path === "/api/v1/folders?knowledge_base_id=3") return [];
+      if (path === "/api/v1/documents?knowledge_base_id=3&folder_id=0") return [documentItem];
+      if (path === "/api/v1/documents/9/reindex" && options.method === "POST") return { status: "ok" };
+      if (path === "/api/v1/documents" && options.method === "POST") {
+        uploadBodies.push(options.body as FormData);
+        return { id: 10 };
+      }
+      throw new Error(`Unexpected API call: ${options.method ?? "GET"} ${path}`);
+    });
+
+    render(KnowledgePage, { props: { user } });
+    await screen.findByText("既有资料");
+    const input = screen.getByLabelText("选择资料文件（支持多选）") as HTMLInputElement;
+    const pending = new File(["pending"], "pending.txt", { type: "text/plain" });
+    await fireEvent.change(input, { target: { files: [pending] } });
+
+    await fireEvent.click(screen.getByRole("button", { name: "重建" }));
+    await waitFor(() => expect(apiMock).toHaveBeenCalledWith(
+      "/api/v1/documents/9/reindex",
+      expect.objectContaining({ method: "POST" }),
+    ));
+
+    expect(screen.getByLabelText("选择资料文件（支持多选）")).toBe(input);
+    expect(input.files?.[0]?.name).toBe("pending.txt");
+    await fireEvent.submit(input.closest("form")!);
+    await waitFor(() => expect(uploadBodies).toHaveLength(1));
+    expect(uploadBodies[0].get("file")).toBe(pending);
   });
 });
 

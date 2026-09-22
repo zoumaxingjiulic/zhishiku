@@ -44,7 +44,7 @@ describe("StudioPage launch modes", () => {
     render(StudioPage);
 
     await screen.findByText("历史工作流");
-    await fireEvent.click(screen.getByRole("button", { name: "＋ 新建智能体" }));
+    await fireEvent.click(screen.getByRole("button", { name: "新建智能体" }));
 
     const launchMode = screen.getByLabelText("运行方式") as HTMLSelectElement;
     expect(launchMode.value).toBe("chat");
@@ -78,5 +78,23 @@ describe("StudioPage launch modes", () => {
       "/api/v1/studio/agents/7",
       expect.objectContaining({ method: "PUT" }),
     );
+  });
+
+  it("shows an explicit empty state while keeping chat creation available", async () => {
+    apiMock.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/studio/agents") return [];
+      if (path === "/api/v1/departments") return [];
+      if (path === "/api/v1/knowledge-bases") return [];
+      if (path === "/api/v1/model-gateway/profiles") return [];
+      if (path === "/api/v1/connectors") return { items: [] };
+      throw new Error(`Unexpected API call: ${path}`);
+    });
+
+    render(StudioPage);
+
+    expect(await screen.findByText("暂无智能体")).toBeInTheDocument();
+    await fireEvent.click(screen.getAllByRole("button", { name: "新建智能体" })[1]);
+    expect(screen.getByLabelText("运行方式")).toHaveValue("chat");
+    expect(screen.queryByRole("option", { name: /工作流|兼容模式/ })).not.toBeInTheDocument();
   });
 });

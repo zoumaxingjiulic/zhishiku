@@ -61,7 +61,7 @@ describe("UsersPage temporary password notice", () => {
     render(UsersPage);
 
     await screen.findByText(existingUser.display_name);
-    await fireEvent.click(screen.getByRole("button", { name: "＋ 创建账号" }));
+    await fireEvent.click(screen.getByRole("button", { name: "创建账号" }));
     await fireEvent.update(screen.getByLabelText("用户名"), "new.user");
     await fireEvent.update(screen.getByLabelText("姓名"), "新账号");
     await fireEvent.update(screen.getByLabelText("邮箱（可选）"), "new@example.com");

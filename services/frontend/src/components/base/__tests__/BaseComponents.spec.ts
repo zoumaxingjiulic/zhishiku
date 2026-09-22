@@ -40,6 +40,24 @@ describe("base components", () => {
     expect(screen.getByRole("button", { name: "保存" })).toHaveClass("base-button--danger");
   });
 
+  it("defaults to a non-submitting button and preserves an explicit submit type", () => {
+    const view = render(BaseButton, { slots: { default: "普通操作" } });
+    expect(screen.getByRole("button", { name: "普通操作" })).toHaveAttribute("type", "button");
+    view.unmount();
+
+    render(BaseButton, { props: { type: "submit" }, slots: { default: "保存表单" } });
+    expect(screen.getByRole("button", { name: "保存表单" })).toHaveAttribute("type", "submit");
+  });
+
+  it.each(["add", "arrow-left", "chevron-up", "chevron-down", "download", "folder-open", "refresh", "send"])(
+    "renders the %s icon from the local SVG map",
+    (name) => {
+      const view = render(BaseIcon, { props: { name, title: name } });
+      const path = view.container.querySelector("path");
+      expect(path?.getAttribute("d")).not.toContain("m12 3 1.3 3.7");
+    },
+  );
+
   it("renders card, badge, empty-state and icon content through stable slots", () => {
     render(defineComponent({
       components: { BaseBadge, BaseCard, BaseEmptyState, BaseIcon },

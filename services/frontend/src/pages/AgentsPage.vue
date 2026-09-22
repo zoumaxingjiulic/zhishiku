@@ -4,8 +4,10 @@ import { useRoute, useRouter } from "vue-router";
 import { api } from "../api";
 import { formatPageRange, isActiveChatTaskStatus } from "../utils";
 import BaseButton from "../components/base/BaseButton.vue";
+import BaseBadge from "../components/base/BaseBadge.vue";
 import BaseCard from "../components/base/BaseCard.vue";
 import BaseEmptyState from "../components/base/BaseEmptyState.vue";
+import BaseIcon from "../components/base/BaseIcon.vue";
 import BaseSkeleton from "../components/base/BaseSkeleton.vue";
 import WorkflowRun from '../components/WorkflowRun.vue';
 
@@ -23,11 +25,11 @@ const messages = ref<any[]>([]);
 const sessions = ref<any[]>([]);
 const task = ref<any>(null);
 const modeMeta: Record<string, { label: string; icon: string; hint: string }> = {
-  chat: { label: "问答", icon: "✦", hint: "对话查询与知识检索" },
-  form: { label: "任务", icon: "▣", hint: "填写参数后执行任务" },
-  workflow: { label: "流程", icon: "⇢", hint: "多步骤业务流程" },
-  dashboard: { label: "看板", icon: "▥", hint: "业务数据分析看板" },
-  external: { label: "系统", icon: "↗", hint: "打开外部业务应用" },
+  chat: { label: "问答", icon: "bot", hint: "对话查询与知识检索" },
+  form: { label: "任务", icon: "form", hint: "填写参数后执行任务" },
+  workflow: { label: "流程", icon: "workflow", hint: "多步骤业务流程" },
+  dashboard: { label: "看板", icon: "activity", hint: "业务数据分析看板" },
+  external: { label: "系统", icon: "link", hint: "打开外部业务应用" },
 };
 const welcomeMessage = { role: "assistant", text: "您好，我会使用该智能体获授权的企业知识与只读系统工具协助您。" };
 const isAwaitingAnswer = computed(() => Boolean(
@@ -247,36 +249,36 @@ async function feedback(message:any,rating:number){try{await api(`/api/v1/messag
 <template>
   <template v-if="!selected">
     <div class="page-header"><div><h2>可用智能体</h2><p>问答、流程、任务和业务看板统一从这里进入</p></div></div>
-    <div class="page-toolbar"><span class="badge success">{{agents.length}} 个可用</span></div>
+    <div class="page-toolbar"><BaseBadge tone="success">{{agents.length}} 个可用</BaseBadge></div>
     <BaseCard class="content-card" padding="sm">
       <div v-if="loading" class="page-loading" role="status" aria-label="正在加载智能体"><BaseSkeleton height="84px" /><BaseSkeleton height="84px" /><BaseSkeleton height="84px" /></div>
       <BaseEmptyState v-else-if="loadError" title="智能体加载失败" :description="loadError" role="alert"><template #action><BaseButton variant="secondary" @click="loadAgents">重试</BaseButton></template></BaseEmptyState>
       <div v-else-if="agents.length" class="agents-grid enterprise-card-grid">
-      <article v-for="agent in agents" :key="agent.id" class="card agent-list-card" @click="open(agent)">
-        <div class="agent-card-top"><div class="agent-symbol compact">{{agent.icon||modeMeta[agent.launch_mode]?.icon||'✦'}}</div><span class="badge">{{modeMeta[agent.launch_mode]?.label||agent.agent_type}}</span></div>
-        <div class="agent-list-content"><h2>{{agent.name}}</h2><p>{{agent.description||modeMeta[agent.launch_mode]?.hint}}</p><div class="agent-card-foot"><small>{{agent.category||modeMeta[agent.launch_mode]?.hint}}</small><span>打开 →</span></div></div>
-      </article>
+      <BaseCard v-for="agent in agents" :key="agent.id" as="article" class="agent-list-card" padding="sm" @click="open(agent)">
+        <div class="agent-card-top"><div class="agent-symbol compact"><BaseIcon :name="agent.icon||modeMeta[agent.launch_mode]?.icon||'bot'" /></div><BaseBadge>{{modeMeta[agent.launch_mode]?.label||agent.agent_type}}</BaseBadge></div>
+        <div class="agent-list-content"><h2>{{agent.name}}</h2><p>{{agent.description||modeMeta[agent.launch_mode]?.hint}}</p><div class="agent-card-foot"><small>{{agent.category||modeMeta[agent.launch_mode]?.hint}}</small><span>打开 <BaseIcon name="arrow-right" :size="14" /></span></div></div>
+      </BaseCard>
       </div>
       <BaseEmptyState v-else title="暂无可用智能体" description="当前账号暂未获得智能体使用权限。" />
     </BaseCard>
   </template>
 
   <template v-else>
-    <div class="agent-chat-head"><button class="secondary" @click="backToList">← 返回智能体列表</button><div><h2>{{selected.name}}</h2><p>{{modeMeta[selected.launch_mode]?.hint}}</p></div></div>
+    <div class="agent-chat-head"><BaseButton variant="secondary" @click="backToList"><BaseIcon name="arrow-left" />返回智能体列表</BaseButton><div><h2>{{selected.name}}</h2><p>{{modeMeta[selected.launch_mode]?.hint}}</p></div></div>
     <div v-if="selected.launch_mode==='chat'" class="chat-layout">
       <div class="agent-card">
-        <div class="agent-identity"><div class="agent-symbol light">✦</div><span class="eyebrow">CHAT AGENT</span><h2>{{selected.name}}</h2><p>{{selected.description}}</p><div class="agent-scope dark"><small>授权知识 / 工具</small><strong>{{selected.knowledge_bases || selected.tools || '未配置'}}</strong></div></div>
-        <div class="conversation-head"><strong>我的对话</strong><button class="new-chat" @click="newConversation">＋ 新建</button></div>
-        <div class="conversation-list"><div v-for="item in sessions" :key="item.id" class="conversation-item" :class="{active:sessionId===item.id}"><button class="conversation-select" @click="loadSession(item.id)"><span><strong>{{item.title||'新对话'}}</strong><small>{{isActiveChatTaskStatus(item.latest_task_status)||pendingSessionIds.has(item.id)?'回答中…':item.message_count+' 条消息'}}</small></span></button><button class="conversation-delete" title="删除对话" :disabled="isActiveChatTaskStatus(item.latest_task_status)||pendingSessionIds.has(item.id)" @click="deleteConversation($event,item)">×</button></div></div>
+        <div class="agent-identity"><div class="agent-symbol light"><BaseIcon name="bot" /></div><span class="eyebrow">CHAT AGENT</span><h2>{{selected.name}}</h2><p>{{selected.description}}</p><div class="agent-scope dark"><small>授权知识 / 工具</small><strong>{{selected.knowledge_bases || selected.tools || '未配置'}}</strong></div></div>
+        <div class="conversation-head"><strong>我的对话</strong><BaseButton class="new-chat" variant="ghost" size="sm" @click="newConversation"><BaseIcon name="add" :size="14" />新建</BaseButton></div>
+        <div class="conversation-list"><div v-for="item in sessions" :key="item.id" class="conversation-item" :class="{active:sessionId===item.id}"><button class="conversation-select" @click="loadSession(item.id)"><span><strong>{{item.title||'新对话'}}</strong><small>{{isActiveChatTaskStatus(item.latest_task_status)||pendingSessionIds.has(item.id)?'回答中…':item.message_count+' 条消息'}}</small></span></button><BaseButton class="conversation-delete" variant="ghost" size="sm" title="删除对话" aria-label="删除对话" :disabled="isActiveChatTaskStatus(item.latest_task_status)||pendingSessionIds.has(item.id)" @click="deleteConversation($event,item)"><BaseIcon name="close" :size="14" /></BaseButton></div></div>
       </div>
-      <div class="card chat-box">
-        <div v-if="isAwaitingAnswer" class="actions"><span class="badge">{{task?.stage||'提交中'}}</span><button class="danger" @click="cancelTask">停止回答</button></div>
+      <BaseCard class="chat-box">
+        <div v-if="isAwaitingAnswer" class="actions"><BaseBadge tone="info">{{task?.stage||'提交中'}}</BaseBadge><BaseButton variant="danger" size="sm" @click="cancelTask"><BaseIcon name="stop" />停止回答</BaseButton></div>
         <div class="chat-scope fixed"><span>授权范围</span><strong>智能体知识库与企业系统工具</strong><small>由管理员统一配置，并在后端再次校验权限</small></div>
-        <div class="messages"><div v-for="(message,index) in messages" :key="message.id||index" class="message" :class="message.role">{{message.content||message.text}}<div v-if="message.tool_calls?.length" class="tool-call-note"><span v-for="(event,i) in message.tool_calls" :key="i">{{event.success?'✓':'!'}} {{event.connector_name||event.connector}} / {{event.tool}}{{i<message.tool_calls.length-1?'；':''}}</span></div><div v-if="message.citations?.length" class="citation">参考资料：<span v-for="(citation,i) in message.citations" :key="i"><a :href="'/api/v1/documents/'+citation.document_id+'/download'">《{{citation.title}}》</a>{{formatPageRange(citation.page,citation.page_end)}}{{i<message.citations.length-1?'；':''}}</span></div><div v-if="message.role==='assistant'&&message.id" class="actions"><button class="ghost" :disabled="message.rating===1" @click="feedback(message,1)">有帮助</button><button class="ghost" :disabled="message.rating===-1" @click="feedback(message,-1)">需改进</button></div></div></div>
-        <form class="chat-input" @submit.prevent="send"><textarea v-model="question" :disabled="isAwaitingAnswer" placeholder="请输入您想查询的问题…" required></textarea><button class="primary" :disabled="isAwaitingAnswer">{{isAwaitingAnswer?"回答中…":"发送"}}</button></form>
-      </div>
+        <div class="messages"><div v-for="(message,index) in messages" :key="message.id||index" class="message" :class="message.role">{{message.content||message.text}}<div v-if="message.tool_calls?.length" class="tool-call-note"><span v-for="(event,i) in message.tool_calls" :key="i"><BaseIcon :name="event.success?'check':'warning'" :size="13" /> {{event.connector_name||event.connector}} / {{event.tool}}{{i<message.tool_calls.length-1?'；':''}}</span></div><div v-if="message.citations?.length" class="citation">参考资料：<span v-for="(citation,i) in message.citations" :key="i"><a :href="'/api/v1/documents/'+citation.document_id+'/download'">《{{citation.title}}》</a>{{formatPageRange(citation.page,citation.page_end)}}{{i<message.citations.length-1?'；':''}}</span></div><div v-if="message.role==='assistant'&&message.id" class="actions"><BaseButton variant="ghost" size="sm" :disabled="message.rating===1" @click="feedback(message,1)">有帮助</BaseButton><BaseButton variant="ghost" size="sm" :disabled="message.rating===-1" @click="feedback(message,-1)">需改进</BaseButton></div></div></div>
+        <form class="chat-input" @submit.prevent="send"><textarea v-model="question" :disabled="isAwaitingAnswer" placeholder="请输入您想查询的问题…" required></textarea><BaseButton type="submit" :loading="isAwaitingAnswer" loading-text="回答中…"><BaseIcon name="send" />发送</BaseButton></form>
+      </BaseCard>
     </div>
     <WorkflowRun v-else-if="selected.launch_mode==='workflow'" :key="selected.id" :agent-id="selected.id" />
-    <div v-else class="card empty">该类型尚未配置运行器，请联系管理员。</div>
+    <BaseCard v-else><BaseEmptyState title="该类型尚未配置运行器" description="请联系管理员完成运行器配置。" /></BaseCard>
   </template>
 </template>

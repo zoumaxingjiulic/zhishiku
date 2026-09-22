@@ -3,8 +3,10 @@ import { computed, onMounted, reactive, ref } from "vue";
 import { api } from "../api";
 import AppModal from "../components/AppModal.vue";
 import BaseButton from "../components/base/BaseButton.vue";
+import BaseBadge from "../components/base/BaseBadge.vue";
 import BaseCard from "../components/base/BaseCard.vue";
 import BaseEmptyState from "../components/base/BaseEmptyState.vue";
+import BaseIcon from "../components/base/BaseIcon.vue";
 import BaseSkeleton from "../components/base/BaseSkeleton.vue";
 import { formatDate } from "../utils";
 
@@ -82,27 +84,27 @@ async function saveBinding() {
 
 <template>
   <div class="page-header"><div><h2>MCP 企业系统连接</h2><p>以 Streamable HTTP 接入企业系统，只向智能体授权明确声明为只读的工具</p></div></div>
-  <div class="page-toolbar"><button v-if="isAdmin" class="primary" @click="openCreate">＋ 新建连接</button></div>
+  <div class="page-toolbar"><BaseButton v-if="isAdmin" @click="openCreate"><BaseIcon name="add" />新建连接</BaseButton></div>
   <BaseCard v-if="loading" class="content-card page-loading"><BaseSkeleton height="120px" /><BaseSkeleton height="120px" /></BaseCard>
   <BaseCard v-else-if="loadError" class="content-card"><BaseEmptyState title="系统连接加载失败" :description="loadError" role="alert"><template #action><BaseButton variant="secondary" @click="load">重试</BaseButton></template></BaseEmptyState></BaseCard>
   <template v-else>
   <div class="connector-grid live-connectors">
-    <article v-for="item in payload.items" :key="item.id" class="card connector">
-      <div class="connector-title"><span class="connector-logo">{{ item.connector_type.toUpperCase() }}</span><span class="badge" :class="item.last_error?'failed':item.status==='active'?'success':'pending'">{{ item.last_error?'连接异常':item.status==='active'?'已启用':'待配置' }}</span></div>
+    <BaseCard v-for="item in payload.items" :key="item.id" as="article" class="connector">
+      <div class="connector-title"><span class="connector-logo">{{ item.connector_type.toUpperCase() }}</span><BaseBadge :tone="item.last_error?'danger':item.status==='active'?'success':'warning'">{{ item.last_error?'连接异常':item.status==='active'?'已启用':'待配置' }}</BaseBadge></div>
       <h2>{{ item.name }}</h2><p>{{ item.description || "暂无说明" }}</p>
       <dl class="connector-meta"><div><dt>传输</dt><dd>Streamable HTTP</dd></div><div><dt>工具</dt><dd>{{ item.tool_count || 0 }} 个</dd></div><div v-if="isAdmin"><dt>凭据</dt><dd>{{ item.has_credential ? "已加密保存" : "未配置" }}</dd></div><div><dt>最近检查</dt><dd>{{ formatDate(item.last_checked_at) }}</dd></div></dl>
       <div v-if="item.tools?.length" class="tool-tags"><span v-for="tool in item.tools" :key="tool.id" class="tool-tag">{{ tool.title || tool.tool_name }}<i v-if="tool.annotations?.readOnlyHint">只读</i></span></div>
       <p v-if="isAdmin && item.last_error" class="error connector-error">{{ item.last_error }}</p>
-      <div v-if="isAdmin" class="actions"><button class="secondary" @click="openEdit(item)">编辑</button><button class="primary" :disabled="busy || !item.has_credential" @click="discover(item)">连接并发现工具</button></div>
-    </article>
-    <div v-if="!payload.items.length" class="card empty">尚未配置企业系统连接</div>
+      <div v-if="isAdmin" class="actions"><BaseButton variant="secondary" size="sm" @click="openEdit(item)">编辑</BaseButton><BaseButton size="sm" :disabled="busy || !item.has_credential" @click="discover(item)"><BaseIcon name="refresh" />连接并发现工具</BaseButton></div>
+    </BaseCard>
+    <BaseCard v-if="!payload.items.length"><BaseEmptyState title="尚未配置企业系统连接" description="新建连接后，可发现并按智能体授权只读工具。" /></BaseCard>
   </div>
 
-  <section v-if="isAdmin" class="card binding-panel">
-    <div class="card-header"><div><h2>智能体工具授权</h2><p>工具先由 MCP 服务声明，再由平台管理员按智能体最小授权；当前仅允许只读工具</p></div><button class="primary" :disabled="!selectedAgentId" @click="saveBinding">保存授权</button></div>
+  <BaseCard v-if="isAdmin" class="binding-panel">
+    <div class="card-header"><div><h2>智能体工具授权</h2><p>工具先由 MCP 服务声明，再由平台管理员按智能体最小授权；当前仅允许只读工具</p></div><BaseButton :disabled="!selectedAgentId" @click="saveBinding">保存授权</BaseButton></div>
     <label class="binding-agent">选择智能体<select v-model="selectedAgentId"><option v-for="agent in bindingData.agents" :key="agent.id" :value="agent.id">{{ agent.name }}（{{ agent.code }}）</option></select></label>
-    <div class="tool-binding-grid"><label v-for="tool in bindingData.tools" :key="tool.id" class="tool-binding" :class="{checked:isChecked(tool.id)}"><input type="checkbox" :checked="isChecked(tool.id)" @change="toggleTool(tool.id)"><span><strong>{{ tool.connector_name }} / {{ tool.title || tool.tool_name }}</strong><small>{{ tool.description }}</small></span><i class="badge success">只读</i></label><div v-if="!bindingData.tools.length" class="empty">请先连接 MCP 并发现工具</div></div>
-  </section>
+    <div class="tool-binding-grid"><label v-for="tool in bindingData.tools" :key="tool.id" class="tool-binding" :class="{checked:isChecked(tool.id)}"><input type="checkbox" :checked="isChecked(tool.id)" @change="toggleTool(tool.id)"><span><strong>{{ tool.connector_name }} / {{ tool.title || tool.tool_name }}</strong><small>{{ tool.description }}</small></span><BaseBadge tone="success">只读</BaseBadge></label><BaseEmptyState v-if="!bindingData.tools.length" title="请先连接 MCP 并发现工具" /></div>
+  </BaseCard>
   </template>
 
   <AppModal v-if="modal" :title="editingId?'编辑 MCP 连接':'新建 MCP 连接'" @close="modal=false">
@@ -112,7 +114,7 @@ async function saveBinding() {
       <label>MCP 服务地址<input v-model.trim="form.base_url" type="url" placeholder="http://server:port/mcp" required></label>
       <label>Bearer Token<input v-model="form.bearer_token" type="password" autocomplete="new-password" :placeholder="editingId?'留空表示保留原凭据':'输入访问 Token'"><small class="muted">凭据经 Fernet 加密后存储，页面不会回显。</small></label>
       <label>说明<textarea v-model="form.description"></textarea></label>
-      <button class="primary" :disabled="busy">{{busy?'保存中…':'保存连接'}}</button>
+      <BaseButton type="submit" :loading="busy" loading-text="保存中…">保存连接</BaseButton>
     </form>
   </AppModal>
 </template>

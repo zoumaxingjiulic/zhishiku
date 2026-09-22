@@ -184,9 +184,6 @@ tr:last-child td { border-bottom: 0; }
 .actions button { padding: 7px 10px; font-size: 11px; }
 
 .kb-layout { display: grid; grid-template-columns: minmax(0, 1fr); align-items: start; gap: 16px; }
-.kb-layout > .card { position: static; padding: 20px; }
-.kb-layout > .card:first-child { padding: 12px; background: linear-gradient(135deg, #fff, #f8faff); }
-.kb-layout > .card:last-child { padding: 24px; }
 .kb-list { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 10px; }
 .kb-item { position: relative; width: 100%; min-height: 78px; overflow: hidden; border: 1px solid var(--line); border-radius: 10px; padding: 15px 16px; background: #fff; color: var(--ink); text-align: left; transition: border-color .18s, box-shadow .18s, transform .18s; }
 .kb-item::before { content: ""; position: absolute; inset: 0 auto 0 0; width: 3px; background: transparent; }

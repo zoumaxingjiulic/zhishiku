@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { nextTick, onBeforeUnmount, onMounted, ref, useId } from "vue";
+import BaseButton from "./base/BaseButton.vue";
+import BaseIcon from "./base/BaseIcon.vue";
 
 const props = defineProps<{ title: string }>();
 const emit = defineEmits<{ close: [] }>();
@@ -67,7 +69,7 @@ onBeforeUnmount(() => {
     >
       <header>
         <h2 :id="titleId">{{ props.title }}</h2>
-        <button class="icon-button" type="button" :aria-label="`关闭${props.title}`" @click="close">×</button>
+        <BaseButton class="icon-button" variant="ghost" size="sm" :aria-label="`关闭${props.title}`" @click="close"><BaseIcon name="close" /></BaseButton>
       </header>
       <slot />
     </section>
