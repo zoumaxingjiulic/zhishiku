@@ -1,21 +1,19 @@
 <script setup lang="ts">
-import { ref } from "vue";
 import BaseButton from "../base/BaseButton.vue";
 
 const props = defineProps<{ awaiting: boolean; disabled?: boolean }>();
 const emit = defineEmits<{ send: [question: string]; stop: [] }>();
-const question = ref("");
+const question = defineModel<string>({ default: "" });
 const quickQuestions = ["年假怎么申请？", "查询物料可用库存", "帮我梳理这份制度的重点"];
 
 function submit(value = question.value) {
   const content = value.trim();
   if (!content || props.awaiting || props.disabled) return;
   emit("send", content);
-  question.value = "";
 }
 
 function onKeydown(event: KeyboardEvent) {
-  if (event.key === "Enter" && !event.shiftKey) {
+  if (event.key === "Enter" && !event.shiftKey && !event.isComposing && event.keyCode !== 229) {
     event.preventDefault();
     submit();
   }

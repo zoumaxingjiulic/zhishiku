@@ -144,6 +144,27 @@ class AssistantRepository:
                 result[value['assistant_message_id']] = value['source_authority']
         return result
 
+    def message_execution_summaries(
+        self, session_id: str, agent_id: int, user_id: int, message_ids: list[int]
+    ) -> dict[int, dict]:
+        if not message_ids:
+            return {}
+        placeholders = ','.join(['%s'] * len(message_ids))
+        self.cursor.execute(
+            "SELECT result_json FROM chat_task WHERE session_id=%s AND agent_id=%s AND user_id=%s "
+            "AND status='succeeded' "
+            f"AND JSON_EXTRACT(result_json,'$.assistant_message_id') IN ({placeholders})",
+            (session_id, agent_id, user_id, *message_ids),
+        )
+        result: dict[int, dict] = {}
+        for row in self.cursor.fetchall():
+            value = _parse_object(row.get('result_json'))
+            message_id = value.get('assistant_message_id')
+            summary = value.get('intent')
+            if message_id in message_ids and isinstance(summary, dict):
+                result[message_id] = summary
+        return result
+
     @staticmethod
     def _department_ids(user: dict[str, Any]) -> list[int]:
         return list(dict.fromkeys(int(item) for item in user.get("department_ids") or []))

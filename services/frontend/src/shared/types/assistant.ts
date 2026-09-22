@@ -46,6 +46,7 @@ export interface AssistantTask {
   error_code?: string | null;
   updated_at?: string | null;
   execution_summary?: ExecutionSummary | null;
+  assistant_message_id?: number | null;
 }
 
 export interface AssistantSession {
@@ -73,6 +74,8 @@ export interface AssistantToolCall {
   tool?: string;
   success?: boolean;
   error?: string | null;
+  called_at?: string | null;
+  argument_keys?: string[];
 }
 
 export interface AssistantMessage {
@@ -83,6 +86,7 @@ export interface AssistantMessage {
   tool_calls?: AssistantToolCall[];
   created_at?: string;
   optimistic?: boolean;
+  execution_summary?: ExecutionSummary | null;
 }
 
 export interface AssistantConversationDetail {

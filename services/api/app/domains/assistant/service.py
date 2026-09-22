@@ -51,6 +51,16 @@ class AssistantService(AgentService):
     def messages(self, user, sid):
         aid = self.assistant()['id']
         detail = self.get_conversation(user, aid, sid)
+        assistant_message_ids = [
+            message['id'] for message in detail['messages']
+            if message.get('role') == 'assistant' and isinstance(message.get('id'), int)
+        ]
+        summaries = self.skill_repository.message_execution_summaries(
+            sid, aid, user['id'], assistant_message_ids
+        )
+        for message in detail['messages']:
+            if message.get('id') in summaries:
+                message['execution_summary'] = summaries[message['id']]
         detail['latest_task'] = task_view(self.repository.latest_task(aid, sid, user['id']))
         return detail
 
@@ -87,6 +97,8 @@ class AssistantService(AgentService):
             result['status'] = 'cancel_requested'
         completed = parse_json(row.get('result_json'), {}) if row.get('status') == 'succeeded' else {}
         result['execution_summary'] = completed.get('intent')
+        if isinstance(completed.get('assistant_message_id'), int):
+            result['assistant_message_id'] = completed['assistant_message_id']
         return result
 
     def cancel(self, user, tid):

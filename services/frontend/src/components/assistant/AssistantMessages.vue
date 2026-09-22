@@ -1,9 +1,8 @@
 <script setup lang="ts">
-import { computed } from "vue";
 import BaseBadge from "../base/BaseBadge.vue";
 import BaseEmptyState from "../base/BaseEmptyState.vue";
 import BaseIcon from "../base/BaseIcon.vue";
-import type { AssistantCapabilities, AssistantMessage, AssistantTask, CapabilityRef } from "../../shared/types/assistant";
+import type { AssistantCapabilities, AssistantMessage, AssistantTask, CapabilityRef, ExecutionSummary } from "../../shared/types/assistant";
 
 const props = defineProps<{
   messages: AssistantMessage[];
@@ -22,8 +21,14 @@ function selected(source: CapabilityRef[] | undefined, ids: number[] | undefined
   return source.filter(item => wanted.has(item.id));
 }
 
-const selectedCapabilities = computed(() => {
-  const selection = props.task?.execution_summary?.selection;
+function summaryFor(message: AssistantMessage): ExecutionSummary | null {
+  if (message.execution_summary) return message.execution_summary;
+  if (props.task?.assistant_message_id === message.id) return props.task.execution_summary ?? null;
+  return null;
+}
+
+function selectedCapabilities(message: AssistantMessage) {
+  const selection = summaryFor(message)?.selection;
   if (!props.capabilities || !selection) return [];
   return [
     ...selected(props.capabilities.knowledge_bases, selection.knowledge_base_ids).map(item => ({ ...item, kind: "知识库" })),
@@ -31,11 +36,6 @@ const selectedCapabilities = computed(() => {
     ...selected(props.capabilities.agents, selection.agent_ids).map(item => ({ ...item, kind: "智能体" })),
     ...selected(props.capabilities.skills, selection.skill_ids).map(item => ({ ...item, kind: "Skill" })),
   ];
-});
-const latestAssistantId = computed(() => [...props.messages].reverse().find(message => message.role === "assistant")?.id);
-
-function isLatestAssistant(message: AssistantMessage) {
-  return message.role === "assistant" && message.id === latestAssistantId.value;
 }
 
 function pageLabel(page?: number | null, pageEnd?: number | null) {
@@ -54,19 +54,19 @@ function pageLabel(page?: number | null, pageEnd?: number | null) {
       <div class="assistant-message-body">
         <div class="assistant-message-copy">{{ message.content }}</div>
         <span v-if="message.optimistic" class="assistant-saving">正在保存…</span>
-        <div v-if="isLatestAssistant(message) && selectedCapabilities.length" class="assistant-capability-tags" aria-label="本次使用的能力">
-          <BaseBadge v-for="item in selectedCapabilities" :key="`${item.kind}-${item.id}`" tone="info" :title="item.kind">{{ item.name }}</BaseBadge>
+        <div v-if="selectedCapabilities(message).length" class="assistant-capability-tags" aria-label="本次使用的能力">
+          <BaseBadge v-for="item in selectedCapabilities(message)" :key="`${item.kind}-${item.id}`" tone="info" :title="item.kind">{{ item.name }}</BaseBadge>
         </div>
         <section v-if="message.citations?.length" class="assistant-citations" aria-label="引用来源">
           <strong>引用来源</strong>
           <ul><li v-for="citation in message.citations" :key="`${citation.document_id}-${citation.page}`"><a :href="`/api/v1/documents/${citation.document_id}/download`">《{{ citation.title || `文档 ${citation.document_id}` }}》</a>{{ pageLabel(citation.page, citation.page_end) }}</li></ul>
         </section>
-        <details v-if="message.role === 'assistant' && ((isLatestAssistant(message) && task?.execution_summary) || message.tool_calls?.length)" class="assistant-timeline">
+        <details v-if="message.role === 'assistant' && (summaryFor(message) || message.tool_calls?.length)" class="assistant-timeline">
           <summary>执行时间线</summary>
           <ol>
-            <li v-if="isLatestAssistant(message) && task?.execution_summary"><strong>意图识别</strong><span>{{ intentNames[task.execution_summary.intent_type] || task.execution_summary.intent_type }}<template v-if="task.execution_summary.confidence != null"> · {{ Math.round(task.execution_summary.confidence * 100) }}%</template></span><small v-if="task.execution_summary.reason">{{ task.execution_summary.reason }}</small></li>
-            <li v-for="(tool, index) in message.tool_calls" :key="index"><strong>{{ tool.success === false ? '工具调用失败' : '工具调用' }}</strong><span>{{ tool.connector_name || tool.connector || '企业系统' }} / {{ tool.tool || '只读查询' }}</span><small v-if="tool.error">{{ tool.error }}</small></li>
-            <li v-if="isLatestAssistant(message) && task?.stage"><strong>任务状态</strong><span>{{ task.stage }}</span></li>
+            <li v-if="summaryFor(message)"><strong>意图识别</strong><span>{{ intentNames[summaryFor(message)!.intent_type] || summaryFor(message)!.intent_type }}<template v-if="summaryFor(message)!.confidence != null"> · {{ Math.round(summaryFor(message)!.confidence! * 100) }}%</template></span><small v-if="summaryFor(message)!.reason">{{ summaryFor(message)!.reason }}</small></li>
+            <li v-for="(tool, index) in message.tool_calls" :key="index"><strong>{{ tool.success === false ? '工具调用失败' : '工具调用' }}</strong><span>{{ tool.connector_name || tool.connector || '企业系统' }} / {{ tool.tool || '只读查询' }}</span><small v-if="tool.called_at">{{ tool.called_at }}</small><small v-if="tool.argument_keys?.length">参数字段：{{ tool.argument_keys.join('、') }}</small><small v-if="tool.error">{{ tool.error }}</small></li>
+            <li v-if="task?.assistant_message_id === message.id && task?.stage"><strong>任务状态</strong><span>{{ task.stage }}</span></li>
           </ol>
         </details>
       </div>

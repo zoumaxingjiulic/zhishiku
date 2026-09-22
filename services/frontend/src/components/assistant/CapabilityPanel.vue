@@ -19,6 +19,12 @@ const groups = computed(() => props.capabilities ? [
   { key: "skill", label: "Skill", items: props.capabilities.skills },
 ] : []);
 const capabilityCount = computed(() => groups.value.reduce((sum, group) => sum + group.items.length, 0));
+const statusCopy = computed(() => {
+  if (props.error) return { title: "服务状态未知", detail: "暂时无法确认可用性" };
+  if (props.loading) return { title: "正在检查能力目录", detail: "可用性尚未确认" };
+  if (!props.capabilities) return { title: "服务状态未知", detail: "暂时无法确认可用性" };
+  return { title: "能力目录已加载", detail: "只展示已授权范围" };
+});
 </script>
 
 <template>
@@ -38,7 +44,7 @@ const capabilityCount = computed(() => groups.value.reduce((sum, group) => sum +
       <p>{{ task.stage || "等待处理" }}</p>
       <small v-if="task.updated_at">更新于 {{ task.updated_at }}</small>
     </section>
-    <section class="assistant-system-status"><span aria-hidden="true" /><div><strong>系统服务正常</strong><small>任务在后台安全执行</small></div></section>
+    <section class="assistant-system-status" :class="{ 'is-unavailable': error || !capabilities }"><span aria-hidden="true" /><div><strong>{{ statusCopy.title }}</strong><small>{{ statusCopy.detail }}</small></div></section>
   </div>
 </template>
 
@@ -60,6 +66,7 @@ const capabilityCount = computed(() => groups.value.reduce((sum, group) => sum +
 .recent-task p { margin: 0; color: var(--color-text-muted); font-size: .75rem; }
 .assistant-system-status { display: flex; align-items: center; gap: var(--space-2); margin-top: auto; border-top: 1px solid var(--color-border); padding-top: var(--space-4); }
 .assistant-system-status > span { width: 8px; height: 8px; border-radius: 50%; background: var(--color-success); }
+.assistant-system-status.is-unavailable > span { background: var(--color-text-muted); }
 .assistant-system-status strong, .assistant-system-status small { display: block; }
 .assistant-system-status strong { font-size: .75rem; }.assistant-system-status small { margin-top: 2px; color: var(--color-text-muted); font-size: .625rem; }
 </style>

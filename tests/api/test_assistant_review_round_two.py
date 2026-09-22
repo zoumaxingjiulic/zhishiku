@@ -220,3 +220,32 @@ def test_message_authorities_query_is_scoped_to_owner_session_and_before_message
         def fetchall(self): return [dict(r) for r in self.result.fetchall()]
     actual = AssistantRepository(Cursor()).message_authorities(dict(TASK, user_message_id=8), [2, 3, 4, 5, 6])
     assert actual == {2: {'version': 1}}
+
+
+def test_message_execution_summaries_query_is_scoped_and_batched():
+    import sqlite3
+    from app.domains.assistant.repository import AssistantRepository
+    db = sqlite3.connect(':memory:')
+    db.row_factory = sqlite3.Row
+    db.execute('CREATE TABLE chat_task(session_id, agent_id, user_id, status, result_json)')
+    for uid, sid, aid, outid in [(8, 's1', 99, 2), (9, 's1', 99, 3), (8, 's2', 99, 4), (8, 's1', 77, 5)]:
+        db.execute('INSERT INTO chat_task VALUES(?,?,?,?,?)', (
+            sid, aid, uid, 'succeeded',
+            json.dumps({'assistant_message_id': outid, 'intent': {'intent_type': f'intent-{outid}'}}),
+        ))
+
+    class Cursor:
+        calls = 0
+
+        def execute(self, sql, params):
+            self.calls += 1
+            self.result = db.execute(sql.replace('%s', '?'), params)
+
+        def fetchall(self):
+            return [dict(row) for row in self.result.fetchall()]
+
+    cursor = Cursor()
+    actual = AssistantRepository(cursor).message_execution_summaries('s1', 99, 8, [2, 3, 4, 5])
+
+    assert actual == {2: {'intent_type': 'intent-2'}}
+    assert cursor.calls == 1

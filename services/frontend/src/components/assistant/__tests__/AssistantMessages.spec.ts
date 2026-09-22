@@ -9,10 +9,10 @@ describe("AssistantMessages", () => {
         messages: [{ id: 3, role: "assistant", content: "上一轮回答", citations: [], tool_calls: [] }, {
           id: 7, role: "assistant", content: "库存 12 件",
           citations: [{ document_id: 11, title: "库存管理制度", page: 3 }],
-          tool_calls: [{ connector_tool_id: 21, connector_name: "ERP", tool: "get_inventory", success: true }],
+          tool_calls: [{ connector_tool_id: 21, connector_name: "ERP", tool: "get_inventory", success: true, called_at: "2026-09-22T10:30:00Z", argument_keys: ["material_code", "organization"] }],
         }],
         task: {
-          id: "t1", session_id: "s1", status: "succeeded", stage: "完成",
+          id: "t1", session_id: "s1", status: "succeeded", stage: "完成", assistant_message_id: 7,
           execution_summary: {
             intent_type: "multi_capability", confidence: 0.94,
             selection: { knowledge_base_ids: [1], tool_ids: [21], agent_ids: [31], skill_ids: [41] },
@@ -37,6 +37,31 @@ describe("AssistantMessages", () => {
     await fireEvent.click(screen.getByText("执行时间线"));
     expect(screen.getByText("需要联合查询")).toBeInTheDocument();
     expect(screen.getByText(/ERP \/ get_inventory/)).toBeInTheDocument();
+    expect(screen.getByText(/material_code、organization/)).toBeInTheDocument();
+    expect(screen.getByText(/2026-09-22T10:30:00Z/)).toBeInTheDocument();
+  });
+
+  it("binds execution provenance to message ids and never guesses from the latest answer", () => {
+    render(AssistantMessages, {
+      props: {
+        messages: [
+          { id: 3, role: "assistant", content: "历史回答", execution_summary: { intent_type: "agent_task", selection: { agent_ids: [31] } } },
+          { id: 7, role: "assistant", content: "最新回答" },
+        ],
+        task: {
+          id: "t-new", session_id: "s1", status: "succeeded", assistant_message_id: 999,
+          execution_summary: { intent_type: "multi_capability", selection: { skill_ids: [41] } },
+        },
+        capabilities: {
+          knowledge_bases: [], tools: [],
+          agents: [{ id: 31, code: "EXPERT", name: "历史专家" }],
+          skills: [{ id: 41, code: "NEW_SKILL", name: "不应串到最新回答" }],
+        },
+      },
+    });
+
+    expect(screen.getByText("历史专家")).toBeInTheDocument();
+    expect(screen.queryByText("不应串到最新回答")).not.toBeInTheDocument();
   });
 
   it("shows an accessible empty state when a conversation has no messages", () => {

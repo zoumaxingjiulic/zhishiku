@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, ref } from "vue";
+import { computed, nextTick, onBeforeUnmount, ref } from "vue";
 import AssistantComposer from "../components/assistant/AssistantComposer.vue";
 import AssistantConversationList from "../components/assistant/AssistantConversationList.vue";
 import AssistantMessages from "../components/assistant/AssistantMessages.vue";
@@ -10,36 +10,86 @@ import { useAssistantChat } from "../composables/useAssistantChat";
 
 const {
   sessions, activeSessionId, capabilities, loading, error, capabilityError,
-  messages, activeTask, isAwaitingAnswer, createSession, selectSession,
+  messages, activeTask, isAwaitingAnswer, activeSessionReady, draft, createSession, selectSession,
   renameSession, deleteSession, sendMessage, stopAnswer,
 } = useAssistantChat();
 
-const isNarrow = ref(window.innerWidth < 1024);
+const isNarrow = ref(window.innerWidth < 1360);
 const sessionsOpen = ref(false);
 const capabilitiesOpen = ref(false);
+const sessionPanel = ref<HTMLElement | null>(null);
+const capabilityPanel = ref<HTMLElement | null>(null);
+let drawerTrigger: HTMLElement | null = null;
 const activeSession = computed(() => sessions.value.find(item => item.id === activeSessionId.value));
+const drawerOpen = computed(() => isNarrow.value && (sessionsOpen.value || capabilitiesOpen.value));
 
 function syncViewport() {
-  isNarrow.value = window.innerWidth < 1024;
+  isNarrow.value = window.innerWidth < 1360;
   if (!isNarrow.value) {
     sessionsOpen.value = false;
     capabilitiesOpen.value = false;
   }
 }
 
-function openSessions() {
-  sessionsOpen.value = true;
-  capabilitiesOpen.value = false;
+function focusable(panel: HTMLElement | null) {
+  return panel ? [...panel.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), textarea:not([disabled]), a[href], [tabindex]:not([tabindex="-1"])')]
+    .filter(item => item.tabIndex >= 0) : [];
 }
 
-function openCapabilities() {
+async function focusDrawer(panel: HTMLElement | null) {
+  await nextTick();
+  focusable(panel)[0]?.focus();
+}
+
+function openSessions(event: MouseEvent) {
+  drawerTrigger = event.currentTarget as HTMLElement;
+  sessionsOpen.value = true;
+  capabilitiesOpen.value = false;
+  void focusDrawer(sessionPanel.value);
+}
+
+function openCapabilities(event: MouseEvent) {
+  drawerTrigger = event.currentTarget as HTMLElement;
   capabilitiesOpen.value = true;
   sessionsOpen.value = false;
+  void focusDrawer(capabilityPanel.value);
+}
+
+async function closeDrawer() {
+  sessionsOpen.value = false;
+  capabilitiesOpen.value = false;
+  await nextTick();
+  drawerTrigger?.focus();
+  drawerTrigger = null;
+}
+
+function trapDrawerFocus(event: KeyboardEvent, panel: HTMLElement | null) {
+  if (event.key === "Escape") {
+    event.preventDefault();
+    void closeDrawer();
+    return;
+  }
+  if (event.key !== "Tab") return;
+  const items = focusable(panel);
+  if (!items.length) return;
+  const first = items[0];
+  const last = items[items.length - 1];
+  if (event.shiftKey && document.activeElement === first) {
+    event.preventDefault();
+    last.focus();
+  } else if (!event.shiftKey && document.activeElement === last) {
+    event.preventDefault();
+    first.focus();
+  }
+}
+
+async function handleSend(question: string) {
+  if (await sendMessage(question)) draft.value = "";
 }
 
 async function chooseSession(sessionId: string) {
   await selectSession(sessionId);
-  sessionsOpen.value = false;
+  if (isNarrow.value) await closeDrawer();
 }
 
 window.addEventListener("resize", syncViewport);
@@ -47,14 +97,15 @@ onBeforeUnmount(() => window.removeEventListener("resize", syncViewport));
 </script>
 
 <template>
-  <section class="assistant-workspace" aria-label="企业总助手工作区">
-    <div class="assistant-mobile-tools">
+  <section class="assistant-workspace" aria-label="企业总助手工作区" :data-layout="isNarrow ? 'compact' : 'wide'">
+    <div class="assistant-mobile-tools" :inert="drawerOpen ? true : undefined">
       <button type="button" aria-label="打开会话列表" :aria-expanded="sessionsOpen" @click="openSessions"><BaseIcon name="menu" :size="18" />会话</button>
       <button type="button" aria-label="打开能力面板" :aria-expanded="capabilitiesOpen" @click="openCapabilities"><BaseIcon name="sparkles" :size="18" />能力</button>
     </div>
 
-    <div v-if="isNarrow && (sessionsOpen || capabilitiesOpen)" class="assistant-drawer-backdrop" aria-hidden="true" @click="sessionsOpen = capabilitiesOpen = false" />
+    <div v-if="drawerOpen" class="assistant-drawer-backdrop" aria-hidden="true" @click="closeDrawer" />
     <aside
+      ref="sessionPanel"
       class="assistant-session-panel"
       :class="{ 'is-drawer': isNarrow, 'is-open': !isNarrow || sessionsOpen }"
       :role="isNarrow ? 'dialog' : 'complementary'"
@@ -62,8 +113,9 @@ onBeforeUnmount(() => window.removeEventListener("resize", syncViewport));
       :aria-modal="isNarrow ? 'true' : undefined"
       :aria-hidden="isNarrow ? !sessionsOpen : undefined"
       :inert="isNarrow && !sessionsOpen ? true : undefined"
+      @keydown="trapDrawerFocus($event, sessionPanel)"
     >
-      <button v-if="isNarrow" class="assistant-drawer-close" type="button" aria-label="关闭会话列表" @click="sessionsOpen = false"><BaseIcon name="close" /></button>
+      <button v-if="isNarrow" class="assistant-drawer-close" type="button" aria-label="关闭会话列表" @click="closeDrawer"><BaseIcon name="close" /></button>
       <AssistantConversationList
         :sessions="sessions"
         :active-session-id="activeSessionId"
@@ -74,7 +126,7 @@ onBeforeUnmount(() => window.removeEventListener("resize", syncViewport));
       />
     </aside>
 
-    <main class="assistant-chat-panel" :inert="isNarrow && (sessionsOpen || capabilitiesOpen) ? true : undefined">
+    <main class="assistant-chat-panel" :inert="drawerOpen ? true : undefined">
       <header class="assistant-chat-heading">
         <div><span class="assistant-eyebrow">ENTERPRISE ASSISTANT</span><h2>{{ activeSession?.title || "企业总助手" }}</h2><p>统一访问企业知识、只读系统工具与专业智能体</p></div>
         <span v-if="activeTask" class="assistant-status">{{ activeTask.stage || activeTask.status }}</span>
@@ -82,10 +134,11 @@ onBeforeUnmount(() => window.removeEventListener("resize", syncViewport));
       <div v-if="error" class="assistant-alert" role="alert">{{ error }}</div>
       <div v-if="loading" class="assistant-loading" role="status" aria-label="正在加载企业总助手"><BaseSkeleton height="68px" /><BaseSkeleton height="68px" width="72%" /></div>
       <AssistantMessages v-else :messages="messages" :task="activeTask" :capabilities="capabilities" />
-      <AssistantComposer :awaiting="isAwaitingAnswer" :disabled="!activeSessionId" @send="sendMessage" @stop="stopAnswer" />
+      <AssistantComposer v-model="draft" :awaiting="isAwaitingAnswer" :disabled="!activeSessionId || !activeSessionReady" @send="handleSend" @stop="stopAnswer" />
     </main>
 
     <aside
+      ref="capabilityPanel"
       class="assistant-capability-panel"
       :class="{ 'is-drawer': isNarrow, 'is-open': !isNarrow || capabilitiesOpen }"
       :role="isNarrow ? 'dialog' : 'complementary'"
@@ -93,8 +146,9 @@ onBeforeUnmount(() => window.removeEventListener("resize", syncViewport));
       :aria-modal="isNarrow ? 'true' : undefined"
       :aria-hidden="isNarrow ? !capabilitiesOpen : undefined"
       :inert="isNarrow && !capabilitiesOpen ? true : undefined"
+      @keydown="trapDrawerFocus($event, capabilityPanel)"
     >
-      <button v-if="isNarrow" class="assistant-drawer-close" type="button" aria-label="关闭能力面板" @click="capabilitiesOpen = false"><BaseIcon name="close" /></button>
+      <button v-if="isNarrow" class="assistant-drawer-close" type="button" aria-label="关闭能力面板" @click="closeDrawer"><BaseIcon name="close" /></button>
       <CapabilityPanel :capabilities="capabilities" :task="activeTask" :loading="loading" :error="capabilityError" />
     </aside>
   </section>
@@ -109,7 +163,7 @@ onBeforeUnmount(() => window.removeEventListener("resize", syncViewport));
 .assistant-alert { margin: var(--space-3) var(--space-5) 0; border-radius: var(--radius-sm); padding: var(--space-3); background: var(--color-danger-soft); color: var(--color-danger); font-size: .8125rem; }
 .assistant-loading { flex: 1; display: grid; align-content: start; gap: var(--space-4); padding: var(--space-7); }
 .assistant-mobile-tools { display: none; }.assistant-drawer-backdrop { display: none; }.assistant-drawer-close { display: none; }
-@media (max-width: 1023px) {
+@media (max-width: 1359px) {
   .assistant-workspace { position: relative; grid-template-columns: minmax(0, 1fr); min-height: min(760px, calc(100vh - 150px)); overflow: visible; }
   .assistant-mobile-tools { position: absolute; z-index: 3; top: var(--space-3); right: var(--space-3); display: flex; gap: var(--space-2); }
   .assistant-mobile-tools button { display: inline-flex; align-items: center; gap: var(--space-1); border: 1px solid var(--color-border); border-radius: var(--radius-sm); padding: var(--space-2); background: var(--color-surface); color: var(--color-text); font-size: .75rem; }

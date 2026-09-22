@@ -1,3 +1,4 @@
+import json
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -36,6 +37,18 @@ class MemoryRepository:
     def list_messages(self, sid):
         return list(self.messages[sid])
 
+    def message_execution_summaries(self, sid, aid, uid, message_ids):
+        result = {}
+        for task in self.tasks.values():
+            if task['session_id'] != sid or task['agent_id'] != aid or task['user_id'] != uid:
+                continue
+            if task['status'] != 'succeeded':
+                continue
+            value = json.loads(task.get('result_json') or '{}')
+            if value.get('assistant_message_id') in message_ids and isinstance(value.get('intent'), dict):
+                result[value['assistant_message_id']] = value['intent']
+        return result
+
     def rename_session(self, sid, title):
         self.sessions[sid]['title'] = title
 
@@ -55,8 +68,9 @@ class MemoryRepository:
         return sum(t['user_id'] == uid and t['status'] in ('queued', 'running') for t in self.tasks.values())
 
     def insert_message(self, sid, role, content):
-        self.messages[sid].append(dict(role=role, content=content))
-        return len(self.messages[sid])
+        message_id = len(self.messages[sid]) + 1
+        self.messages[sid].append(dict(id=message_id, role=role, content=content))
+        return message_id
 
     def insert_task(self, tid, sid, aid, uid, mid, key, request):
         self.tasks[tid] = dict(id=tid, session_id=sid, agent_id=aid, user_id=uid, request_key=key,
@@ -147,3 +161,36 @@ def test_foreign_resources_are_404_for_every_read_write_and_cancel():
         assert client.post('/api/v1/assistant/sessions/foreign/messages', json={'question': 'x', 'request_key': 'foreign-request'}).status_code == 404
         assert client.get('/api/v1/assistant/tasks/foreign-task').status_code == 404
         assert client.post('/api/v1/assistant/tasks/foreign-task/cancel').status_code == 404
+
+
+def test_task_and_message_details_expose_only_bound_execution_summary():
+    client, repo = client_and_repository()
+    with client:
+        sid = client.post('/api/v1/assistant/sessions').json()['id']
+        task = client.post(
+            f'/api/v1/assistant/sessions/{sid}/messages',
+            json={'question': '请分析', 'request_key': 'summary-key'},
+        ).json()
+        assistant_message_id = repo.insert_message(sid, 'assistant', '分析结果')
+        execution_summary = {
+            'intent_type': 'agent_task',
+            'selection': {'agent_ids': [31], 'skill_ids': [41]},
+        }
+        repo.tasks[task['id']].update({
+            'status': 'succeeded',
+            'result_json': json.dumps({
+                'assistant_message_id': assistant_message_id,
+                'intent': execution_summary,
+                'source_authority': {'credential': 'must-not-leak'},
+            }),
+        })
+
+        task_detail = client.get(f"/api/v1/assistant/tasks/{task['id']}").json()
+        conversation = client.get(f'/api/v1/assistant/sessions/{sid}/messages').json()
+        assistant_message = next(message for message in conversation['messages'] if message['id'] == assistant_message_id)
+
+        assert task_detail['assistant_message_id'] == assistant_message_id
+        assert task_detail['execution_summary'] == execution_summary
+        assert assistant_message['execution_summary'] == execution_summary
+        assert 'source_authority' not in json.dumps(task_detail)
+        assert 'source_authority' not in json.dumps(assistant_message)

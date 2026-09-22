@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/vue";
+import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/vue";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import DashboardPage from "../DashboardPage.vue";
 
@@ -7,7 +7,7 @@ vi.mock("../../api", () => ({ api: apiMock }));
 
 describe("enterprise assistant workbench", () => {
   beforeEach(() => {
-    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1280 });
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1440 });
     apiMock.mockImplementation(async (path: string) => {
       if (path === "/api/v1/assistant/capabilities") {
         return { knowledge_bases: [{ id: 1, code: "POLICY", name: "制度知识库", description: "公司制度" }], tools: [], agents: [], skills: [] };
@@ -46,6 +46,8 @@ describe("enterprise assistant workbench", () => {
     render(DashboardPage);
     expect(await screen.findByRole("alert")).toHaveTextContent("服务连接失败");
     expect(screen.getByRole("button", { name: "新建会话" })).toBeInTheDocument();
+    expect(screen.queryByText("系统服务正常")).not.toBeInTheDocument();
+    expect(screen.getByText("服务状态未知")).toBeInTheDocument();
   });
 
   it("opens independent conversation and capability drawers on narrow screens", async () => {
@@ -56,8 +58,53 @@ describe("enterprise assistant workbench", () => {
     expect(screen.getByRole("dialog", { name: "会话列表" })).toHaveClass("is-open");
     expect(document.querySelector(".assistant-capability-panel")).toHaveAttribute("aria-hidden", "true");
     expect(document.querySelector(".assistant-chat-panel")).toHaveAttribute("inert");
+    await fireEvent.click(screen.getByRole("button", { name: "关闭会话列表" }));
     await fireEvent.click(screen.getByRole("button", { name: "打开能力面板" }));
     expect(screen.getByRole("dialog", { name: "可用能力" })).toHaveClass("is-open");
     expect(document.querySelector(".assistant-session-panel")).toHaveAttribute("aria-hidden", "true");
+  });
+
+  it("uses drawer layout at 1100px so the application sidebar cannot crop capabilities", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 1100 });
+    render(DashboardPage);
+    await waitFor(() => expect(screen.getByRole("button", { name: "打开能力面板" })).toBeInTheDocument());
+    expect(document.querySelector(".assistant-workspace")).toHaveAttribute("data-layout", "compact");
+    expect(document.querySelector(".assistant-capability-panel")).toHaveClass("is-drawer");
+  });
+
+  it("traps drawer focus, closes with Escape, and restores the opening trigger", async () => {
+    Object.defineProperty(window, "innerWidth", { configurable: true, value: 760 });
+    render(DashboardPage);
+    const trigger = await screen.findByRole("button", { name: "打开会话列表" });
+    await fireEvent.click(trigger);
+    const dialog = screen.getByRole("dialog", { name: "会话列表" });
+    const buttons = within(dialog).getAllByRole("button");
+    await waitFor(() => expect(buttons[0]).toHaveFocus());
+    buttons.at(-1)!.focus();
+    await fireEvent.keyDown(buttons.at(-1)!, { key: "Tab" });
+    expect(buttons[0]).toHaveFocus();
+    expect(document.querySelector(".assistant-chat-panel")).toHaveAttribute("inert");
+    expect(document.querySelector(".assistant-mobile-tools")).toHaveAttribute("inert");
+
+    await fireEvent.keyDown(buttons[0], { key: "Escape" });
+    expect(document.querySelector(".assistant-session-panel")).toHaveAttribute("aria-hidden", "true");
+    expect(trigger).toHaveFocus();
+  });
+
+  it("keeps a failed submission in the session draft", async () => {
+    apiMock.mockImplementation(async (path: string, options?: RequestInit) => {
+      if (path.endsWith("/capabilities")) return { knowledge_bases: [], tools: [], agents: [], skills: [] };
+      if (path.endsWith("/sessions") && !options) return [{ id: "s1", title: "新对话", message_count: 0, latest_task: null }];
+      if (path.endsWith("/s1/messages") && options?.method === "POST") throw new Error("提交失败");
+      if (path.endsWith("/s1/messages")) return { id: "s1", messages: [], latest_task: null };
+      throw new Error(`Unexpected API call: ${path}`);
+    });
+    render(DashboardPage);
+    const input = await screen.findByRole("textbox", { name: "向企业总助手提问" });
+    await waitFor(() => expect(input).not.toBeDisabled());
+    await fireEvent.update(input, "不要丢失的问题");
+    await fireEvent.click(screen.getByRole("button", { name: "发送" }));
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("提交失败"));
+    expect(input).toHaveValue("不要丢失的问题");
   });
 });
