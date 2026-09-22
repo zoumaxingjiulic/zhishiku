@@ -215,6 +215,20 @@ def test_knowledge_nouns_bypass_system_write_precheck_without_fixed_question_ord
         assert len(model.requests) == 1
 
 
+def test_explicit_system_write_takes_priority_over_embedded_knowledge_nouns():
+    """Catches knowledge-noun substrings bypassing a clearly imperative enterprise-system write."""
+    from app.domains.assistant.intent import IntentRouter
+
+    for question in ("请在 ERP 系统提交制度", "请将这份入库说明提交到 ERP 系统"):
+        model = FakeModel(_response("system_query", selection={"tool_ids": [11]}))
+
+        decision = IntentRouter().route(question, _catalog(), model=model)
+
+        assert decision.intent_type == "forbidden"
+        assert all(not ids for ids in decision.selection.model_dump().values())
+        assert model.requests == []
+
+
 def test_model_clarification_flag_always_clears_executable_selection():
     """Catches a model-declared clarification retaining a tool that downstream code could execute."""
     from app.domains.assistant.intent import IntentRouter

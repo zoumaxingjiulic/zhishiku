@@ -13,6 +13,21 @@ CONFIDENCE_THRESHOLD = 0.65
 _WRITE_ACTIONS = ("新增", "删除", "修改", "提交", "审批", "入库", "出库")
 _GENERIC_SYSTEM_MARKERS = ("erp", "oa", "sap", "系统", "库存", "仓库")
 _KNOWLEDGE_NOUNS = ("流程", "制度", "规定", "指南", "说明", "政策")
+_WRITE_ACTION_PATTERN = r"(?:新增|删除|修改|提交|审批|入库|出库)"
+_SYSTEM_PATTERN = r"(?:erp|oa|sap|系统|库存|仓库)"
+_EXECUTION_TONE_PATTERNS = (
+    re.compile(
+        rf"(?:请\s*(?:在|将|把|{_WRITE_ACTION_PATTERN})|帮我|替我|立即|马上|现在|务必|直接)"
+        rf".{{0,50}}{_WRITE_ACTION_PATTERN}",
+        re.IGNORECASE,
+    ),
+    re.compile(rf"(?:将|把).{{0,50}}{_WRITE_ACTION_PATTERN}", re.IGNORECASE),
+    re.compile(
+        rf"{_WRITE_ACTION_PATTERN}.{{0,30}}(?:到|至|向).{{0,20}}{_SYSTEM_PATTERN}",
+        re.IGNORECASE,
+    ),
+    re.compile(rf"在.{{0,20}}{_SYSTEM_PATTERN}.{{0,30}}{_WRITE_ACTION_PATTERN}", re.IGNORECASE),
+)
 _KNOWLEDGE_PATTERNS = (
     re.compile(r"(?:如何|怎么|怎样|何时|什么是|能否介绍|请说明).*(?:流程|制度|规定|指南|操作|提交|审批)"),
     re.compile(r"(?:流程|制度|规定|指南|教程|说明).*(?:是什么|有哪些|如何|怎么|怎样|吗|？|\?)"),
@@ -66,11 +81,13 @@ def _is_knowledge_question(question: str) -> bool:
     )
 
 
+def _has_execution_tone(question: str) -> bool:
+    return any(pattern.search(question) for pattern in _EXECUTION_TONE_PATTERNS)
+
+
 def _is_explicit_system_write(question: str, snapshot: CapabilityCatalogSnapshot) -> bool:
     normalized = question.casefold()
     if not any(action in question for action in _WRITE_ACTIONS):
-        return False
-    if _is_knowledge_question(question):
         return False
     catalog_markers = {
         marker.casefold()
@@ -78,7 +95,16 @@ def _is_explicit_system_write(question: str, snapshot: CapabilityCatalogSnapshot
         for marker in (tool.code, tool.name)
         if marker
     }
-    return any(marker in normalized for marker in (*_GENERIC_SYSTEM_MARKERS, *catalog_markers))
+    involves_system = any(
+        marker in normalized for marker in (*_GENERIC_SYSTEM_MARKERS, *catalog_markers)
+    )
+    if not involves_system:
+        return False
+    if _has_execution_tone(question):
+        return True
+    if _is_knowledge_question(question):
+        return False
+    return True
 
 
 def _parse_decision(value: Any) -> IntentDecision:
