@@ -4,7 +4,7 @@ from typing import Annotated, Any, Literal
 
 from jsonschema.exceptions import SchemaError
 from jsonschema.validators import validator_for
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, field_validator, model_validator
 
 
 _SCHEMA_KEYS = {
@@ -201,6 +201,8 @@ IntentType = Literal[
 class IntentDecision(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    _routing_failure: Literal["intent_timeout", "intent_busy"] | None = PrivateAttr(default=None)
+
     intent_type: IntentType
     confidence: float = Field(ge=0, le=1)
     selection: CapabilitySelection
@@ -208,3 +210,7 @@ class IntentDecision(BaseModel):
     needs_clarification: bool = False
     risk: Literal["low", "medium", "high"] = "low"
     reason: str = Field(max_length=500)
+
+    @property
+    def routing_failure(self) -> Literal["intent_timeout", "intent_busy"] | None:
+        return self._routing_failure

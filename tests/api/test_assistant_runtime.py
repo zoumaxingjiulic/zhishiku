@@ -130,6 +130,7 @@ def test_production_model_deadline_clarifies_without_executing(monkeypatch):
                                   router=IntentRouter(timeout_seconds=.02)).run(TASK)
     assert time.monotonic() - start < .2
     assert result['intent']['intent_type'] == 'clarification'
+    assert result['answer'] == '意图识别服务响应超时，请稍后重试。'
     assert store.events[-1] == 'finished'
 
 

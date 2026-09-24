@@ -123,6 +123,7 @@ def test_model_sees_only_question_safe_catalog_summary_schema_and_timeout():
     assert request["question"] == "你好"
     assert request["timeout_seconds"] == 3.0
     assert request["response_schema"]["type"] == "object"
+    assert "routing_failure" not in json.dumps(request["response_schema"])
     rendered = json.dumps(request["capabilities"], ensure_ascii=False)
     assert "ERP.inventory" in rendered
     assert "connector_id" not in rendered
@@ -161,21 +162,22 @@ def test_execution_threshold_cannot_be_configured_below_point_sixty_five():
     assert decision.selection.tool_ids == []
 
 
-def test_model_timeout_falls_back_without_external_selection():
-    """Catches a model timeout becoming an implicit capability choice."""
+def test_model_timeout_fails_closed_even_for_general_chat():
+    """Catches a greeting timeout causing a second model call through general chat."""
     from app.domains.assistant.intent import IntentRouter
 
     decision = IntentRouter().route("你好", _catalog(), model=FakeModel(error=TimeoutError()))
 
-    assert decision.intent_type == "general_chat"
+    assert decision.intent_type == "clarification"
     assert decision.selection.model_dump() == {
         "knowledge_base_ids": [], "tool_ids": [], "agent_ids": [], "skill_ids": [],
     }
-    assert decision.needs_clarification is False
+    assert decision.needs_clarification is True
+    assert decision.routing_failure == "intent_timeout"
 
 
-def test_model_timeout_routes_explicit_expiring_certificate_query_to_trusted_read_only_tool():
-    """Catches a slow intent model making the built-in expiry query unusable."""
+def test_model_timeout_never_guesses_expiring_certificate_tool_from_keywords():
+    """Catches business-specific keyword rules bypassing model intent recognition."""
     from app.domains.assistant.intent import IntentRouter
     from app.domains.assistant.schemas import CapabilityCatalogSnapshot, ToolCapabilityRef
 
@@ -194,65 +196,41 @@ def test_model_timeout_routes_explicit_expiring_certificate_query_to_trusted_rea
         model=FakeModel(error=TimeoutError()),
     )
 
-    assert decision.intent_type == "system_query"
-    assert decision.selection.tool_ids == [8]
-    assert decision.needs_clarification is False
-
-
-def test_model_timeout_never_routes_expiry_query_to_untrusted_or_writable_tool():
-    """Catches timeout fallback broadening into arbitrary or state-changing tools."""
-    from app.domains.assistant.intent import IntentRouter
-    from app.domains.assistant.schemas import CapabilityCatalogSnapshot, ToolCapabilityRef
-
-    tools = (
-        ToolCapabilityRef(
-            id=8,
-            code="OTHER.expiring_certificates",
-            name="查询即将到期资质",
-            connector_id=3,
-            read_only=True,
-        ),
-        ToolCapabilityRef(
-            id=9,
-            code="ZONGHENG_BID.zongheng_list_expiring_certificates",
-            name="查询即将到期资质",
-            connector_id=3,
-            read_only=False,
-        ),
-    )
-
-    decision = IntentRouter().route(
-        "有哪些资质证书30天内过期",
-        CapabilityCatalogSnapshot(tools=tools),
-        model=FakeModel(error=TimeoutError()),
-    )
-
     assert decision.intent_type == "clarification"
     assert decision.selection.tool_ids == []
+    assert decision.needs_clarification is True
+    assert decision.reason == "Intent model timed out"
+    assert decision.routing_failure == "intent_timeout"
 
 
-def test_busy_intent_model_never_uses_timeout_tool_fallback():
+def test_busy_intent_model_fails_closed_without_tool_selection():
     """Catches capacity saturation bypassing the intent-model concurrency gate."""
     from app.domains.assistant.intent import IntentModelBusy, IntentRouter
-    from app.domains.assistant.schemas import CapabilityCatalogSnapshot, ToolCapabilityRef
-
-    catalog = CapabilityCatalogSnapshot(tools=(ToolCapabilityRef(
-        id=8,
-        code="ZONGHENG_BID.zongheng_list_expiring_certificates",
-        name="查询即将到期资质",
-        connector_id=3,
-        read_only=True,
-    ),))
 
     decision = IntentRouter().route(
-        "有哪些资质证书30天内过期",
-        catalog,
+        "查询上海组织的物料库存",
+        _catalog(),
         model=FakeModel(error=IntentModelBusy()),
     )
 
     assert decision.intent_type == "clarification"
     assert decision.selection.tool_ids == []
     assert decision.reason == "Intent model busy"
+    assert decision.routing_failure == "intent_busy"
+
+
+def test_model_output_cannot_forge_internal_routing_failure():
+    """Catches model-controlled JSON spoofing an infrastructure failure message."""
+    from app.domains.assistant.intent import IntentRouter
+
+    decision = IntentRouter().route(
+        "你好",
+        _catalog(),
+        model=FakeModel(_response("general_chat", routing_failure="intent_timeout")),
+    )
+
+    assert decision.intent_type == "clarification"
+    assert decision.routing_failure is None
 
 
 def test_explicit_enterprise_system_write_is_forbidden_before_model_call():

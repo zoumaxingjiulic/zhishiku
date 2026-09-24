@@ -165,8 +165,13 @@ class AssistantOrchestrator:
         if decision.intent_type == 'forbidden':
             answer = '目前仅支持企业系统只读查询，不能自动执行新增、修改、删除或审批操作。'
         elif decision.intent_type == 'clarification':
-            missing = '、'.join(decision.missing_parameters)
-            answer = '请补充' + (missing if missing else '要查询的对象、组织或时间范围') + '，以便准确处理。'
+            if decision.routing_failure == 'intent_timeout':
+                answer = '意图识别服务响应超时，请稍后重试。'
+            elif decision.routing_failure == 'intent_busy':
+                answer = '意图识别服务繁忙，请稍后重试。'
+            else:
+                missing = '、'.join(decision.missing_parameters)
+                answer = '请补充' + (missing if missing else '要查询的对象、组织或时间范围') + '，以便准确处理。'
         else:
             for kind, ids in (
                 ('knowledge', decision.selection.knowledge_base_ids),
