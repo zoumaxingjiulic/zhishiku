@@ -132,5 +132,5 @@
 - [x] 运行后端全部测试、前端全部测试、构建、Compose 配置检查和仓库卫生检查。
 - [x] 请求代码审查并修复必须项。
 - [x] 合并前再次执行完整验证，记录测试数量与构建结果。
-- [ ] 先备份 MySQL，再应用 014，随后更新 API/worker/chat-runner/frontend；验证健康检查和真实权限矩阵。
+- [x] 先备份 MySQL，再应用 014，随后更新 API/worker/chat-runner/frontend；验证健康检查和真实权限矩阵。
 - [ ] 稳定运行一个兼容周期后，另立迁移删除 `agent_department_acl`。
