@@ -4,13 +4,18 @@ import uuid
 from typing import Any
 
 from ...core.audit import write_audit
+from .access import effective_permission, effective_permissions, permission_allows
 
 
 class KnowledgeRepository:
     def __init__(self, cursor: Any) -> None:
         self.cursor = cursor
 
-    def list_knowledge_bases(self, department_ids: list[int] | None) -> list[dict]:
+    def list_knowledge_bases(
+        self,
+        department_ids: list[int] | None,
+        user_id: int | None = None,
+    ) -> list[dict]:
         if department_ids is None:
             self.cursor.execute(
                 "SELECT k.id,k.code,k.name,k.description,k.owner_department_id,d.name owner_department_name,"
@@ -20,23 +25,27 @@ class KnowledgeRepository:
                 "FROM knowledge_base k JOIN department d ON d.id=k.owner_department_id "
                 "WHERE k.status='active' ORDER BY k.id"
             )
-        elif not department_ids:
-            return []
         else:
-            placeholders = ",".join(["%s"] * len(department_ids))
+            if user_id is None:
+                raise ValueError("user_id is required for non-admin knowledge-base listing")
+            permissions = effective_permissions(self.cursor, user_id, department_ids)
+            if not permissions:
+                return []
+            knowledge_base_ids = list(permissions)
+            placeholders = ",".join(["%s"] * len(knowledge_base_ids))
             self.cursor.execute(
                 "SELECT k.id,k.code,k.name,k.description,k.owner_department_id,d.name owner_department_name,"
                 "k.security_level,k.status,k.created_at,"
-                "CASE WHEN MAX(acl.permission='manage')=1 THEN 'manage' ELSE 'read' END permission,"
                 "(SELECT COUNT(*) FROM document doc WHERE doc.knowledge_base_id=k.id "
                 "AND doc.status!='deleted') document_count "
                 "FROM knowledge_base k JOIN department d ON d.id=k.owner_department_id "
-                "JOIN knowledge_base_department_acl acl ON acl.knowledge_base_id=k.id "
-                f"WHERE k.status='active' AND acl.department_id IN ({placeholders}) "
-                "GROUP BY k.id,k.code,k.name,k.description,k.owner_department_id,d.name,"
-                "k.security_level,k.status,k.created_at ORDER BY k.id",
-                department_ids,
+                f"WHERE k.status='active' AND k.id IN ({placeholders}) ORDER BY k.id",
+                knowledge_base_ids,
             )
+            return [
+                {**row, "permission": permissions[int(row["id"])]}
+                for row in self.cursor.fetchall()
+            ]
         return list(self.cursor.fetchall())
 
     def get_active_knowledge_base(
@@ -58,19 +67,29 @@ class KnowledgeRepository:
         department_ids: list[int],
         manage: bool,
         for_update: bool = False,
+        user_id: int | None = None,
     ) -> bool:
-        if not department_ids:
-            return False
-        placeholders = ",".join(["%s"] * len(department_ids))
-        permission_clause = "AND permission='manage'" if manage else ""
-        locking_clause = " FOR UPDATE" if for_update else ""
-        self.cursor.execute(
-            "SELECT 1 FROM knowledge_base_department_acl "
-            f"WHERE knowledge_base_id=%s AND department_id IN ({placeholders}) "
-            f"{permission_clause} LIMIT 1{locking_clause}",
-            [knowledge_base_id, *department_ids],
+        if user_id is None:
+            if not department_ids:
+                return False
+            placeholders = ",".join(["%s"] * len(department_ids))
+            permission_clause = "AND permission='manage'" if manage else ""
+            locking_clause = " FOR UPDATE" if for_update else ""
+            self.cursor.execute(
+                "SELECT 1 FROM knowledge_base_department_acl "
+                f"WHERE knowledge_base_id=%s AND department_id IN ({placeholders}) "
+                f"{permission_clause} LIMIT 1{locking_clause}",
+                [knowledge_base_id, *department_ids],
+            )
+            return self.cursor.fetchone() is not None
+        permission = effective_permission(
+            self.cursor,
+            knowledge_base_id,
+            user_id,
+            department_ids,
+            for_update=for_update,
         )
-        return self.cursor.fetchone() is not None
+        return permission_allows(permission, manage=manage)
 
     def active_department_ids(
         self,

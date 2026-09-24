@@ -342,7 +342,6 @@ def test_execute_chat_failure_has_no_assistant_or_raw_external_error_log(monkeyp
         "max_tool_rounds": 1, "max_tool_calls": 1,
     })
     monkeypatch.setattr(chat, "bound_agent_tools", lambda agent_id: [])
-    monkeypatch.setattr(chat, "effective_departments", lambda user: [])
     monkeypatch.setattr(chat, "agent_model_gateway", lambda profile_id: None)
     monkeypatch.setattr(
         chat,

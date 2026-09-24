@@ -81,7 +81,6 @@ class Adapters:
     ('general_chat', {}, []),
     ('knowledge_query', {'knowledge_base_ids': [1]}, ['knowledge']),
     ('system_query', {'tool_ids': [11]}, ['tools']),
-    ('agent_task', {'agent_ids': [7]}, ['agents']),
     ('multi_capability', {'knowledge_base_ids': [1], 'tool_ids': [11]}, ['knowledge', 'tools']),
 ])
 def test_paths_persist_before_execution_and_finish(intent, selection, expected):
@@ -154,13 +153,11 @@ def test_worker_claim_loads_agent_code_and_dispatches(monkeypatch):
     assert calls == ['assistant', 'chat']
 
 
-def test_shared_budget_bounds_delegations_model_calls_and_tools():
+def test_shared_budget_bounds_model_calls_and_tools_without_agent_delegation():
     from app.domains.assistant.orchestrator import ExecutionBudget
     budget = ExecutionBudget()
-    for _ in range(3):
-        budget.delegate()
-    with pytest.raises(ValueError):
-        budget.delegate()
+    assert budget.delegations == 0
+    assert not hasattr(budget, 'delegate')
     for _ in range(6):
         budget.tool()
     with pytest.raises(ValueError):
@@ -306,7 +303,7 @@ def test_final_publication_rechecks_permissions_and_is_atomic(monkeypatch, failu
     repo = SimpleNamespace(
         assistant_agent=lambda: None if failure == 'agent_disabled' else {'id': 99},
         get_owned_session=lambda *a, **kw: {'id': 's1'},
-        citation_document=lambda *a, **kw: None if failure == 'document_revoked' else {'id': 1},
+        permanent_citation_document=lambda *a, **kw: None if failure == 'document_revoked' else {'id': 1},
         get_task=lambda *a, **kw: dict(TASK, status='running', cancel_requested=failure == 'cancelled'),
         insert_message=lambda *a, **kw: events.append('message'),
         save_task_result=lambda *a: events.append('result'),

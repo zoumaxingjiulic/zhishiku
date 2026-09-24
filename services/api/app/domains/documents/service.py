@@ -67,6 +67,7 @@ class DocumentService:
             folder_ids,
             department_ids,
             limit,
+            user_id=int(user["id"]),
         )
 
     def upload_document(
@@ -288,7 +289,10 @@ class DocumentService:
             knowledge_base_ids = [knowledge_base_id]
         else:
             departments = None if _is_admin(user) else list(user.get("department_ids") or [])
-            knowledge_base_ids = self.repository.list_accessible_knowledge_base_ids(departments)
+            knowledge_base_ids = self.repository.list_accessible_knowledge_base_ids(
+                departments,
+                user_id=int(user["id"]),
+            )
         if not knowledge_base_ids:
             return []
         return self.repository.list_jobs(knowledge_base_ids, limit)
@@ -319,7 +323,15 @@ class DocumentService:
         document = document_loader(int(snapshot["document_id"]), for_update=True)
         if not document:
             raise NotFoundError("文档不存在")
-        self._require_document_acl(user, int(snapshot["document_id"]), manage=True, for_update=True)
+        if int(document["knowledge_base_id"]) != int(snapshot["knowledge_base_id"]):
+            raise NotFoundError("文档不存在")
+        self._require_document_acl(
+            user,
+            int(snapshot["document_id"]),
+            int(snapshot["knowledge_base_id"]),
+            manage=True,
+            for_update=True,
+        )
         current = self.repository.get_job(job_id, for_update=True)
         if not current:
             raise NotFoundError("任务不存在")
@@ -344,17 +356,15 @@ class DocumentService:
         )
         if not knowledge_base:
             raise NotFoundError("知识库不存在或已归档")
-        acl = self.repository.knowledge_base_acl(knowledge_base_id, for_update)
         if _is_admin(user):
             return knowledge_base
-        departments = set(user.get("department_ids") or [])
-        if not departments:
-            raise AuthorizationError("账号未分配部门")
-        allowed = any(
-            int(row["department_id"]) in departments
-            and (not manage or row["permission"] == "manage")
-            for row in acl
+        permission = self.repository.knowledge_base_permission(
+            knowledge_base_id,
+            int(user["id"]),
+            list(user.get("department_ids") or []),
+            for_update=for_update,
         )
+        allowed = permission == "manage" if manage else permission in {"read", "manage"}
         if not allowed:
             raise AuthorizationError("无权管理该知识库" if manage else "无权访问该知识库")
         return knowledge_base
@@ -394,7 +404,13 @@ class DocumentService:
             )
         if for_update:
             return self._lock_document_after_scope(user, snapshot, manage)
-        self._require_document_acl(user, document_id, manage=False, for_update=False)
+        self._require_document_acl(
+            user,
+            document_id,
+            int(snapshot["knowledge_base_id"]),
+            manage=False,
+            for_update=False,
+        )
         return snapshot
 
     def _lock_document_after_scope(self, user: dict, snapshot: dict, manage: bool) -> dict:
@@ -402,13 +418,20 @@ class DocumentService:
         document = self.repository.get_document(document_id, for_update=True)
         if not document or int(document["knowledge_base_id"]) != int(snapshot["knowledge_base_id"]):
             raise NotFoundError("文档不存在")
-        self._require_document_acl(user, document_id, manage=manage, for_update=True)
+        self._require_document_acl(
+            user,
+            document_id,
+            int(document["knowledge_base_id"]),
+            manage=manage,
+            for_update=True,
+        )
         return document
 
     def _require_document_acl(
         self,
         user: dict,
         document_id: int,
+        knowledge_base_id: int,
         manage: bool,
         for_update: bool,
     ) -> None:
@@ -419,6 +442,8 @@ class DocumentService:
             list(user.get("department_ids") or []),
             manage,
             for_update=for_update,
+            user_id=int(user["id"]),
+            knowledge_base_id=knowledge_base_id,
         ):
             raise AuthorizationError("无权管理该文档" if manage else "无权访问该文档")
 

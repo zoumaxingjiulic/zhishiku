@@ -28,5 +28,7 @@ def test_dashboard_uses_one_bounded_department_scoped_aggregate_query():
     sql, parameters = cursor.calls[0]
     assert "knowledge_base_department_acl" in sql
     assert "document_department_acl" in sql
-    assert "agent_department_acl" in sql
-    assert parameters == [2, 3, 2, 3, 2, 3]
+    assert "user_knowledge_base_acl" in sql
+    assert "user_agent_acl" in sql
+    assert "agent_department_acl" not in sql
+    assert parameters == [2, 3, 8, 2, 3, 8, 8]

@@ -264,6 +264,12 @@
     "deprecated": false
   },
   {
+    "path": "/api/v1/departments/{department_id}/knowledge-base-grants",
+    "method": "GET",
+    "operation_id": "get_department_knowledge_base_grants_api_v1_departments__department_id__knowledge_base_grants_get",
+    "deprecated": false
+  },
+  {
     "path": "/api/v1/documents",
     "method": "GET",
     "operation_id": "list_documents_api_v1_documents_get",
@@ -531,6 +537,12 @@
     "path": "/api/v1/users/{user_id}",
     "method": "PUT",
     "operation_id": "update_user_api_v1_users__user_id__put",
+    "deprecated": false
+  },
+  {
+    "path": "/api/v1/users/{user_id}/permissions",
+    "method": "GET",
+    "operation_id": "get_user_permissions_api_v1_users__user_id__permissions_get",
     "deprecated": false
   },
   {

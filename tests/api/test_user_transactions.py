@@ -78,6 +78,18 @@ class RecordingUsersRepository:
     def assign_primary_department(self, user_id: int, department_id: int) -> None:
         self.events.append(f"assign:{id(self.cursor)}:{user_id}:{department_id}")
 
+    def active_knowledge_bases_by_ids(self, ids: list[int]) -> dict[int, dict]:
+        return {item: {"id": item} for item in ids}
+
+    def active_readonly_tools_by_ids(self, ids: list[int]) -> dict[int, dict]:
+        return {item: {"id": item} for item in ids}
+
+    def replace_user_knowledge_base_grants(self, user_id: int, grants: list, granted_by: int) -> None:
+        self.events.append(f"acl:kb:{id(self.cursor)}:{user_id}:{granted_by}")
+
+    def replace_user_tool_grants(self, user_id: int, tool_ids: list[int], granted_by: int) -> None:
+        self.events.append(f"acl:tool:{id(self.cursor)}:{user_id}:{granted_by}")
+
     def write_audit(self, actor_id: int, action: str, resource_id: int, detail: dict, ip_address: str) -> None:
         self.events.append(f"audit:{id(self.cursor)}:{action}:{resource_id}")
 
@@ -121,6 +133,8 @@ def test_admin_check_and_user_write_share_one_uow_cursor_and_commit_once() -> No
         f"department:{cursor_id}:2",
         f"write:{cursor_id}:1",
         f"assign:{cursor_id}:9:2",
+        f"acl:kb:{cursor_id}:9:1",
+        f"acl:tool:{cursor_id}:9:1",
         f"audit:{cursor_id}:user.create:9",
         "connection.commit",
         "cursor.close",
@@ -207,6 +221,18 @@ class GuardRepository:
 
     def assign_primary_department(self, user_id: int, department_id: int) -> None:
         self.events.append(f"write:department:{user_id}:{department_id}")
+
+    def active_knowledge_bases_by_ids(self, ids: list[int]) -> dict[int, dict]:
+        return {item: {"id": item} for item in ids}
+
+    def active_readonly_tools_by_ids(self, ids: list[int]) -> dict[int, dict]:
+        return {item: {"id": item} for item in ids}
+
+    def replace_user_knowledge_base_grants(self, user_id: int, grants: list, granted_by: int) -> None:
+        self.events.append(f"write:kb_acl:{user_id}")
+
+    def replace_user_tool_grants(self, user_id: int, tool_ids: list[int], granted_by: int) -> None:
+        self.events.append(f"write:tool_acl:{user_id}")
 
     def update_status(self, user_id: int, status: int) -> bool:
         self.events.append(f"write:status:{user_id}:{status}")

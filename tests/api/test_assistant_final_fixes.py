@@ -17,7 +17,7 @@ def test_tool_grant_lineage_survives_catalog_without_becoming_delegatable():
             return [dict(row, authority_agent_id=42) for row in super().list_tools(user)]
     captured = CapabilityCatalog(Repo()).for_user(EMPLOYEE)
     restored = CapabilityCatalogSnapshot.model_validate_json(captured.model_dump_json())
-    assert restored.tool_authority_agent_ids == (42,)
+    assert restored.tool_authority_agent_ids == ()
     assert restored.agents == ()
     assert [t.id for t in restored.tools] == [11]
 
@@ -109,65 +109,6 @@ def test_mcp_client_receives_only_remaining_deadline(monkeypatch):
     clock[0] += 5
     with pytest.raises(TimeoutError): chat.execute_bound_tool(tool, {}, deadline=budget.deadline)
     assert len(clients) == 1
-
-
-@pytest.mark.parametrize('mutation', ['none', 'acl', 'disabled', 'binding', 'substitute'])
-def test_workflow_only_tool_grant_survives_lock_and_finish_but_not_revocation(monkeypatch, mutation):
-    from test_assistant_review_fixes import locked_catalog_database
-    from test_assistant_runtime import USER, TASK
-    from app.core.errors import AuthorizationError
-    from app.domains.assistant import orchestrator as runtime
-    from app.domains.assistant.capabilities import CapabilityCatalog
-    from app.domains.assistant.repository import AssistantRepository
-    from app.domains.assistant.schemas import CapabilitySelection
-    db, Cursor, _ = locked_catalog_database()
-    db.execute("UPDATE agent SET launch_mode='workflow' WHERE id=7")
-    if mutation == 'substitute':
-        db.execute("INSERT INTO agent(id,code,name,status,launch_mode,settings_json) VALUES(42,'NEW','New','active','chat','{}')")
-        db.execute("INSERT INTO agent_department_acl VALUES(42,2,'use')")
-    cursor = Cursor()
-    repo = AssistantRepository(cursor)
-    snapshot = CapabilityCatalog(repo).for_user(USER)
-    assert [t.id for t in snapshot.tools] == [11]
-    assert snapshot.tool_authority_agent_ids == (7,)
-    if mutation != 'substitute': assert snapshot.agents == ()
-    fresh = repo.lock_authority(8, snapshot, 99)
-    locked = CapabilityCatalog(repo).for_user(fresh)
-    assert [t.id for t in locked.tools] == [11]
-    assert [a.id for a in locked.agents] == ([42] if mutation == 'substitute' else [])
-    cursor.release()
-    if mutation == 'acl': db.execute('DELETE FROM agent_department_acl')
-    if mutation == 'disabled': db.execute("UPDATE agent SET status='disabled' WHERE id=7")
-    if mutation in {'binding', 'substitute'}: db.execute('DELETE FROM agent_connector_tool')
-    if mutation == 'substitute': db.execute("INSERT INTO agent_connector_tool VALUES(42,11,'read')")
-    published = []
-    class Uow:
-        def __enter__(self): self.cursor = Cursor(); return self
-        def __exit__(self, *args): self.cursor.release()
-        def commit(self): published.append('commit')
-    class AgentRepo:
-        def __init__(self, cursor): pass
-        def get_owned_session(self, *args, **kwargs): return {'id': 's1'}
-        def get_task(self, *args, **kwargs): return dict(TASK, status='running')
-        def insert_message(self, *args, **kwargs): published.append('message'); return 1
-        def save_task_result(self, *args): pass
-        def mark_task_succeeded(self, *args): pass
-        def update_run_succeeded(self, *args): pass
-        def update_session_title(self, *args): pass
-        def write_audit(self, *args): pass
-    monkeypatch.setattr(runtime, 'UnitOfWork', Uow)
-    monkeypatch.setattr(runtime, 'AgentRepository', AgentRepo)
-    result = {'answer': 'authorized', 'citations': [], 'tool_calls': [], 'intent': {'intent_type': 'system_query'}}
-    try:
-        if mutation == 'none':
-            runtime.AssistantPersistence().finish(TASK, USER, snapshot, CapabilitySelection(tool_ids=[11]), result)
-            assert published == ['message', 'commit']
-        else:
-            with pytest.raises(AuthorizationError):
-                runtime.AssistantPersistence().finish(TASK, USER, snapshot, CapabilitySelection(tool_ids=[11]), result)
-            assert published == []
-    finally:
-        db.close()
 
 
 def test_public_capabilities_hide_internal_grant_lineage_and_old_json_loads(monkeypatch):

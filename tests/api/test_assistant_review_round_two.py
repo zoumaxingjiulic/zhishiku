@@ -9,33 +9,15 @@ from test_assistant_runtime import USER, TASK, Store, Model
 from app.domains.assistant.schemas import CapabilityCatalogSnapshot, CapabilityRef, ToolCapabilityRef
 
 
-@pytest.mark.parametrize('revoke', ['agent', 'binding', 'config'])
-def test_delegation_rechecks_agent_binding_and_config_after_retrieval(monkeypatch, revoke):
+def test_enterprise_assistant_rejects_direct_professional_agent_execution(monkeypatch):
     from app.domains.assistant import orchestrator as runtime
     from app.core.errors import AuthorizationError
     store = Store()
-    changed = False
-    agent = {'id': 7, 'name': '专家', 'code': 'expert', 'status': 'active', 'launch_mode': 'chat',
-             'config_version': 1, 'knowledge_base_ids': [1], 'system_prompt': 'expert'}
-    tool = {'id': 11, '_binding_version': 'v1'}
-    def authorize(*a, **k):
-        if changed and revoke == 'agent':
-            raise AuthorizationError('agent ACL revoked')
-        return {**agent, 'config_version': 2 if changed and revoke == 'config' else 1}
-    def retrieve(*a, **kwargs):
-        nonlocal changed
-        changed = True
-        return {'units': []}
-    exposed = []
-    monkeypatch.setattr(runtime, 'UnitOfWork', lambda: nullcontext(SimpleNamespace(cursor=None)))
-    monkeypatch.setattr(runtime, 'AgentService', lambda *a: SimpleNamespace(authorize_agent=authorize))
-    monkeypatch.setattr(runtime, 'bound_agent_tools', lambda aid: [] if changed and revoke == 'binding' else [tool])
-    monkeypatch.setattr(runtime, 'retrieve_for_agent', retrieve)
-    monkeypatch.setattr(runtime, 'agent_model_gateway', lambda profile: None)
-    monkeypatch.setattr(runtime.agent_runtime, 'generate_agent_answer', lambda *a, **k: exposed.append(a[4]) or ('secret', 'llm', [], []))
-    with pytest.raises(AuthorizationError):
+    store.snapshot = CapabilityCatalogSnapshot(
+        agents=(CapabilityRef(id=7, code='expert', name='Expert'),)
+    )
+    with pytest.raises(AuthorizationError, match='不调用专业智能体'):
         runtime.ProductionAdapters(TASK, store).execute('agents', [7], 'query', USER)
-    assert exposed == []
 
 
 def test_explicit_material_value_is_not_truncated_at_slash():
@@ -72,7 +54,7 @@ def test_invalid_explicit_skill_value_prevents_bound_execution(monkeypatch, ques
     assert invalid_field not in result['clarification']['arguments']
 
 
-@pytest.mark.parametrize('source_kind', ['document', 'tool', 'agent', 'skill'])
+@pytest.mark.parametrize('source_kind', ['document', 'tool', 'skill'])
 @pytest.mark.parametrize('revoke_during_generation', [False, True])
 def test_run_finish_and_history_preserve_transitive_authority(monkeypatch, source_kind, revoke_during_generation):
     """Exercise actual orchestrator -> final publication -> history loading.
@@ -101,7 +83,7 @@ def test_run_finish_and_history_preserve_transitive_authority(monkeypatch, sourc
     class AgentRepo:
         def get_owned_session(self, *a, **k): return {'id': 's1'}
         def list_messages(self, sid, before, limit): return deepcopy([m for m in state.messages if m['id'] < before][-limit:])
-        def citation_document(self, *a, **k): return {'id': 5} if state.document_allowed else None
+        def permanent_citation_document(self, *a, **k): return {'id': 5} if state.document_allowed else None
         def get_agent(self, aid, **k): return agent
         def agent_knowledge_base_ids(self, *a, **k): return []
         def bound_tools(self, *a, **k): return []

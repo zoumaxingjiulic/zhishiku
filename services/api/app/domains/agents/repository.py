@@ -38,36 +38,15 @@ class AgentRepository:
         )
         return list(dict.fromkeys(row["id"] for row in self.cursor.fetchall()))
 
-    def list_agents(self, user: dict, accessible_kb_ids: list[int]) -> list[dict]:
+    def list_agents(self, user: dict) -> list[dict]:
         access_clause = ""
         access_parameters: list[Any] = []
-        knowledge_join = ""
         if not user.get("is_platform_admin"):
-            if accessible_kb_ids:
-                visible_placeholders = ",".join(["%s"] * len(accessible_kb_ids))
-                knowledge_join = f"AND k.id IN ({visible_placeholders})"
-            else:
-                knowledge_join = "AND 1=0"
-            conditions: list[str] = []
-            department_ids = list(user.get("department_ids") or [])
-            if department_ids:
-                placeholders = ",".join(["%s"] * len(department_ids))
-                conditions.append(
-                    "EXISTS (SELECT 1 FROM agent_department_acl aa WHERE aa.agent_id=a.id "
-                    f"AND aa.department_id IN ({placeholders}))"
-                )
-                access_parameters.extend(department_ids)
-            if accessible_kb_ids:
-                placeholders = ",".join(["%s"] * len(accessible_kb_ids))
-                conditions.append(
-                    "(COALESCE(JSON_EXTRACT(a.settings_json,'$.explicit_acl'),FALSE)=FALSE "
-                    "AND EXISTS (SELECT 1 FROM agent_knowledge_base access_ak "
-                    f"WHERE access_ak.agent_id=a.id AND access_ak.knowledge_base_id IN ({placeholders})))"
-                )
-                access_parameters.extend(accessible_kb_ids)
-            if not conditions:
-                return []
-            access_clause = "AND (" + " OR ".join(conditions) + ")"
+            access_clause = (
+                "AND EXISTS (SELECT 1 FROM user_agent_acl ua "
+                "WHERE ua.agent_id=a.id AND ua.user_id=%s AND ua.permission='use')"
+            )
+            access_parameters.append(int(user["id"]))
         self.cursor.execute(
             "SELECT a.id,a.code,a.name,a.description,a.agent_type,a.launch_mode,a.icon,a.category,"
             "a.llm_gateway_profile_id,a.status,"
@@ -79,10 +58,9 @@ class AgentRepository:
             "JOIN system_connector sc ON sc.id=ct.connector_id "
             "WHERE act.agent_id=a.id AND act.permission='read' AND ct.status='active' AND sc.status='active') tools "
             "FROM agent a LEFT JOIN agent_knowledge_base ak ON ak.agent_id=a.id "
-            f"LEFT JOIN knowledge_base k ON k.id=ak.knowledge_base_id {knowledge_join} "
+            "LEFT JOIN knowledge_base k ON k.id=ak.knowledge_base_id AND k.status='active' "
             f"WHERE a.status='active' {access_clause} GROUP BY a.id ORDER BY a.id",
-            [*accessible_kb_ids, *access_parameters] if not user.get("is_platform_admin") and accessible_kb_ids
-            else access_parameters,
+            access_parameters,
         )
         return list(self.cursor.fetchall())
 
@@ -98,20 +76,19 @@ class AgentRepository:
     def agent_knowledge_base_ids(self, agent_id: int, for_update: bool = False) -> list[int]:
         lock = " FOR UPDATE" if for_update else ""
         self.cursor.execute(
-            "SELECT knowledge_base_id FROM agent_knowledge_base WHERE agent_id=%s ORDER BY knowledge_base_id" + lock,
+            "SELECT ak.knowledge_base_id FROM agent_knowledge_base ak "
+            "JOIN knowledge_base k ON k.id=ak.knowledge_base_id AND k.status='active' "
+            "WHERE ak.agent_id=%s ORDER BY ak.knowledge_base_id" + lock,
             (agent_id,),
         )
         return [row["knowledge_base_id"] for row in self.cursor.fetchall()]
 
-    def has_agent_department_access(self, agent_id: int, department_ids: list[int],
-                                    for_update: bool = False) -> bool:
-        if not department_ids:
-            return False
-        placeholders = ",".join(["%s"] * len(department_ids))
+    def has_agent_user_access(self, agent_id: int, user_id: int,
+                              for_update: bool = False) -> bool:
         self.cursor.execute(
-            "SELECT 1 FROM agent_department_acl WHERE agent_id=%s "
-            f"AND department_id IN ({placeholders}) LIMIT 1" + (" FOR UPDATE" if for_update else ""),
-            [agent_id, *department_ids],
+            "SELECT 1 FROM user_agent_acl WHERE agent_id=%s AND user_id=%s "
+            "AND permission='use' LIMIT 1" + (" FOR UPDATE" if for_update else ""),
+            (agent_id, user_id),
         )
         return self.cursor.fetchone() is not None
 
@@ -125,7 +102,7 @@ class AgentRepository:
         result["inputs"] = config.get("inputs", ["question"])
         result["steps"] = config.get("steps", [])
         for table, field, output in (
-            ("agent_department_acl", "department_id", "department_ids"),
+            ("user_agent_acl", "user_id", "user_ids"),
             ("agent_knowledge_base", "knowledge_base_id", "knowledge_base_ids"),
             ("agent_connector_tool", "connector_tool_id", "tool_ids"),
         ):
@@ -141,7 +118,7 @@ class AgentRepository:
         if not ids:
             return set()
         allowed = {
-            "department": "status=1",
+            "app_user": "status=1 AND deleted_at IS NULL",
             "knowledge_base": "status='active'",
             "llm_gateway_profile": "status='active'",
         }
@@ -159,7 +136,9 @@ class AgentRepository:
             return set()
         placeholders = ",".join(["%s"] * len(ids))
         self.cursor.execute(
-            f"SELECT id,annotations_json FROM connector_tool WHERE id IN ({placeholders}) AND status='active' FOR UPDATE",
+            "SELECT ct.id,ct.annotations_json FROM connector_tool ct "
+            "JOIN system_connector sc ON sc.id=ct.connector_id AND sc.status='active' "
+            f"WHERE ct.id IN ({placeholders}) AND ct.status='active' FOR UPDATE",
             ids,
         )
         return {
@@ -421,6 +400,41 @@ class AgentRepository:
         self.cursor.execute("SELECT id FROM department WHERE status=1 ORDER BY id")
         return [row["id"] for row in self.cursor.fetchall()]
 
+    def permanent_document_ids(
+        self,
+        knowledge_base_ids: list[int],
+        user_id: int,
+        department_ids: list[int],
+    ) -> list[int]:
+        """Resolve documents from the user's permanent department and direct KB grants."""
+        if not knowledge_base_ids:
+            return []
+        kb_placeholders = ",".join(["%s"] * len(knowledge_base_ids))
+        parameters: list[Any] = [*knowledge_base_ids]
+        access_clauses = [
+            "EXISTS (SELECT 1 FROM user_knowledge_base_acl uka "
+            "WHERE uka.knowledge_base_id=d.knowledge_base_id AND uka.user_id=%s "
+            "AND uka.permission IN ('read','manage'))"
+        ]
+        parameters.append(user_id)
+        unique_departments = list(dict.fromkeys(department_ids))
+        if unique_departments:
+            department_placeholders = ",".join(["%s"] * len(unique_departments))
+            access_clauses.insert(
+                0,
+                "EXISTS (SELECT 1 FROM document_department_acl da "
+                "JOIN department dep ON dep.id=da.department_id AND dep.status=1 "
+                "WHERE da.document_id=d.id "
+                f"AND da.department_id IN ({department_placeholders}))",
+            )
+            parameters = [*knowledge_base_ids, *unique_departments, user_id]
+        self.cursor.execute(
+            "SELECT DISTINCT d.id FROM document d "
+            f"WHERE d.status='active' AND d.knowledge_base_id IN ({kb_placeholders}) "
+            "AND (" + " OR ".join(access_clauses) + ") ORDER BY d.id",
+            parameters,
+        )
+        return [int(row["id"]) for row in self.cursor.fetchall()]
     def hydrate_units(self, unit_ids: list[int], knowledge_base_ids: list[int], department_ids: list[int]) -> list[dict]:
         if not unit_ids or not knowledge_base_ids:
             return []
@@ -447,6 +461,44 @@ class AgentRepository:
         rows = {row["id"]: row for row in self.cursor.fetchall()}
         return [rows[item] for item in unit_ids if item in rows]
 
+    def permanent_citation_document(
+        self,
+        document_id: int,
+        knowledge_base_ids: list[int],
+        user_id: int,
+        department_ids: list[int],
+        for_update: bool = False,
+    ) -> dict | None:
+        """Validate one citation against permanent department or direct KB grants."""
+        if not knowledge_base_ids:
+            return None
+        kb_placeholders = ",".join(["%s"] * len(knowledge_base_ids))
+        access_clauses = [
+            "EXISTS (SELECT 1 FROM user_knowledge_base_acl uka "
+            "WHERE uka.knowledge_base_id=d.knowledge_base_id AND uka.user_id=%s "
+            "AND uka.permission IN ('read','manage'))"
+        ]
+        parameters: list[Any] = [document_id, *knowledge_base_ids]
+        unique_departments = list(dict.fromkeys(department_ids))
+        if unique_departments:
+            department_placeholders = ",".join(["%s"] * len(unique_departments))
+            access_clauses.insert(
+                0,
+                "EXISTS (SELECT 1 FROM document_department_acl da "
+                "JOIN department dep ON dep.id=da.department_id AND dep.status=1 "
+                "WHERE da.document_id=d.id "
+                f"AND da.department_id IN ({department_placeholders}))",
+            )
+            parameters.extend(unique_departments)
+        parameters.append(user_id)
+        lock = " FOR UPDATE" if for_update else ""
+        self.cursor.execute(
+            "SELECT d.id,d.knowledge_base_id FROM document d "
+            f"WHERE d.id=%s AND d.status='active' AND d.knowledge_base_id IN ({kb_placeholders}) "
+            "AND (" + " OR ".join(access_clauses) + ")" + lock,
+            parameters,
+        )
+        return self.cursor.fetchone()
     def citation_document(self, document_id: int, knowledge_base_ids: list[int], department_ids: list[int],
                           for_update: bool = False) -> dict | None:
         if not knowledge_base_ids:

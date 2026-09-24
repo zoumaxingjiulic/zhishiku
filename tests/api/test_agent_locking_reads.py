@@ -40,16 +40,13 @@ def test_final_authorization_repository_reads_are_locking_current_reads():
     repository = AgentRepository(cursor)
     repository.get_agent(3, for_update=True)
     repository.agent_knowledge_base_ids(3, for_update=True)
-    repository.accessible_knowledge_base_ids(
-        {"department_ids": [7], "is_platform_admin": False}, for_update=True
-    )
-    repository.has_agent_department_access(3, [7], for_update=True)
+    repository.has_agent_user_access(3, 8, for_update=True)
     repository.bound_tools(3, for_update=True)
     repository.bound_tools_by_ids(3, [31], for_update=True)
     repository.get_session("s", 3, 8, for_update=True)
     repository.get_task("t", 8, for_update=True)
 
-    assert len(cursor.statements) == 8
+    assert len(cursor.statements) == 7
     assert all(statement.endswith("FOR UPDATE") for statement in cursor.statements)
 
 
@@ -64,3 +61,30 @@ def test_citation_lock_explicitly_locks_document_and_acl_rows():
     assert "FROM document d" in cursor.statements[0]
     assert "FROM document_department_acl" in cursor.statements[1]
     assert all(statement.endswith("FOR UPDATE") for statement in cursor.statements)
+
+
+def test_agent_knowledge_base_scope_excludes_archived_knowledge_bases():
+    from app.domains.agents.repository import AgentRepository
+
+    cursor = Cursor()
+    cursor.current = []
+    AgentRepository(cursor).agent_knowledge_base_ids(3, for_update=True)
+
+    statement = cursor.statements[-1]
+    assert "JOIN knowledge_base k" in statement
+    assert "k.status='active'" in statement
+    assert statement.endswith("FOR UPDATE")
+
+
+def test_agent_tool_validation_requires_an_active_connector():
+    from app.domains.agents.repository import AgentRepository
+
+    cursor = Cursor()
+    cursor.current = []
+    AgentRepository(cursor).readonly_tool_ids([31])
+
+    statement = cursor.statements[-1]
+    assert "JOIN system_connector sc" in statement
+    assert "sc.status='active'" in statement
+    assert "ct.status='active'" in statement
+    assert statement.endswith("FOR UPDATE")

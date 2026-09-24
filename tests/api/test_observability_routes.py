@@ -92,8 +92,8 @@ def test_feedback_rejects_messages_not_owned_by_caller_without_writing():
         raise AssertionError("foreign message feedback must be hidden as not found")
 
 
-def test_observability_queries_apply_active_agent_and_explicit_acl_semantics():
-    """Catches revoked strict-agent access leaking historical answers or tool traces."""
+def test_observability_queries_apply_active_agent_and_user_assignment_semantics():
+    """Revoked user-agent assignments hide historical answers and tool traces."""
     from app.domains.observability.repository import ObservabilityRepository
 
     class Cursor:
@@ -117,11 +117,11 @@ def test_observability_queries_apply_active_agent_and_explicit_acl_semantics():
 
     for sql, parameters in cursor.statements:
         assert "a.status='active'" in sql
-        assert "JSON_EXTRACT(a.settings_json,'$.explicit_acl')" in sql
-        assert "=TRUE AND EXISTS (SELECT 1 FROM agent_department_acl" in sql
-        assert "=FALSE AND (EXISTS (SELECT 1 FROM agent_department_acl" in sql
-        assert "OR EXISTS (SELECT 1 FROM agent_knowledge_base" in sql
-        assert 2 in parameters
+        assert "a.code='ENTERPRISE_ASSISTANT'" in sql
+        assert "user_agent_acl" in sql
+        assert "ua.user_id=%s" in sql
+        assert "agent_department_acl" not in sql
+        assert 8 in parameters
 
 
 def test_platform_admin_observability_is_global_but_still_hides_inactive_agents():

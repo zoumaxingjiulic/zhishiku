@@ -42,17 +42,30 @@ def retrieval_query(question: str, history: list[dict], enabled: bool) -> tuple[
     return question, 'direct'
 
 
-def retrieve(question, kb_ids, departments, document_ids, user, config, hydrate, *, deadline=None, check_active=None):
+def retrieve(question, kb_ids, departments, document_ids, user, config, hydrate, *,
+             deadline=None, check_active=None, authorized_document_ids=None,
+             authorized_knowledge_base_ids=None):
     def check():
         if check_active:
             check_active()
         remaining_timeout(deadline, 60)
     check()
     options = {'deadline': deadline, 'check_active': check_active} if deadline is not None or check_active else {}
+    if authorized_knowledge_base_ids is not None:
+        allowed_knowledge_bases = set(authorized_knowledge_base_ids)
+        kb_ids = [item for item in kb_ids if item in allowed_knowledge_bases]
     if not kb_ids:
         return [], {'vector': 0, 'keyword': 0, 'final': 0}, 'none', []
-    # Apply document authorization BEFORE both recall routes, not only after top-K.
-    if not user.get('is_platform_admin'):
+    # Apply one explicit document allowlist before both recall routes. Agent
+    # delegation supplies its own allowlist; ordinary callers derive one from
+    # the user's permanent ACL. The two authority sources are never merged.
+    if authorized_document_ids is not None:
+        permitted = set(authorized_document_ids)
+        document_ids = sorted(permitted if document_ids is None else permitted.intersection(document_ids))
+    elif authorized_knowledge_base_ids is not None:
+        # The bound knowledge-base list is the complete delegated scope.
+        pass
+    elif not user.get('is_platform_admin'):
         if not user.get('department_ids'):
             return [], {'vector': 0, 'keyword': 0, 'final': 0}, 'none', []
         with connect() as conn, conn.cursor() as c:

@@ -22,7 +22,7 @@ class KnowledgeService:
 
     def list_knowledge_bases(self, user: dict) -> list[dict]:
         department_ids = None if _is_admin(user) else list(user.get("department_ids") or [])
-        return self.repository.list_knowledge_bases(department_ids)
+        return self.repository.list_knowledge_bases(department_ids, user_id=int(user["id"]))
 
     def require_knowledge_base(
         self,
@@ -37,13 +37,12 @@ class KnowledgeService:
         if _is_admin(user):
             return knowledge_base
         department_ids = list(user.get("department_ids") or [])
-        if not department_ids:
-            raise AuthorizationError("账号未分配部门")
         if not self.repository.has_knowledge_base_permission(
             knowledge_base_id,
             department_ids,
             manage,
             for_update=for_update,
+            user_id=int(user["id"]),
         ):
             raise AuthorizationError("无权管理该知识库" if manage else "无权访问该知识库")
         return knowledge_base

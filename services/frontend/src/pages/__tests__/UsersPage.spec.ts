@@ -42,6 +42,10 @@ describe("UsersPage temporary password notice", () => {
     apiMock.mockImplementation(async (path: string, options: RequestInit = {}) => {
       if (path === "/api/v1/departments" && !options.method) return [department];
       if (path === "/api/v1/users" && !options.method) return [existingUser];
+      if (path === "/api/v1/knowledge-bases" && !options.method) return [];
+      if (path === "/api/v1/connectors" && !options.method) return { items: [] };
+      if (path === `/api/v1/departments/${department.id}/knowledge-base-grants` && !options.method) return [];
+      if (path === `/api/v1/users/${existingUser.id}/permissions` && !options.method) return { ...existingUser, department_inherited_knowledge_base_grants: [], direct_knowledge_base_grants: [], effective_knowledge_base_grants: [], direct_tools: [] };
       if (path === "/api/v1/users" && options.method === "POST") return createdUserResponse;
       if (path === `/api/v1/users/${existingUser.id}` && options.method === "PUT") return { status: "ok" };
       if (path === `/api/v1/users/${existingUser.id}/reset-password` && options.method === "POST") {
@@ -102,5 +106,68 @@ describe("UsersPage temporary password notice", () => {
     expect(await screen.findByRole("alert")).toHaveTextContent("用户目录加载失败");
     expect(screen.queryByText("暂无账号")).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "重试" })).toBeInTheDocument();
+  });
+  it("loads inherited permissions and submits direct knowledge-base and MCP-tool grants", async () => {
+    const kb = { id: 3, code: "TECH", name: "技术知识库" };
+    const tool = { id: 11, tool_name: "stock", title: "库存查询", annotations: { readOnlyHint: true } };
+    apiMock.mockImplementation(async (path: string, options: RequestInit = {}) => {
+      if (path === "/api/v1/departments") return [department];
+      if (path === "/api/v1/users" && !options.method) return [existingUser];
+      if (path === "/api/v1/knowledge-bases") return [kb];
+      if (path === "/api/v1/connectors") return { items: [{ id: 4, name: "ERP", tools: [tool] }] };
+      if (path === `/api/v1/users/${existingUser.id}/permissions`) return {
+        ...existingUser,
+        department_inherited_knowledge_base_grants: [{ knowledge_base_id: 1, code: "HR", name: "人资知识库", permission: "manage", sources: ["department"] }],
+        direct_knowledge_base_grants: [{ knowledge_base_id: 3, code: "TECH", name: "技术知识库", permission: "read", sources: ["direct"] }],
+        effective_knowledge_base_grants: [],
+        direct_tools: [{ id: 11, connector_id: 4, connector_code: "ERP", connector_name: "ERP", tool_name: "stock", title: "库存查询" }],
+      };
+      if (path === `/api/v1/users/${existingUser.id}` && options.method === "PUT") return { status: "ok" };
+      throw new Error(`Unexpected API call: ${options.method ?? "GET"} ${path}`);
+    });
+
+    render(UsersPage);
+    await screen.findByText(existingUser.display_name);
+    await fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+
+    expect(await screen.findByText("人资知识库 · 可管理")).toBeInTheDocument();
+    expect(screen.getByLabelText("技术知识库权限")).toHaveValue("read");
+    expect(screen.getByText("ERP / 库存查询")).toBeInTheDocument();
+    await fireEvent.submit(screen.getByRole("button", { name: "保存" }).closest("form")!);
+
+    await waitFor(() => {
+      const call = apiMock.mock.calls.find(([path, options]) => path === `/api/v1/users/${existingUser.id}` && options?.method === "PUT");
+      expect(call).toBeTruthy();
+      const body = JSON.parse(String(call?.[1]?.body));
+      expect(body.knowledge_base_grants).toEqual([{ knowledge_base_id: 3, permission: "read" }]);
+      expect(body.tool_ids).toEqual([11]);
+    });
+  });
+
+  it("previews inherited knowledge bases when the selected department changes", async () => {
+    const otherDepartment = { ...department, id: 8, code: "TECH", name: "技术部" };
+    apiMock.mockImplementation(async (path: string, options: RequestInit = {}) => {
+      if (path === "/api/v1/departments") return [department, otherDepartment];
+      if (path === "/api/v1/users" && !options.method) return [existingUser];
+      if (path === "/api/v1/knowledge-bases") return [];
+      if (path === "/api/v1/connectors") return { items: [] };
+      if (path === `/api/v1/users/${existingUser.id}/permissions`) return {
+        ...existingUser,
+        department_inherited_knowledge_base_grants: [], direct_knowledge_base_grants: [],
+        effective_knowledge_base_grants: [], direct_tools: [],
+      };
+      if (path === `/api/v1/departments/${department.id}/knowledge-base-grants`) return [];
+      if (path === `/api/v1/departments/${otherDepartment.id}/knowledge-base-grants`) return [{
+        knowledge_base_id: 3, code: "TECH", name: "技术知识库", permission: "manage", sources: ["department"],
+      }];
+      throw new Error(`Unexpected API call: ${options.method ?? "GET"} ${path}`);
+    });
+
+    render(UsersPage);
+    await screen.findByText(existingUser.display_name);
+    await fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    await fireEvent.update(screen.getByLabelText("所属部门"), String(otherDepartment.id));
+
+    expect(await screen.findByText("技术知识库 · 可管理")).toBeInTheDocument();
   });
 });

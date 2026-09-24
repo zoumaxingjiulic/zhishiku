@@ -13,6 +13,8 @@ sys.path.insert(0, str(ROOT / "services" / "api"))
 
 USER = {"id": 8, "department_ids": [2], "is_platform_admin": False}
 OTHER = {"id": 9, "department_ids": [3], "is_platform_admin": False}
+DIRECT_READER = {"id": 10, "department_ids": [], "is_platform_admin": False}
+DIRECT_MANAGER = {"id": 11, "department_ids": [], "is_platform_admin": False}
 
 
 class FakeCursor:
@@ -76,6 +78,7 @@ class FakeRepository:
     def __init__(self, events: list[str]) -> None:
         self.events = events
         self.allowed_departments = {2: "manage"}
+        self.allowed_users: dict[int, str] = {}
         self.document = {
             "id": 31,
             "knowledge_base_id": 10,
@@ -99,6 +102,17 @@ class FakeRepository:
     def knowledge_base_acl(self, knowledge_base_id: int, for_update: bool = False):
         self.events.append(f"acl:{knowledge_base_id}:{for_update}")
         return [{"department_id": key, "permission": value} for key, value in self.allowed_departments.items()]
+
+    def knowledge_base_permission(self, knowledge_base_id, user_id, department_ids, for_update=False):
+        self.events.append(f"kb-permission:{knowledge_base_id}:{user_id}:{for_update}")
+        grants = [
+            permission
+            for department, permission in self.allowed_departments.items()
+            if department in department_ids
+        ]
+        if user_id in self.allowed_users:
+            grants.append(self.allowed_users[user_id])
+        return "manage" if "manage" in grants else ("read" if grants else None)
 
     def get_active_folder(self, folder_id: int, for_update: bool = False):
         self.events.append(f"folder:{folder_id}:{for_update}")
@@ -129,13 +143,23 @@ class FakeRepository:
         self.events.append(f"document:{document_id}:{for_update}")
         return dict(self.document)
 
-    def has_document_permission(self, document_id, department_ids, manage, for_update=False):
+    def has_document_permission(
+        self,
+        document_id,
+        department_ids,
+        manage,
+        for_update=False,
+        user_id=None,
+        knowledge_base_id=None,
+    ):
         self.events.append(f"document-acl:{document_id}:{manage}:{for_update}")
-        return any(
+        department_allowed = any(
             department in self.allowed_departments
             and (not manage or self.allowed_departments[department] == "manage")
             for department in department_ids
         )
+        direct = self.allowed_users.get(user_id)
+        return department_allowed or direct == "manage" or (not manage and direct == "read")
 
     def document_acl(self, document_id):
         return [{"department_id": 2, "permission": "manage"}]
@@ -220,6 +244,42 @@ def make_service(
     )
 
 
+def test_direct_read_grant_can_view_document_but_cannot_reindex_it() -> None:
+    """A KB read grant applies to its documents without granting mutation rights."""
+    from app.core.errors import AuthorizationError
+
+    events: list[str] = []
+    repository = FakeRepository(events)
+    repository.allowed_users[DIRECT_READER["id"]] = "read"
+    uow, service = make_service(events, repository, FakeStore(events))
+
+    assert service.document_detail(DIRECT_READER, 31)["id"] == 31
+    with pytest.raises(AuthorizationError, match="无权管理该知识库"):
+        service.reindex_document(DIRECT_READER, 31)
+
+
+def test_direct_manage_grant_allows_upload_without_department_membership(tmp_path: Path) -> None:
+    """A KB manage grant authorizes writes only inside that exact KB."""
+    events: list[str] = []
+    repository = FakeRepository(events)
+    repository.allowed_users[DIRECT_MANAGER["id"]] = "manage"
+    uow, service = make_service(events, repository, FakeStore(events))
+
+    with uow:
+        result = service.upload_document(
+            DIRECT_MANAGER,
+            staged_upload(tmp_path),
+            10,
+            20,
+            None,
+            "internal",
+            "127.0.0.1",
+        )
+
+    assert result["status"] == "queued"
+    assert "write:document" in events
+
+
 def test_upload_uses_kb_acl_folder_lock_order_and_preserves_worker_payload(tmp_path: Path) -> None:
     """Catches upload using stale ACL/folder reads or changing the Worker extract payload."""
     events: list[str] = []
@@ -238,7 +298,7 @@ def test_upload_uses_kb_acl_folder_lock_order_and_preserves_worker_payload(tmp_p
         "ingestion_job_id": 51,
         "status": "queued",
     }
-    assert events[:3] == ["kb:10:True", "acl:10:True", "folder:20:True"]
+    assert events[:3] == ["kb:10:True", "kb-permission:10:8:True", "folder:20:True"]
     job = next(event for event in events if event.startswith("job:extract:"))
     assert job.endswith(":{'knowledge_base_id': 10, 'document_id': 31}")
     assert events[-2:] == ["commit", "close"]
@@ -450,7 +510,7 @@ def test_move_locks_kb_acl_target_folder_then_document_and_enforces_row_version(
     assert events[:6] == [
         "document:31:False",
         "kb:10:True",
-        "acl:10:True",
+        "kb-permission:10:8:True",
         "folder:21:True",
         "document:31:True",
         "document-acl:31:True:True",

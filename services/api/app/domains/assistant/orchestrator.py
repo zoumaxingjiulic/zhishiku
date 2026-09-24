@@ -12,15 +12,14 @@ from ...core.database import UnitOfWork
 from ...core.errors import AuthorizationError, NotFoundError
 from ...core.redaction import redact_values
 from ...domains.agents.repository import AgentRepository, parse_json
-from ...domains.agents.service import AgentService
 from ...domains.auth.repository import AuthRepository
 from ...domains.auth.service import AuthService
 from ...quality import RetrievalPolicy
 from ...runtime.chat import (
-    TaskCancelled, agent_model_gateway, bound_agent_tools, checked_executor,
-    execute_bound_tool, sanitize_bound_tool, tool_binding_version,
+    TaskCancelled, agent_model_gateway, execute_bound_tool, sanitize_bound_tool,
+    tool_binding_version,
 )
-from ...runtime.retrieval import retrieve_for_agent
+from ...runtime.retrieval import retrieve_for_user
 from .capabilities import CapabilityCatalog
 from .intent import IntentModelBusy, IntentRouter
 from .repository import AssistantRepository
@@ -62,13 +61,6 @@ class ExecutionBudget:
         if self.tool_calls >= 6:
             raise ValueError('Assistant tool budget exceeded')
         self.tool_calls += 1
-
-    def delegate(self):
-        self.remaining()
-        if self.delegations >= 3:
-            raise ValueError('Assistant delegation budget exceeded')
-        self.delegations += 1
-
 
 class ProductionIntentModel:
     """Hard wall-clock deadline even when a provider ignores transport timeouts.
@@ -176,7 +168,6 @@ class AssistantOrchestrator:
             for kind, ids in (
                 ('knowledge', decision.selection.knowledge_base_ids),
                 ('tools', decision.selection.tool_ids),
-                ('agents', decision.selection.agent_ids),
                 ('skills', decision.selection.skill_ids),
             ):
                 if ids:
@@ -291,10 +282,6 @@ class AssistantPersistence:
                 current_skill = assistant_repository.skill(int(skill_id))
                 if any(set(current_skill[field]) != set(ids) for field, ids in expected['selection'].items()):
                     raise AuthorizationError('Skill 能力绑定已变更')
-            for delegation in result.get('delegations', []):
-                delegated = AgentService(uow, repository).authorize_agent(fresh, delegation['agent_id'], for_update=True)
-                if set(delegated['knowledge_base_ids']) != set(delegation['knowledge_base_ids']):
-                    raise AuthorizationError('委托智能体知识范围已变更')
             if not repository.get_owned_session(task['session_id'], task['agent_id'], user['id'], for_update=True):
                 raise NotFoundError('对话不存在')
             # Validate every actual source, including sources used by delegated agents.
@@ -303,7 +290,7 @@ class AssistantPersistence:
             departments = [] if fresh.get('is_platform_admin') else fresh.get('department_ids', [])
             for citation in [*result['citations'], *evidence.get('history_citations', []),
                              *[{'document_id': i} for i in source['document_ids']]]:
-                if not repository.citation_document(citation['document_id'], allowed_kbs, departments, for_update=True):
+                if not _citation_document_for_user(repository, fresh, citation['document_id'], allowed_kbs, for_update=True):
                     raise AuthorizationError('引用资料授权已变更')
             tool_ids = sorted({e['connector_tool_id'] for e in result['tool_calls'] if e.get('connector_tool_id')})
             catalog.validate_selection(fresh, snapshot, CapabilitySelection(tool_ids=tool_ids))
@@ -341,6 +328,19 @@ class AssistantPersistence:
             uow.commit()
 
 
+def _citation_document_for_user(repository, user, document_id, knowledge_base_ids, *, for_update=False):
+    if user.get("is_platform_admin"):
+        return repository.citation_document(
+            document_id, knowledge_base_ids, [], for_update=for_update
+        )
+    return repository.permanent_citation_document(
+        document_id,
+        knowledge_base_ids,
+        int(user["id"]),
+        list(user.get("department_ids") or []),
+        for_update=for_update,
+    )
+
 def filter_authorized_history(repository, user, snapshot, rows, assistant_repository=None):
     """Apply the existing chat citation/tool-history rules to assistant history."""
     allowed_kbs = [r.id for r in snapshot.knowledge_bases]
@@ -361,9 +361,9 @@ def filter_authorized_history(repository, user, snapshot, rows, assistant_reposi
                     if not set(source['selection'][field]).issubset({r.id for r in getattr(snapshot, kind)}):
                         raise AuthorizationError('历史来源授权已撤销')
                 provenance.validate_dependencies(source, repository, assistant_repository)
-                if any(not repository.citation_document(i, allowed_kbs, departments) for i in source['document_ids']):
+                if any(not _citation_document_for_user(repository, user, i, allowed_kbs) for i in source['document_ids']):
                     continue
-                if any(not repository.citation_document(c['document_id'], allowed_kbs, departments)
+                if any(not _citation_document_for_user(repository, user, c['document_id'], allowed_kbs)
                        for c in parse_json(row.get('citations_json'), [])):
                     continue
                 if any((e.get('connector_tool_id') not in allowed_tools if e.get('connector_tool_id')
@@ -404,33 +404,16 @@ class ProductionAdapters:
                 'tool_calls': self.budget.tool_calls, 'delegations': self.budget.delegations},
                 'timings': {'total_ms': round((time.monotonic() - self.budget.started) * 1000, 1)}}
 
-    def _recheck_delegation(self, user, agent, tools):
-        user = self._scope(user, CapabilitySelection(agent_ids=[agent['id']],
-                           knowledge_base_ids=agent['knowledge_base_ids'], tool_ids=[t['id'] for t in tools or []]))
-        with UnitOfWork() as uow:
-            current = AgentService(uow).authorize_agent(user, agent['id'])
-        if (current.get('config_version') != agent.get('config_version')
-                or set(current['knowledge_base_ids']) != set(agent['knowledge_base_ids'])):
-            raise AuthorizationError('专业智能体配置已变更')
-        bindings = {t['id']: t for t in bound_agent_tools(agent['id'])}
-        if any(t['id'] not in bindings or bindings[t['id']].get('_binding_version') != t.get('_binding_version')
-               for t in tools or []):
-            raise AuthorizationError('专业智能体工具绑定已变更')
-        return user
-
-    def _generate(self, question, user, *, prompt=None, units=None, tools=None, executor=None, agent=None):
+    def _generate(self, question, user, *, prompt=None, units=None, tools=None, executor=None):
         self.store.check_active(self.task)
         self.budget.remaining()
-        if agent is None:
-            with UnitOfWork() as uow:
-                agent = AgentRepository(uow.cursor).get_agent(self.task['agent_id'])
-            if not agent or agent.get('code') != 'ENTERPRISE_ASSISTANT':
-                raise NotFoundError('企业总助手不存在')
-        elif agent['id'] != self.task['agent_id']:
-            user = self._recheck_delegation(user, agent, tools)
+        with UnitOfWork() as uow:
+            agent = AgentRepository(uow.cursor).get_agent(self.task['agent_id'])
+        if not agent or agent.get('code') != 'ENTERPRISE_ASSISTANT':
+            raise NotFoundError('企业总助手不存在')
         self.evidence['agents'][agent['id']] = {
             'config_version': agent.get('config_version'),
-            'tool_ids': [t['id'] for t in tools or []] if agent['id'] != self.task['agent_id'] else [],
+            'tool_ids': [],
             'knowledge_base_ids': list(agent.get('knowledge_base_ids', [])),
         }
         prompt = (agent.get('system_prompt') or '') + ('\n' + prompt if prompt else '')
@@ -443,8 +426,6 @@ class ProductionAdapters:
             self.budget.tool()
             self.store.check_active(self.task)
             self._scope(user, CapabilitySelection(tool_ids=[tool['id']]))
-            if agent['id'] != self.task['agent_id']:
-                self._recheck_delegation(user, agent, tools)
             started = time.monotonic()
             audit = {'kind': 'tool', 'connector_tool_id': tool['id'], 'connector': tool.get('connector_code'),
                      'tool': tool.get('tool_name'), 'called_at': datetime.now(timezone.utc).isoformat(),
@@ -485,10 +466,12 @@ class ProductionAdapters:
         self.store.check_active(self.task)
         self.budget.remaining()
         user = self.store.load_current_user(user['id'])
-        field = {'knowledge': 'knowledge_base_ids', 'tools': 'tool_ids', 'agents': 'agent_ids', 'skills': 'skill_ids'}[kind]
+        if kind == 'agents':
+            raise AuthorizationError('企业总助手不调用专业智能体')
+        field = {'knowledge': 'knowledge_base_ids', 'tools': 'tool_ids', 'skills': 'skill_ids'}[kind]
         user = self._scope(user, CapabilitySelection(**{field: ids}))
         if kind == 'knowledge':
-            data = retrieve_for_agent(user, {'knowledge_base_ids': ids}, question, RetrievalPolicy().model_dump(),
+            data = retrieve_for_user(user, ids, question, RetrievalPolicy().model_dump(),
                                       deadline=self.budget.deadline, check_active=lambda: self.store.check_active(self.task))
             self.store.check_active(self.task)
             self.budget.remaining()
@@ -516,40 +499,6 @@ class ProductionAdapters:
                 return result, event
 
             return self._generate(question, user, tools=tools, executor=execute)
-        if kind == 'agents':
-            parts = []
-            for aid in ids:
-                self.budget.delegate()
-                self.store.check_active(self.task)
-                user = self.store.load_current_user(user['id'])
-                with UnitOfWork() as uow:
-                    agent = AgentService(uow).authorize_agent(user, aid)
-                if agent['code'] == 'ENTERPRISE_ASSISTANT' or agent.get('launch_mode') != 'chat':
-                    raise AuthorizationError('仅支持委托专业问答智能体')
-                tools = bound_agent_tools(aid)
-                user = self._scope(user, CapabilitySelection(agent_ids=[aid], knowledge_base_ids=agent['knowledge_base_ids'],
-                                                             tool_ids=[t['id'] for t in tools]))
-                audit = {'kind': 'delegation', 'agent_id': aid, 'trace_id': self.task['id'], 'success': False}
-                started = time.monotonic()
-                try:
-                    data = retrieve_for_agent(user, agent, question, RetrievalPolicy().model_dump(),
-                                              deadline=self.budget.deadline, check_active=lambda: self.store.check_active(self.task))
-                    self.store.check_active(self.task)
-                    self.budget.remaining()
-                    parts.append(self._generate(question, user, units=data['units'], tools=tools,
-                                               executor=checked_executor(user, aid, progress_callback=self.emit,
-                                                   deadline=self.budget.deadline,
-                                                   check_active=lambda: self.store.check_active(self.task)), agent=agent))
-                    audit['success'] = True
-                except Exception as exc:
-                    audit['error_type'] = type(exc).__name__
-                    raise
-                finally:
-                    audit['duration_ms'] = round((time.monotonic() - started) * 1000, 1)
-                    self.events.append(audit)
-                parts[-1]['delegations'] = [{'agent_id': aid, 'name': agent['name'], 'trace_id': self.task['id'],
-                                            'knowledge_base_ids': list(agent['knowledge_base_ids'])}]
-            return self._combine(parts)
         if kind == 'skills':
             parts = []
             for sid in ids:
@@ -575,7 +524,7 @@ class ProductionAdapters:
                     continue
                 structured_question = json.dumps({'question': question, 'parameters': arguments}, ensure_ascii=False)
                 children = []
-                for child_kind, field in (('knowledge', 'knowledge_base_ids'), ('tools', 'tool_ids'), ('agents', 'agent_ids')):
+                for child_kind, field in (('knowledge', 'knowledge_base_ids'), ('tools', 'tool_ids')):
                     if skill[field]:
                         children.append(self.execute(child_kind, skill[field], structured_question, user))
                 context = '\n'.join(p['answer'] for p in children)

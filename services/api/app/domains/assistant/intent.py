@@ -78,7 +78,6 @@ def _capability_summary(snapshot: CapabilityCatalogSnapshot) -> dict[str, list[d
     return {
         "knowledge_bases": refs(snapshot.knowledge_bases),
         "tools": tools,
-        "agents": refs(snapshot.agents),
         "skills": refs(snapshot.skills),
     }
 
@@ -139,9 +138,8 @@ def _selection_matches_intent(decision: IntentDecision) -> bool:
     allowed_by_intent = {
         "knowledge_query": {"knowledge_base_ids"},
         "system_query": {"tool_ids"},
-        "agent_task": {"agent_ids"},
         "multi_capability": {
-            "knowledge_base_ids", "tool_ids", "agent_ids", "skill_ids",
+            "knowledge_base_ids", "tool_ids", "skill_ids",
         },
     }
     allowed = allowed_by_intent.get(decision.intent_type, set())
@@ -215,6 +213,12 @@ class IntentRouter:
                 needs_clarification=True,
                 risk=decision.risk,
                 reason=decision.reason,
+            )
+        if decision.intent_type == "agent_task":
+            return _safe_decision(
+                "clarification",
+                reason="Enterprise assistant does not delegate professional agents",
+                clarify=True,
             )
         if decision.intent_type in {"general_chat", "forbidden"}:
             return decision.model_copy(update={"selection": _empty_selection()})

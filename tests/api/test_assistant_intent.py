@@ -66,7 +66,7 @@ def test_routes_supported_intents_to_only_catalog_capabilities():
         ("查询上海组织的物料 M-100 库存", _response("system_query", selection={"tool_ids": [11]}),
          "system_query", [], [11], []),
         ("分析这份标书", _response("agent_task", selection={"agent_ids": [7]}),
-         "agent_task", [], [], [7]),
+         "clarification", [], [], []),
     ]
 
     for question, response, intent_type, knowledge_ids, tool_ids, agent_ids in cases:
@@ -76,7 +76,7 @@ def test_routes_supported_intents_to_only_catalog_capabilities():
         assert decision.selection.knowledge_base_ids == knowledge_ids
         assert decision.selection.tool_ids == tool_ids
         assert decision.selection.agent_ids == agent_ids
-        assert decision.needs_clarification is False
+        assert decision.needs_clarification is (intent_type == "clarification")
 
 
 def test_missing_parameter_prevents_inventory_execution():

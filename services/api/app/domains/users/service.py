@@ -10,7 +10,7 @@ from ...core.database import UnitOfWork
 from ...core.errors import AuthorizationError, ConflictError, NotFoundError, ValidationError
 from ...core.security import hash_password
 from .repository import UsersRepository
-from .schemas import DepartmentCreate, UserCreate, UserUpdate
+from .schemas import DepartmentCreate, KnowledgeBaseGrant, UserCreate, UserUpdate
 
 
 def require_current_platform_admin(repository: UsersRepository, actor_id: int) -> None:
@@ -97,6 +97,34 @@ class UsersService:
         if user_id in active_admin_ids and len(active_admin_ids) <= 1:
             raise ValidationError("至少需要保留一个启用的平台管理员账号")
 
+    def _validate_capability_grants(
+        self,
+        knowledge_base_grants: list[KnowledgeBaseGrant],
+        tool_ids: list[int],
+    ) -> tuple[list[KnowledgeBaseGrant], list[int]]:
+        grants = sorted(knowledge_base_grants, key=lambda item: item.knowledge_base_id)
+        normalized_tool_ids = sorted(tool_ids)
+        knowledge_base_ids = [item.knowledge_base_id for item in grants]
+        if set(self.repository.active_knowledge_bases_by_ids(knowledge_base_ids)) != set(
+            knowledge_base_ids
+        ):
+            raise ValidationError("知识库不存在或已停用")
+        if set(self.repository.active_readonly_tools_by_ids(normalized_tool_ids)) != set(
+            normalized_tool_ids
+        ):
+            raise ValidationError("MCP 工具不存在、已停用或不是只读工具")
+        return grants, normalized_tool_ids
+
+    @staticmethod
+    def _permission_view(row: dict, source: str) -> dict:
+        return {
+            "knowledge_base_id": int(row["knowledge_base_id"]),
+            "code": row["code"],
+            "name": row["name"],
+            "permission": row["permission"],
+            "sources": [source],
+        }
+
     def list_departments(self) -> list[dict]:
         return self.repository.list_departments()
 
@@ -120,10 +148,27 @@ class UsersService:
         self._require_platform_admin(actor_id)
         return self.repository.list_users()
 
+    def get_department_knowledge_base_grants(
+        self, actor_id: int, department_id: int
+    ) -> list[dict]:
+        self._require_platform_admin(actor_id)
+        if not self.repository.find_active_department(department_id):
+            raise NotFoundError("部门不存在或已停用")
+        return [
+            self._permission_view(row, "department")
+            for row in self.repository.department_knowledge_base_grants_by_department(
+                department_id
+            )
+        ]
+
     def create_user(self, actor_id: int, payload: UserCreate, ip_address: str) -> dict:
         self._lock_current_admin(actor_id, membership_mutex=True)
         if not self.repository.find_active_department(payload.department_id):
             raise ValidationError("部门不存在或已停用")
+        knowledge_base_grants, tool_ids = self._validate_capability_grants(
+            payload.knowledge_base_grants,
+            payload.tool_ids,
+        )
         temporary_password = self._password_generator()
         try:
             user_id = self.repository.insert_user(
@@ -132,11 +177,28 @@ class UsersService:
                 actor_id,
             )
             self.repository.assign_primary_department(user_id, payload.department_id)
+            self.repository.replace_user_knowledge_base_grants(
+                user_id,
+                knowledge_base_grants,
+                actor_id,
+            )
+            self.repository.replace_user_tool_grants(user_id, tool_ids, actor_id)
             self.repository.write_audit(
                 actor_id,
                 "user.create",
                 user_id,
-                {"username": payload.username, "department_id": payload.department_id},
+                {
+                    "username": payload.username,
+                    "department_id": payload.department_id,
+                    "knowledge_base_grants": [
+                        {
+                            "knowledge_base_id": item.knowledge_base_id,
+                            "permission": item.permission,
+                        }
+                        for item in knowledge_base_grants
+                    ],
+                    "tool_ids": tool_ids,
+                },
                 ip_address,
             )
         except pymysql.err.IntegrityError as exc:
@@ -167,19 +229,82 @@ class UsersService:
             raise ValidationError("部门不存在或已停用")
         if department["code"] != "PLATFORM_ADMIN":
             self._protect_last_platform_admin(user_id, admin_department_id)
+        knowledge_base_grants, tool_ids = self._validate_capability_grants(
+            payload.knowledge_base_grants,
+            payload.tool_ids,
+        )
         try:
             self.repository.update_user(user_id, payload)
             self.repository.assign_primary_department(user_id, payload.department_id)
+            self.repository.replace_user_knowledge_base_grants(
+                user_id,
+                knowledge_base_grants,
+                actor_id,
+            )
+            self.repository.replace_user_tool_grants(user_id, tool_ids, actor_id)
             self.repository.write_audit(
                 actor_id,
                 "user.update",
                 user_id,
-                payload.model_dump(),
+                {
+                    "username": payload.username,
+                    "display_name": payload.display_name,
+                    "email": payload.email,
+                    "department_id": payload.department_id,
+                    "knowledge_base_grants": [
+                        {
+                            "knowledge_base_id": item.knowledge_base_id,
+                            "permission": item.permission,
+                        }
+                        for item in knowledge_base_grants
+                    ],
+                    "tool_ids": tool_ids,
+                },
                 ip_address,
             )
         except pymysql.err.IntegrityError as exc:
             raise ConflictError("用户名已存在") from exc
         self.uow.commit()
+
+    def get_user_permissions(self, actor_id: int, user_id: int) -> dict:
+        self._require_platform_admin(actor_id)
+        if not self.repository.user_exists(user_id):
+            raise NotFoundError("用户不存在")
+        account = self.repository.user_permission_account(user_id)
+        if not account:
+            raise NotFoundError("用户不存在")
+        inherited = [
+            self._permission_view(row, "department")
+            for row in self.repository.department_knowledge_base_grants(user_id)
+        ]
+        direct = [
+            self._permission_view(row, "direct")
+            for row in self.repository.direct_knowledge_base_grants(user_id)
+        ]
+        effective: dict[int, dict] = {}
+        for grant in [*inherited, *direct]:
+            knowledge_base_id = grant["knowledge_base_id"]
+            current = effective.get(knowledge_base_id)
+            if current is None:
+                effective[knowledge_base_id] = {
+                    **grant,
+                    "sources": list(grant["sources"]),
+                }
+                continue
+            if grant["permission"] == "manage":
+                current["permission"] = "manage"
+            for source in grant["sources"]:
+                if source not in current["sources"]:
+                    current["sources"].append(source)
+        return {
+            **account,
+            "department_inherited_knowledge_base_grants": inherited,
+            "direct_knowledge_base_grants": direct,
+            "effective_knowledge_base_grants": [
+                effective[item] for item in sorted(effective)
+            ],
+            "direct_tools": self.repository.direct_tools(user_id),
+        }
 
     def update_user_status(self, actor_id: int, user_id: int, status: int) -> None:
         if user_id == actor_id and status == 0:

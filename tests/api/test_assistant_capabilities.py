@@ -97,7 +97,7 @@ def test_catalog_filters_every_capability_before_routing():
 
     assert [item.id for item in catalog.knowledge_bases] == [2]
     assert [item.id for item in catalog.tools] == [11]
-    assert [item.id for item in catalog.agents] == [7]
+    assert catalog.agents == ()
     assert [item.id for item in catalog.skills] == [5]
 
 
@@ -122,7 +122,7 @@ def test_platform_admin_gets_every_enabled_capability_and_unassigned_employee_ge
     admin_snapshot = catalog.for_user(ADMIN)
     assert [item.id for item in admin_snapshot.knowledge_bases] == [1, 2]
     assert [item.id for item in admin_snapshot.tools] == [11]
-    assert [item.id for item in admin_snapshot.agents] == [7, 8]
+    assert admin_snapshot.agents == ()
     assert [item.id for item in admin_snapshot.skills] == [5, 6]
 
     empty_snapshot = catalog.for_user(UNASSIGNED)
@@ -257,7 +257,9 @@ class RecordingCursor:
 
     def execute(self, statement, parameters=None):
         self.statements.append((statement, parameters))
-        if "FROM knowledge_base" in statement:
+        if "FROM assistant_skill" in statement:
+            self.rows = [{"id": 5, "code": "LEAVE_POLICY", "name": "休假制度", "description": "解释休假"}]
+        elif "FROM knowledge_base" in statement:
             self.rows = [{"id": 2, "code": "HR", "name": "人事制度", "description": "制度"}]
         elif "FROM connector_tool" in statement:
             self.rows = [{
@@ -304,36 +306,31 @@ class ImplicitAgentAccessCursor:
         self.rows: list[dict] = []
 
     def execute(self, statement, parameters=None):
-        preserves_implicit_access = all(fragment in statement for fragment in (
-            "JSON_EXTRACT(a.settings_json,'$.explicit_acl')",
-            "agent_knowledge_base",
-            "knowledge_base_department_acl",
-            "k.status='active'",
-        )) and parameters == [2, 2]
+        direct_tool_access = (
+            "user_connector_tool_acl" in statement
+            and "ua.user_id=%s" in statement
+            and "ua.permission='use'" in statement
+            and parameters == (8,)
+        )
         if "FROM connector_tool" in statement:
             self.rows = [{
                 "id": 11, "connector_id": 4, "tool_name": "inventory", "title": "库存查询",
                 "description": "查询库存", "input_schema_json": '{"type":"object"}',
                 "annotations_json": '{"readOnlyHint":true}', "connector_code": "ERP",
-            }] if preserves_implicit_access else []
-        elif "FROM agent " in statement:
-            self.rows = [{
-                "id": 7, "code": "BID", "name": "标书助手", "description": "分析标书",
-            }] if preserves_implicit_access else []
+            }] if direct_tool_access else []
         else:
             raise AssertionError(statement)
 
     def fetchall(self):
         return list(self.rows)
 
-
-def test_sql_repository_preserves_implicit_agent_and_tool_access_via_visible_knowledge_base():
-    """Catches narrowing legacy non-strict Agent authorization to explicit department ACL only."""
+def test_sql_repository_does_not_inherit_agents_or_tools_from_visible_knowledge_base():
+    """Catches visible knowledge bases becoming an implicit Agent or MCP-tool grant."""
     from app.domains.assistant.repository import AssistantRepository
 
     repository = AssistantRepository(ImplicitAgentAccessCursor())
 
-    assert [row["id"] for row in repository.list_agents(EMPLOYEE)] == [7]
+    assert repository.list_agents(EMPLOYEE) == []
     assert [row["id"] for row in repository.list_tools(EMPLOYEE)] == [11]
 
 
@@ -363,7 +360,7 @@ def test_professional_agent_candidates_exclude_reserved_and_workflow_agents():
     finally:
         database.close()
 
-    assert [(row["id"], row["code"]) for row in rows] == [(7, "BID")]
+    assert rows == []
 
 
 def test_sql_repository_reloads_active_user_departments_and_admin_identity():
@@ -404,15 +401,15 @@ def test_sql_repository_applies_existing_acl_relations_and_returns_no_connection
 
     assert [row["id"] for row in repository.list_knowledge_bases(EMPLOYEE)] == [2]
     assert [row["id"] for row in repository.list_tools(EMPLOYEE)] == [11]
-    assert [row["id"] for row in repository.list_agents(EMPLOYEE)] == [7]
+    assert repository.list_agents(EMPLOYEE) == []
     assert [row["id"] for row in repository.list_skills(EMPLOYEE)] == [5]
 
     sql = "\n".join(statement for statement, _ in cursor.statements)
     assert "knowledge_base_department_acl" in sql
-    assert "agent_department_acl" in sql
-    assert "agent_connector_tool" in sql
+    assert "user_knowledge_base_acl" in sql
+    assert "user_connector_tool_acl" in sql
     assert "assistant_skill_department" in sql
-    assert sql.count("status='active'") >= 6
+    assert sql.count("status='active'") >= 4
     assert "credential_ciphertext" not in sql
     assert "base_url" not in sql
     assert "config_json" not in sql

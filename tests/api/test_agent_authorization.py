@@ -47,19 +47,21 @@ class AuthorizationRepository:
     def has_agent_department_access(self, agent_id, department_ids, for_update=False):
         return self.department_grant
 
+    def has_agent_user_access(self, agent_id, user_id, for_update=False):
+        return self.department_grant
 
-def test_final_knowledge_scope_is_agent_binding_intersected_with_user_permissions():
-    """Catches a request or department grant expanding retrieval outside both ACL sets."""
+
+def test_final_knowledge_scope_is_the_complete_agent_binding():
+    """A distributed agent delegates all of its configured knowledge bases."""
     from app.domains.agents.service import AgentService
 
-    service = AgentService(FakeUow(), repository=AuthorizationRepository())
+    service = AgentService(FakeUow(), repository=AuthorizationRepository(department_grant=True))
     agent = service.authorize_agent({"id": 8, "department_ids": [2], "is_platform_admin": False}, 7)
 
-    assert agent["knowledge_base_ids"] == [2]
+    assert agent["knowledge_base_ids"] == [2, 3]
 
 
-def test_explicit_agent_acl_never_grants_unavailable_knowledge_bases():
-    """Catches department authorization being confused with knowledge authorization."""
+def test_direct_agent_distribution_delegates_kbs_absent_from_permanent_user_acl():
     from app.domains.agents.service import AgentService
 
     service = AgentService(
@@ -68,11 +70,11 @@ def test_explicit_agent_acl_never_grants_unavailable_knowledge_bases():
     )
     agent = service.authorize_agent({"id": 8, "department_ids": [2], "is_platform_admin": False}, 7)
 
-    assert agent["knowledge_base_ids"] == []
+    assert agent["knowledge_base_ids"] == [3]
 
 
-def test_strict_agent_without_department_grant_is_denied():
-    """Catches a strict agent becoming usable merely because a KB happens to be visible."""
+def test_agent_without_direct_user_grant_is_denied():
+    """Department and knowledge overlap must not infer agent access."""
     from app.domains.agents.service import AgentService
 
     service = AgentService(FakeUow(), repository=AuthorizationRepository(strict=True))
@@ -277,7 +279,7 @@ class FinalizationRepository(AuthorizationRepository):
         self.events.append(("binding", for_update))
         return [] if self.race == "binding" else [2]
 
-    def has_agent_department_access(self, agent_id, department_ids, for_update=False):
+    def has_agent_user_access(self, agent_id, user_id, for_update=False):
         self.events.append(("agent_acl", for_update))
         return self.race != "agent_acl"
 
@@ -355,7 +357,7 @@ class FinalizationAuthService:
 
 
 @pytest.mark.parametrize("race", [
-    "agent", "agent_acl", "kb", "binding", "document_status", "document_acl", "tool", "tool_config",
+    "agent", "agent_acl", "binding", "document_status", "document_acl", "tool", "tool_config",
     "tool_description", "connector_name", "cancel",
 ])
 def test_finalization_rechecks_every_acl_and_discards_generated_answer(monkeypatch, race):
@@ -434,7 +436,7 @@ def test_finalization_locks_all_current_authorization_reads_and_commits_result_a
 
     assert uow.commits == 1
     assert auth.events == ["user"]
-    for current_read in ("agent", "binding", "kb_acl", "agent_acl", "session", "document", "tools", "task"):
+    for current_read in ("agent", "binding", "agent_acl", "session", "document", "tools", "task"):
         assert (current_read, True) in repository.events
     assert repository.events.index(("assistant", False)) < repository.events.index(("result", False))
     assert repository.events.index(("result", False)) < repository.events.index(("run_succeeded", False))
@@ -609,7 +611,7 @@ def _agent_write_payload(config_version=3):
         code="HR",
         name="人资助手",
         system_prompt="仅回答授权资料",
-        department_ids=[7],
+        user_ids=[8],
         knowledge_base_ids=[2],
         tool_ids=[31],
         llm_gateway_profile_id=4,
@@ -632,7 +634,7 @@ def test_update_agent_uses_one_acyclic_lock_order():
         "read_admin_department_id",
         "lock_membership:1",
         "lock:agent",
-        "reference:department:read",
+        "reference:app_user:lock",
         "reference:knowledge_base:lock",
         "reference:llm_gateway_profile:lock",
         "reference:tool",
@@ -651,7 +653,7 @@ def test_create_agent_locks_new_agent_before_kb_and_tool_references():
     service.create_agent({"id": 1, "is_platform_admin": True}, _agent_write_payload(1))
 
     assert events.index("lock_membership:1") < events.index("lock:new_agent")
-    assert events.index("lock:new_agent") < events.index("reference:department:read")
+    assert events.index("lock:new_agent") < events.index("reference:app_user:lock")
     assert events.index("lock:new_agent") < events.index("reference:knowledge_base:lock")
     assert events.index("lock:new_agent") < events.index("reference:tool")
 
@@ -742,9 +744,9 @@ def test_cross_service_lock_graph_is_acyclic_and_chat_never_uses_admin_mutex():
             chat_events.append("reference")
             return super().agent_knowledge_base_ids(agent_id, for_update)
 
-        def accessible_knowledge_base_ids(self, user, for_update=False):
+        def has_agent_user_access(self, agent_id, user_id, for_update=False):
             chat_events.append("reference")
-            return super().accessible_knowledge_base_ids(user, for_update)
+            return super().has_agent_user_access(agent_id, user_id, for_update)
 
         def get_session(self, session_id, agent_id, user_id, for_update=False):
             chat_events.append("session")

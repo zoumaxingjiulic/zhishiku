@@ -12,47 +12,6 @@ from test_assistant_review_fixes import locked_catalog_database
 from test_assistant_runtime import USER
 
 
-@pytest.mark.parametrize('mutation', ['cross_tool', 'original', 'one_original_left', 'disabled', 'acl'])
-@pytest.mark.parametrize('locked', [False, True])
-def test_each_tool_retains_its_own_original_grant_edges(mutation, locked):
-    from app.domains.assistant.repository import AssistantRepository
-    from app.domains.assistant.capabilities import CapabilityCatalog
-    from app.domains.assistant.schemas import CapabilityCatalogSnapshot, CapabilitySelection
-    from app.core.errors import AuthorizationError
-    db, Cursor, _ = locked_catalog_database()
-    db.execute("UPDATE agent SET launch_mode='workflow' WHERE id=7")
-    db.execute("INSERT INTO agent(id,code,name,status,launch_mode,settings_json) VALUES(42,'FORM','Form','active','form','{}')")
-    db.execute("INSERT INTO agent_department_acl VALUES(42,2,'use')")
-    db.execute("INSERT INTO connector_tool SELECT 12,connector_id,'other','Other',description,input_schema_json,output_schema_json,annotations_json,status FROM connector_tool WHERE id=11")
-    db.execute("INSERT INTO agent_connector_tool VALUES(42,12,'read')")
-    if mutation == 'one_original_left': db.execute("INSERT INTO agent_connector_tool VALUES(42,11,'read')")
-    cursor = Cursor()
-    repo = AssistantRepository(cursor)
-    snapshot = CapabilityCatalog(repo).for_user(USER)
-    snapshot = CapabilityCatalogSnapshot.model_validate_json(snapshot.model_dump_json())
-    if mutation in {'cross_tool', 'one_original_left'}:
-        db.execute('DELETE FROM agent_connector_tool WHERE agent_id=7 AND connector_tool_id=11')
-    if mutation == 'cross_tool': db.execute("INSERT INTO agent_connector_tool VALUES(42,11,'read')")
-    if mutation == 'disabled': db.execute("UPDATE agent SET status='disabled' WHERE id=7")
-    if mutation == 'acl': db.execute('DELETE FROM agent_department_acl WHERE agent_id=7')
-    try:
-        if locked: repo.lock_authority(8, snapshot, 99)
-        catalog = CapabilityCatalog(repo)
-        catalog.validate_selection(USER, snapshot, CapabilitySelection(tool_ids=[12]))
-        if mutation in {'original', 'one_original_left'}:
-            catalog.validate_selection(USER, snapshot, CapabilitySelection(tool_ids=[11]))
-        else:
-            with pytest.raises(AuthorizationError):
-                catalog.validate_selection(USER, snapshot, CapabilitySelection(tool_ids=[11]))
-        if locked:
-            expected = [11, 12] if mutation in {'original', 'one_original_left'} else [12]
-            assert [row.id for row in catalog.for_user(USER).tools] == expected
-        assert snapshot.agents == ()
-    finally:
-        cursor.release()
-        db.close()
-
-
 def test_per_tool_mapping_is_frozen_json_compatible_and_legacy_is_readable():
     from app.domains.assistant.schemas import CapabilityCatalogSnapshot
     snapshot = CapabilityCatalogSnapshot(tool_authority={'11': [7, 42], '12': [42]})
@@ -138,26 +97,6 @@ def test_quality_deadline_does_not_join_slow_future_and_worker_exits(monkeypatch
         for worker in workers:
             worker.join(.5)
             assert not worker.is_alive()
-
-
-def test_legacy_tool_snapshot_reads_but_cannot_invent_original_edges():
-    from app.domains.assistant.repository import AssistantRepository
-    from app.domains.assistant.capabilities import CapabilityCatalog
-    from app.domains.assistant.schemas import CapabilityCatalogSnapshot, CapabilitySelection
-    from app.core.errors import AuthorizationError
-    db, Cursor, _ = locked_catalog_database()
-    cursor = Cursor()
-    try:
-        repo = AssistantRepository(cursor)
-        current = CapabilityCatalog(repo).for_user(USER)
-        legacy = current.model_dump(mode='json', exclude={'tool_authority'})
-        restored = CapabilityCatalogSnapshot.model_validate_json(json.dumps(legacy))
-        assert restored.tools[0].id == 11
-        with pytest.raises(AuthorizationError):
-            CapabilityCatalog(repo).validate_selection(USER, restored, CapabilitySelection(tool_ids=[11]))
-    finally:
-        cursor.release()
-        db.close()
 
 
 def test_admin_direct_tool_authority_needs_no_agent_grant():

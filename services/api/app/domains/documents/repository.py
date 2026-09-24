@@ -3,6 +3,7 @@ from typing import Any
 
 from ...core.audit import write_audit
 from ...core.database import connect
+from ..knowledge.access import effective_permission, effective_permissions, permission_allows
 
 
 def object_key_is_committed(object_key: str) -> bool:
@@ -43,17 +44,39 @@ class DocumentRepository:
         )
         return list(self.cursor.fetchall())
 
-    def list_accessible_knowledge_base_ids(self, department_ids: list[int] | None) -> list[int]:
+    def knowledge_base_permission(
+        self,
+        knowledge_base_id: int,
+        user_id: int,
+        department_ids: list[int],
+        for_update: bool = False,
+    ) -> str | None:
+        return effective_permission(
+            self.cursor,
+            knowledge_base_id,
+            user_id,
+            department_ids,
+            for_update=for_update,
+        )
+
+    def list_accessible_knowledge_base_ids(
+        self,
+        department_ids: list[int] | None,
+        user_id: int | None = None,
+    ) -> list[int]:
         if department_ids is None:
             self.cursor.execute("SELECT id FROM knowledge_base WHERE status='active' ORDER BY id")
-        elif not department_ids:
-            return []
         else:
-            placeholders = ",".join(["%s"] * len(department_ids))
+            if user_id is None:
+                raise ValueError("user_id is required for non-admin knowledge-base listing")
+            knowledge_base_ids = list(effective_permissions(self.cursor, user_id, department_ids))
+            if not knowledge_base_ids:
+                return []
+            placeholders = ",".join(["%s"] * len(knowledge_base_ids))
             self.cursor.execute(
-                "SELECT DISTINCT knowledge_base_id id FROM knowledge_base_department_acl "
-                f"WHERE department_id IN ({placeholders}) ORDER BY knowledge_base_id",
-                department_ids,
+                "SELECT id FROM knowledge_base WHERE status='active' "
+                f"AND id IN ({placeholders}) ORDER BY id",
+                knowledge_base_ids,
             )
         return [int(row["id"]) for row in self.cursor.fetchall()]
 
@@ -87,6 +110,7 @@ class DocumentRepository:
         folder_ids: list[int] | None,
         department_ids: list[int] | None,
         limit: int,
+        user_id: int | None = None,
     ) -> list[dict]:
         clauses = ["d.knowledge_base_id=%s", "d.status!='deleted'"]
         parameters: list[Any] = [knowledge_base_id]
@@ -97,14 +121,23 @@ class DocumentRepository:
             clauses.append(f"d.folder_id IN ({placeholders})")
             parameters.extend(folder_ids)
         if department_ids is not None:
-            if not department_ids:
+            access_clauses: list[str] = []
+            if department_ids:
+                placeholders = ",".join(["%s"] * len(department_ids))
+                access_clauses.append(
+                    "EXISTS (SELECT 1 FROM document_department_acl da "
+                    f"WHERE da.document_id=d.id AND da.department_id IN ({placeholders}))"
+                )
+                parameters.extend(department_ids)
+            if user_id is not None:
+                access_clauses.append(
+                    "EXISTS (SELECT 1 FROM user_knowledge_base_acl ua "
+                    "WHERE ua.knowledge_base_id=d.knowledge_base_id AND ua.user_id=%s)"
+                )
+                parameters.append(user_id)
+            if not access_clauses:
                 return []
-            placeholders = ",".join(["%s"] * len(department_ids))
-            clauses.append(
-                "EXISTS (SELECT 1 FROM document_department_acl da "
-                f"WHERE da.document_id=d.id AND da.department_id IN ({placeholders}))"
-            )
-            parameters.extend(department_ids)
+            clauses.append("(" + " OR ".join(access_clauses) + ")")
         parameters.append(limit)
         self.cursor.execute(
             "SELECT d.id,d.knowledge_base_id,d.folder_id,d.row_version,f.name folder_name,d.title,"
@@ -228,7 +261,19 @@ class DocumentRepository:
         department_ids: list[int],
         manage: bool,
         for_update: bool = False,
+        user_id: int | None = None,
+        knowledge_base_id: int | None = None,
     ) -> bool:
+        if user_id is not None and knowledge_base_id is not None:
+            suffix = " FOR UPDATE" if for_update else ""
+            self.cursor.execute(
+                "SELECT permission FROM user_knowledge_base_acl "
+                "WHERE knowledge_base_id=%s AND user_id=%s" + suffix,
+                (knowledge_base_id, user_id),
+            )
+            direct = self.cursor.fetchone()
+            if direct and permission_allows(str(direct["permission"]), manage=manage):
+                return True
         if not department_ids:
             return False
         placeholders = ",".join(["%s"] * len(department_ids))

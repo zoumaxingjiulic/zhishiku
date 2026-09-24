@@ -78,20 +78,14 @@ class CapabilityCatalog:
 
     def for_user(self, user: dict[str, Any]) -> CapabilityCatalogSnapshot:
         tools = self.repository.list_tools(user)
-        authority = {}
-        for row in tools:
-            if row.get('authority_agent_id'):
-                authority.setdefault(str(row['id']), set()).add(row['authority_agent_id'])
         return CapabilityCatalogSnapshot(
-            knowledge_bases=tuple(_capability_ref(row) for row in self.repository.list_knowledge_bases(user)),
+            knowledge_bases=tuple(
+                _capability_ref(row) for row in self.repository.list_knowledge_bases(user)
+            ),
             tools=tuple({_tool_ref(row).id: _tool_ref(row) for row in tools}.values()),
-            tool_authority_agent_ids=tuple(sorted({row['authority_agent_id'] for row in tools
-                                                   if row.get('authority_agent_id')})),
-            tool_authority={key: sorted(ids) for key, ids in authority.items()},
-            agents=tuple(_capability_ref(row) for row in self.repository.list_agents(user)),
+            agents=(),
             skills=tuple(_capability_ref(row) for row in self.repository.list_skills(user)),
         )
-
     def validate_selection(
         self,
         user: dict[str, Any],
@@ -125,10 +119,4 @@ class CapabilityCatalog:
                 raise AuthorizationError(f"Selected {kind} is outside the capability snapshot")
             if not set(selected_ids).issubset(current_by_kind[kind]):
                 raise AuthorizationError(f"Selected {kind} is no longer authorized")
-        if not current_user.get('is_platform_admin'):
-            for tool_id in selection.tool_ids:
-                original = set(snapshot.tool_authority.get(str(tool_id), ()))
-                current_edges = set(current.tool_authority.get(str(tool_id), ()))
-                if not original.intersection(current_edges):
-                    raise AuthorizationError('Original tool authorization edge is no longer valid')
         return selection

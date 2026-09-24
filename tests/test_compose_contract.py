@@ -87,6 +87,87 @@ def test_enterprise_assistant_migration_is_registered():
     assert "CREATE TABLE assistant_skill_department" in sql
 
 
+def test_user_scoped_capability_migration_defines_direct_acl_contracts():
+    """Catch missing principals, reverse indexes, or cascading resource cleanup."""
+    sql = (ROOT / "database/mysql/014_user_scoped_capabilities.sql").read_text(encoding="utf-8")
+
+    expected_contracts = {
+        "user_knowledge_base_acl": (
+            "CREATE TABLE IF NOT EXISTS user_knowledge_base_acl",
+            "PRIMARY KEY (user_id, knowledge_base_id)",
+            "KEY idx_user_kb_acl_knowledge_base (knowledge_base_id, user_id)",
+            "FOREIGN KEY (user_id) REFERENCES app_user (id) ON DELETE CASCADE",
+            "FOREIGN KEY (knowledge_base_id) REFERENCES knowledge_base (id) ON DELETE CASCADE",
+            "CHECK (permission IN ('read', 'manage'))",
+        ),
+        "user_connector_tool_acl": (
+            "CREATE TABLE IF NOT EXISTS user_connector_tool_acl",
+            "PRIMARY KEY (user_id, connector_tool_id)",
+            "KEY idx_user_tool_acl_tool (connector_tool_id, user_id)",
+            "FOREIGN KEY (user_id) REFERENCES app_user (id) ON DELETE CASCADE",
+            "FOREIGN KEY (connector_tool_id) REFERENCES connector_tool (id) ON DELETE CASCADE",
+            "permission VARCHAR(16) NOT NULL DEFAULT 'use' COMMENT 'use'",
+            "CHECK (permission IN ('use'))",
+        ),
+        "user_agent_acl": (
+            "CREATE TABLE IF NOT EXISTS user_agent_acl",
+            "PRIMARY KEY (user_id, agent_id)",
+            "KEY idx_user_agent_acl_agent (agent_id, user_id)",
+            "FOREIGN KEY (user_id) REFERENCES app_user (id) ON DELETE CASCADE",
+            "FOREIGN KEY (agent_id) REFERENCES agent (id) ON DELETE CASCADE",
+            "CHECK (permission IN ('use'))",
+        ),
+    }
+    for table, fragments in expected_contracts.items():
+        match = re.search(
+            rf"CREATE TABLE IF NOT EXISTS {table}\s*\((.*?)\) ENGINE=InnoDB",
+            sql,
+            re.DOTALL,
+        )
+        assert match, f"missing {table}"
+        definition = match.group(0)
+        for fragment in fragments:
+            assert fragment in definition, f"{table} is missing: {fragment}"
+
+
+def test_user_agent_backfill_uses_active_departments_and_preserves_legacy_audit_source():
+    """Catch fan-out through inactive departments or destructive legacy cleanup."""
+    sql = (ROOT / "database/mysql/014_user_scoped_capabilities.sql").read_text(encoding="utf-8")
+    backfill = re.search(
+        r"INSERT IGNORE INTO user_agent_acl.*?;",
+        sql,
+        re.DOTALL,
+    )
+
+    assert backfill, "migration must preserve existing department distributions as direct user grants"
+    statement = backfill.group(0)
+    assert "FROM agent_department_acl ada" in statement
+    assert "JOIN agent a ON a.id = ada.agent_id AND a.status = 'active'" in statement
+    assert "JOIN department d ON d.id = ada.department_id AND d.status = 1" in statement
+    assert "JOIN user_department ud ON ud.department_id = ada.department_id" in statement
+    assert "JOIN app_user u ON u.id = ud.user_id" in statement
+    assert "u.status = 1 AND u.deleted_at IS NULL" in statement
+    assert "WHERE ada.permission = 'use'" in statement
+    assert "'use'" in statement
+    assert "MIN(ada.permission)" not in statement
+    assert "GROUP BY ud.user_id, ada.agent_id" in statement
+    assert "DROP TABLE agent_department_acl" not in sql
+
+
+def test_user_scoped_capability_migration_does_not_touch_knowledge_content():
+    """Catch accidental rebuilds or destructive changes to documents and retrieval data."""
+    sql = (ROOT / "database/mysql/014_user_scoped_capabilities.sql").read_text(encoding="utf-8")
+    destructive_content_change = re.compile(
+        r"\b(?:ALTER|DROP|TRUNCATE|DELETE\s+FROM|UPDATE)\s+"
+        r"(?:document|document_version|document_asset|document_department_acl|"
+        r"content_unit|knowledge_folder|knowledge_base|knowledge_base_department_acl|"
+        r"agent_knowledge_base)\b",
+        re.IGNORECASE,
+    )
+
+    assert not destructive_content_change.search(sql)
+
+
 @pytest.mark.parametrize(("host", "address", "allowed"), [
     ("infinity", "172.17.0.2", True),
     ("infinity", "172.18.0.2", True),

@@ -3,7 +3,7 @@
 When MySQL starts with an empty data directory, the official image executes every
 `*.sql` file mounted in `/docker-entrypoint-initdb.d` in filename order. With this
 repository's Compose file that means `001_initial_schema.sql` through
-`013_enterprise_assistant.sql`, in order. These files are not rerun after the
+`014_user_scoped_capabilities.sql`, in order. These files are not rerun after the
 data directory has been initialized.
 
 For an already running environment, apply each later numbered migration exactly once from the project root:
@@ -44,3 +44,28 @@ Apply a single migration from the project root with `bash deploy/apply-mysql-mig
 `012_platform_quality_runtime.sql` adds versioned agent configurations, durable chat/workflow tasks, retrieval evaluation sets/results, user feedback and optional parent text/knowledge-base processing settings. Back up first; apply exactly once before deploying 1.1 services. It does not rebuild or delete existing documents/vectors.
 
 `013_enterprise_assistant.sql` adds the reserved enterprise assistant, intent-decision records, the reusable Skill catalog, and permission mappings. It does not delete or alter existing workflows, workflow runs, knowledge bases, documents, vectors, or full-text indexes.
+
+`014_user_scoped_capabilities.sql` adds direct user grants for knowledge bases, read-only MCP tools, and agents. It materializes assignments from active legacy departments into direct user-agent grants once. `agent_department_acl` is retained for one compatibility window only as an audit/backfill source; new code does not keep it synchronized, so it is not an authoritative rollback source. The migration only adds authorization metadata and does not alter or rebuild documents, chunks, vectors, or full-text indexes.
+
+Migration 014 is safe to rerun only for recovery from an interrupted attempt: its table creation is conditional and its legacy backfill uses `INSERT IGNORE`, so an existing direct user-agent grant is never overwritten. If it fails, do not drop any table or delete ACL rows. Fix the reported cause, rerun the same migration, then confirm all three tables and that no legacy assignment is missing:
+
+```sql
+SHOW TABLES LIKE 'user\_%\_acl';
+SELECT COUNT(*) AS missing_backfill
+FROM (
+  SELECT DISTINCT ud.user_id, ada.agent_id
+  FROM agent_department_acl ada
+  JOIN agent a ON a.id = ada.agent_id AND a.status = 'active'
+  JOIN department d ON d.id = ada.department_id AND d.status = 1
+  JOIN user_department ud ON ud.department_id = ada.department_id
+  JOIN app_user u ON u.id = ud.user_id AND u.status = 1 AND u.deleted_at IS NULL
+  WHERE ada.permission = 'use'
+) expected
+LEFT JOIN user_agent_acl actual
+  ON actual.user_id = expected.user_id AND actual.agent_id = expected.agent_id
+WHERE actual.user_id IS NULL;
+```
+
+`missing_backfill` must be `0`. Also inspect `SHOW CREATE TABLE` for each new ACL table before marking the migration complete. Do not routinely rerun already successful migrations.
+
+Do not roll back application code alone after any permission edit made by the 014-era application. The legacy department table is stale by design and an older application could overgrant access. Prefer a forward fix. If rollback is unavoidable, restore the verified pre-014 database backup during a maintenance window and separately reconcile any business data created after that backup. Before the first post-014 permission edit, an application rollback is technically possible only as a temporary return to the old department-distribution semantics; it still requires explicit security review and must not be described as preserving the new user-scoped model.

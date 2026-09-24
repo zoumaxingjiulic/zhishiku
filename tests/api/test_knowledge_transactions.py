@@ -56,6 +56,7 @@ class RecordingKnowledgeRepository:
         department_ids: list[int],
         manage: bool,
         for_update: bool = False,
+        user_id: int | None = None,
     ) -> bool:
         self.events.append(
             f"permission:{id(self.cursor)}:{knowledge_base_id}:{manage}:{for_update}"

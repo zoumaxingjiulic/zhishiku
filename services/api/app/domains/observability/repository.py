@@ -17,31 +17,15 @@ def _is_admin(user: dict) -> bool:
 
 
 def _active_agent_access(alias: str, user: dict) -> tuple[str, list[int]]:
-    """Mirror AgentService authorization in SQL for historical observability rows."""
+    """Limit observability rows to the root assistant or agents assigned to the user."""
     if _is_admin(user):
         return f"{alias}.status='active'", []
-    department_ids = _department_ids(user)
-    if not department_ids:
-        return "1=0", []
-    placeholders = ",".join(["%s"] * len(department_ids))
-    explicit = f"COALESCE(JSON_EXTRACT({alias}.settings_json,'$.explicit_acl'),FALSE)"
-    direct = (
-        "EXISTS (SELECT 1 FROM agent_department_acl aa "
-        f"WHERE aa.agent_id={alias}.id AND aa.department_id IN ({placeholders}))"
-    )
-    knowledge = (
-        "EXISTS (SELECT 1 FROM agent_knowledge_base ak "
-        "JOIN knowledge_base k ON k.id=ak.knowledge_base_id AND k.status='active' "
-        "JOIN knowledge_base_department_acl ka ON ka.knowledge_base_id=k.id "
-        f"WHERE ak.agent_id={alias}.id AND ka.department_id IN ({placeholders}))"
-    )
     clause = (
-        f"{alias}.status='active' AND ((({explicit})=TRUE AND {direct}) OR "
-        f"(({explicit})=FALSE AND ({direct} OR {knowledge})))"
+        f"{alias}.status='active' AND ({alias}.code='ENTERPRISE_ASSISTANT' OR "
+        "EXISTS (SELECT 1 FROM user_agent_acl ua "
+        f"WHERE ua.agent_id={alias}.id AND ua.user_id=%s AND ua.permission='use'))"
     )
-    return clause, [*department_ids, *department_ids, *department_ids]
-
-
+    return clause, [int(user["id"])]
 class ObservabilityRepository:
     def __init__(self, cursor: Any) -> None:
         self.cursor = cursor
@@ -124,23 +108,27 @@ class ObservabilityRepository:
             department_ids = _department_ids(user) or [-1]
             placeholders = ",".join(["%s"] * len(department_ids))
             accessible_kbs = (
-                "SELECT k.id FROM knowledge_base k WHERE k.status='active' "
-                "AND EXISTS (SELECT 1 FROM knowledge_base_department_acl ka "
-                f"WHERE ka.knowledge_base_id=k.id AND ka.department_id IN ({placeholders}))"
+                "SELECT k.id FROM knowledge_base k WHERE k.status='active' AND ("
+                "EXISTS (SELECT 1 FROM knowledge_base_department_acl ka "
+                "JOIN department kd ON kd.id=ka.department_id AND kd.status=1 "
+                f"WHERE ka.knowledge_base_id=k.id AND ka.department_id IN ({placeholders})) OR "
+                "EXISTS (SELECT 1 FROM user_knowledge_base_acl uka "
+                "WHERE uka.knowledge_base_id=k.id AND uka.user_id=%s "
+                "AND uka.permission IN ('read','manage')))"
             )
             document_access = (
-                "AND EXISTS (SELECT 1 FROM document_department_acl da "
-                f"WHERE da.document_id=d.id AND da.department_id IN ({placeholders}))"
+                "AND (EXISTS (SELECT 1 FROM document_department_acl da "
+                f"WHERE da.document_id=d.id AND da.department_id IN ({placeholders})) OR "
+                "EXISTS (SELECT 1 FROM user_knowledge_base_acl uda "
+                "WHERE uda.knowledge_base_id=d.knowledge_base_id AND uda.user_id=%s "
+                "AND uda.permission IN ('read','manage')))"
             )
             agent_access = (
-                "AND (EXISTS (SELECT 1 FROM agent_department_acl aa "
-                f"WHERE aa.agent_id=a.id AND aa.department_id IN ({placeholders})) "
-                "OR (COALESCE(JSON_EXTRACT(a.settings_json,'$.explicit_acl'),FALSE)=FALSE "
-                "AND EXISTS (SELECT 1 FROM agent_knowledge_base ak "
-                "JOIN accessible_knowledge_bases access_kb ON access_kb.id=ak.knowledge_base_id "
-                "WHERE ak.agent_id=a.id)))"
+                "AND (a.code='ENTERPRISE_ASSISTANT' OR EXISTS (SELECT 1 FROM user_agent_acl ua "
+                "WHERE ua.agent_id=a.id AND ua.user_id=%s AND ua.permission='use'))"
             )
-            parameters = [*department_ids, *department_ids, *department_ids]
+            parameters = [*department_ids, int(user["id"]), *department_ids,
+                          int(user["id"]), int(user["id"])]
         self.cursor.execute(
             "WITH accessible_knowledge_bases AS (" + accessible_kbs + "), "
             "accessible_documents AS (SELECT d.id,(SELECT j.status FROM ingestion_job j "

@@ -19,7 +19,7 @@ class StubAgentService:
         return [{"id": 7, "code": "HR", "name": "人资助手", "knowledge_base_ids": "2"}]
 
     def list_managed_agents(self, user):
-        return [{"id": 7, "code": "HR", "department_ids": [2], "knowledge_base_ids": [2]}]
+        return [{"id": 7, "code": "HR", "user_ids": [8], "knowledge_base_ids": [2]}]
 
     def create_agent(self, user, payload):
         return {"id": 7, **payload.model_dump()}
@@ -57,7 +57,7 @@ def agent_payload(config_version=1):
         "system_prompt": "只回答已授权资料",
         "launch_mode": "chat",
         "status": "active",
-        "department_ids": [2],
+        "user_ids": [8],
         "knowledge_base_ids": [2],
         "tool_ids": [],
         "config_version": config_version,
@@ -75,7 +75,7 @@ def test_agent_catalog_and_management_routes_preserve_contracts():
 
     assert catalog.status_code == 200
     assert catalog.json()[0]["knowledge_base_ids"] == "2"
-    assert managed.json()[0]["department_ids"] == [2]
+    assert managed.json()[0]["user_ids"] == [8]
     assert created.json()["knowledge_base_ids"] == [2]
     assert updated.json()["config_version"] == 4
     assert revisions.json() == [{"version": 1, "snapshot": {"id": 7}}]

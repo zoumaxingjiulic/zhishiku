@@ -23,22 +23,19 @@ class AgentService:
         self.admin_repository = admin_repository or UsersRepository(uow.cursor)
 
     def list_agents(self, user: dict) -> list[dict]:
-        accessible = self.repository.accessible_knowledge_base_ids(user)
-        return self.repository.list_agents(user, accessible)
+        return self.repository.list_agents(user)
 
     def authorize_agent(self, user: dict, agent_id: int, for_update: bool = False) -> dict:
         agent = self.repository.get_agent(agent_id, for_update=for_update)
         if not agent or agent.get("status") != "active":
             raise NotFoundError("智能体不存在或未启用")
         configured = self.repository.agent_knowledge_base_ids(agent_id, for_update=for_update)
-        accessible = set(self.repository.accessible_knowledge_base_ids(user, for_update=for_update))
         agent = dict(agent)
-        agent["knowledge_base_ids"] = [item for item in configured if item in accessible]
-        explicit_access = bool(user.get("is_platform_admin")) or self.repository.has_agent_department_access(
-            agent_id, list(user.get("department_ids") or []), for_update=for_update
+        agent["knowledge_base_ids"] = configured
+        explicit_access = bool(user.get("is_platform_admin")) or self.repository.has_agent_user_access(
+            agent_id, int(user["id"]), for_update=for_update
         )
-        strict = bool(parse_json(agent.get("settings_json"), {}).get("explicit_acl", False))
-        if not explicit_access and (strict or not agent["knowledge_base_ids"]):
+        if not explicit_access:
             raise AuthorizationError("无权使用该智能体")
         return agent
 
@@ -60,7 +57,7 @@ class AgentService:
             raise ConflictError("智能体编码已存在") from exc
         if not agent_id:
             raise ConflictError("智能体编码已存在")
-        self._validate_department_bindings(payload)
+        self._validate_user_bindings(payload)
         self._validate_non_department_bindings(payload)
         return self._save_agent(user, agent_id, payload, 1, previous=None)
 
@@ -71,7 +68,7 @@ class AgentService:
             raise NotFoundError("智能体不存在")
         if locked["config_version"] != payload.config_version:
             raise ConflictError("配置已变更，请刷新后再编辑")
-        self._validate_department_bindings(payload)
+        self._validate_user_bindings(payload)
         self._validate_non_department_bindings(payload)
         previous = self._snapshot_or_raise(agent_id)
         return self._save_agent(user, agent_id, payload, payload.config_version + 1, previous)
@@ -80,9 +77,17 @@ class AgentService:
         self._require_admin(user)
         if not self.repository.get_agent(agent_id):
             raise NotFoundError("智能体不存在")
+        current_user_ids = list(self._snapshot_or_raise(agent_id).get("user_ids") or [])
         rows = self.repository.list_revisions(agent_id)
         for row in rows:
-            row["snapshot"] = parse_json(row.pop("snapshot_json", None), {})
+            snapshot = parse_json(row.pop("snapshot_json", None), {})
+            if not isinstance(snapshot, dict):
+                snapshot = {}
+            legacy_distribution = "user_ids" not in snapshot
+            snapshot.pop("department_ids", None)
+            if legacy_distribution:
+                snapshot["user_ids"] = current_user_ids
+            row["snapshot"] = snapshot
         return rows
 
     def latest_conversation(self, user: dict, agent_id: int) -> dict:
@@ -144,13 +149,10 @@ class AgentService:
             message["tool_calls"] = parse_json(message.pop("tool_calls_json", None), [])
         return messages
 
-    def _validate_department_bindings(self, payload: Any) -> None:
-        unique = list(dict.fromkeys(payload.department_ids))
-        # Departments are stable reference data. Do not lock their shared rows
-        # after the actor/agent prefix: user administration reserves the
-        # PLATFORM_ADMIN department row as its membership mutex.
-        if self.repository.active_reference_ids("department", unique, for_update=False) != set(unique):
-            raise ValidationError("department 引用不存在")
+    def _validate_user_bindings(self, payload: Any) -> None:
+        unique = list(dict.fromkeys(payload.user_ids))
+        if self.repository.active_reference_ids("app_user", unique) != set(unique):
+            raise ValidationError("user 引用不存在或已停用")
 
     def _validate_non_department_bindings(self, payload: Any) -> None:
         knowledge_bases = list(dict.fromkeys(payload.knowledge_base_ids))
@@ -172,11 +174,10 @@ class AgentService:
             retrieval=payload.retrieval.model_dump(),
             inputs=payload.inputs,
             steps=[step.model_dump() for step in payload.steps],
-            explicit_acl=True,
         )
         self.repository.update_agent(agent_id, payload, settings, version)
         for table, field, values in (
-            ("agent_department_acl", "department_id", payload.department_ids),
+            ("user_agent_acl", "user_id", payload.user_ids),
             ("agent_knowledge_base", "knowledge_base_id", payload.knowledge_base_ids),
             ("agent_connector_tool", "connector_tool_id", payload.tool_ids),
         ):

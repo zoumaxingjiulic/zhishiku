@@ -16,24 +16,14 @@ from app.domains.assistant.schemas import CapabilityCatalogSnapshot, CapabilityR
 from test_assistant_runtime import USER, TASK, Store, Model, Adapters
 
 
-def test_delegation_with_only_agent_in_initial_snapshot_never_exposes_dependencies(monkeypatch):
+def test_agent_in_legacy_snapshot_is_not_an_executable_assistant_capability():
     from app.domains.assistant import orchestrator as runtime
     from app.core.errors import AuthorizationError
     store = Store()
     store.snapshot = CapabilityCatalogSnapshot(agents=(CapabilityRef(id=7, code='expert', name='专家'),))
-    monkeypatch.setattr(runtime, 'UnitOfWork', lambda: nullcontext(SimpleNamespace(cursor=None)))
-    monkeypatch.setattr(runtime, 'AgentService', lambda *a: SimpleNamespace(authorize_agent=lambda *a, **k: {
-        'id': 7, 'name': '专家', 'code': 'expert', 'status': 'active', 'launch_mode': 'chat',
-        'knowledge_base_ids': [2], 'config_version': 1, 'system_prompt': 'expert',
-    }))
-    monkeypatch.setattr(runtime, 'bound_agent_tools', lambda aid: [{'id': 12}])
-    external = []
-    monkeypatch.setattr(runtime, 'retrieve_for_agent', lambda *a, **k: external.append('KB2') or {'units': []})
     adapter = runtime.ProductionAdapters(TASK, store)
-    monkeypatch.setattr(adapter, '_generate', lambda *a, **k: external.append(('schemas', k.get('tools'))) or {'answer': 'x'})
-    with pytest.raises(AuthorizationError):
+    with pytest.raises(AuthorizationError, match='不调用专业智能体'):
         adapter.execute('agents', [7], 'question', USER)
-    assert external == []
 
 
 def test_relogin_can_discover_and_cancel_task_without_browser_id():
@@ -193,7 +183,7 @@ def test_history_drops_revoked_sources_and_never_includes_current_question(monke
     seen = []
     repository = SimpleNamespace(get_owned_session=lambda *a: {'id': 's1'},
         list_messages=lambda sid, before, limit: seen.append(before) or rows,
-        citation_document=lambda *a: None)
+        permanent_citation_document=lambda *a: None)
     monkeypatch.setattr(runtime, 'UnitOfWork', lambda: nullcontext(SimpleNamespace(cursor=None)))
     monkeypatch.setattr(runtime, 'AgentRepository', lambda c: repository)
     monkeypatch.setattr(runtime, 'AssistantRepository', lambda c: SimpleNamespace(previous_result=lambda task: {},
@@ -241,6 +231,8 @@ def locked_catalog_database():
     db.executescript('''
       CREATE TABLE app_user(id,status,deleted_at); INSERT INTO app_user VALUES(8,1,NULL);
       CREATE TABLE user_department(user_id,department_id,is_primary); INSERT INTO user_department VALUES(8,2,1);
+      CREATE TABLE user_knowledge_base_acl(user_id,knowledge_base_id,permission); INSERT INTO user_knowledge_base_acl VALUES(8,1,'read');
+      CREATE TABLE user_connector_tool_acl(user_id,connector_tool_id,permission); INSERT INTO user_connector_tool_acl VALUES(8,11,'use');
       CREATE TABLE department(id,code,name,status); INSERT INTO department VALUES(2,'EMP','Employee',1);
       CREATE TABLE agent(id,code,name,description,status,launch_mode,settings_json,config_version,llm_gateway_profile_id);
       INSERT INTO agent VALUES(99,'ENTERPRISE_ASSISTANT','root','','active','chat','{}',1,NULL),(7,'expert','Expert','','active','chat','{"explicit_acl":true}',1,NULL);
@@ -281,82 +273,6 @@ def locked_catalog_database():
     return db, Cursor, locks
 
 
-@pytest.mark.parametrize(('table', 'mutation'), [
-    ('agent', "UPDATE agent SET status='disabled' WHERE id=99"),
-    ('department', 'UPDATE department SET status=0 WHERE id=2'),
-    ('knowledge_base_department_acl', 'DELETE FROM knowledge_base_department_acl'),
-    ('agent_connector_tool', 'DELETE FROM agent_connector_tool'),
-    ('agent_department_acl', 'DELETE FROM agent_department_acl'),
-])
-def test_locked_authority_blocks_concurrent_revocation_until_publication(table, mutation):
-    import threading
-    from app.domains.assistant.repository import AssistantRepository
-    from app.domains.assistant.capabilities import CapabilityCatalog
-    from app.core.errors import AuthorizationError, NotFoundError
-    db, Cursor, locks = locked_catalog_database()
-    cursor = Cursor()
-    repository = AssistantRepository(cursor)
-    selection = CapabilitySelection(knowledge_base_ids=[1], tool_ids=[11], agent_ids=[7])
-    fresh = repository.lock_authority(8, Store().snapshot, 99)
-    started, changed = threading.Event(), threading.Event()
-    def revoke():
-        started.set()
-        with locks[table]:
-            db.execute(mutation)
-            changed.set()
-    thread = threading.Thread(target=revoke)
-    thread.start()
-    try:
-        assert started.wait(1)
-        assert not changed.wait(.02)
-        CapabilityCatalog(repository).validate_selection(fresh, Store().snapshot, selection)
-    finally:
-        cursor.release()
-        thread.join(1)
-    assert changed.is_set()
-    # A later publication starts from locking/current reads and must see revoke.
-    cursor = Cursor()
-    repository = AssistantRepository(cursor)
-    try:
-        with pytest.raises((AuthorizationError, NotFoundError)):
-            fresh = repository.lock_authority(8, Store().snapshot, 99)
-            CapabilityCatalog(repository).validate_selection(fresh, Store().snapshot, selection)
-    finally:
-        cursor.release()
-        db.close()
-
-
-def test_final_publication_rejects_removed_specialist_binding_even_if_tool_remains_authorized(monkeypatch):
-    from app.domains.assistant import orchestrator as runtime
-    from app.core.errors import AuthorizationError
-    events = []
-    class Uow:
-        cursor = None
-        def __enter__(self): return self
-        def __exit__(self, *a): pass
-        def commit(self): events.append('commit')
-    locked = SimpleNamespace(lock_authority=lambda *a: USER,
-        locked_agents={7: {'id': 7, 'status': 'active', 'config_version': 1}}, locked_skills={},
-        locked_bindings=[{'agent_id': 9, 'connector_tool_id': 11, 'permission': 'read'}],
-        tool_rows=lambda *a, **k: [])
-    repository = SimpleNamespace(get_owned_session=lambda *a, **k: {'id': 's1'},
-        get_task=lambda *a, **k: dict(TASK, status='running'),
-        insert_message=lambda *a, **k: events.append('message'),
-        save_task_result=lambda *a: None, mark_task_succeeded=lambda *a: None,
-        update_run_succeeded=lambda *a: None, update_session_title=lambda *a: None, write_audit=lambda *a: None)
-    repository.agent_knowledge_base_ids = lambda aid: []
-    monkeypatch.setattr(runtime, 'UnitOfWork', Uow)
-    monkeypatch.setattr(runtime, 'AssistantRepository', lambda c: locked)
-    monkeypatch.setattr(runtime, 'AgentRepository', lambda c: repository)
-    monkeypatch.setattr(runtime, 'CapabilityCatalog', lambda r: SimpleNamespace(
-        validate_selection=lambda *a: None, for_user=lambda u: Store().snapshot))
-    result = {'answer': 'tool-derived answer', 'citations': [], 'tool_calls': [], 'intent': {'intent_type': 'agent_task'},
-              '_authority': {'agents': {7: {'config_version': 1, 'tool_ids': [11]}}}}
-    with pytest.raises(AuthorizationError):
-        runtime.AssistantPersistence().finish(TASK, USER, Store().snapshot, CapabilitySelection(agent_ids=[7]), result)
-    assert events == []
-
-
 def test_history_source_authority_is_checked_again_before_publication(monkeypatch):
     from app.domains.assistant import orchestrator as runtime
     from app.core.errors import AuthorizationError
@@ -370,7 +286,7 @@ def test_history_source_authority_is_checked_again_before_publication(monkeypatc
     monkeypatch.setattr(runtime, 'AssistantRepository', lambda c: SimpleNamespace(
         lock_authority=lambda *a: USER, tool_rows=lambda *a, **k: []))
     monkeypatch.setattr(runtime, 'AgentRepository', lambda c: SimpleNamespace(
-        get_owned_session=lambda *a, **k: {'id': 's1'}, citation_document=lambda *a, **k: None,
+        get_owned_session=lambda *a, **k: {'id': 's1'}, permanent_citation_document=lambda *a, **k: None,
         get_task=lambda *a, **k: dict(TASK, status='running'), insert_message=lambda *a, **k: events.append('message'),
         save_task_result=lambda *a: None, mark_task_succeeded=lambda *a: None, update_run_succeeded=lambda *a: None,
         update_session_title=lambda *a: None, write_audit=lambda *a: None))
@@ -388,7 +304,7 @@ def test_retrieval_uses_user_from_latest_permission_check(monkeypatch):
     store.load_current_user = lambda uid: {**USER, 'department_ids': [2, 3]}
     store.validate = lambda *a: {**USER, 'department_ids': [2]}
     observed = []
-    monkeypatch.setattr(runtime, 'retrieve_for_agent', lambda user, *a, **k: observed.append(user['department_ids']) or {'units': []})
+    monkeypatch.setattr(runtime, 'retrieve_for_user', lambda user, *a, **k: observed.append(user['department_ids']) or {'units': []})
     adapter = runtime.ProductionAdapters(TASK, store)
     monkeypatch.setattr(adapter, '_generate', lambda *a, **k: {'answer': 'ok'})
     adapter.execute('knowledge', [1], 'question', USER)

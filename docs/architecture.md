@@ -23,8 +23,8 @@ main.py
 | 目录 | 职责 |
 | --- | --- |
 | `domains/auth` | 登录、会话令牌、当前账号加载 |
-| `domains/users` | 部门、账号、平台管理员约束 |
-| `domains/knowledge` | 知识库、文件夹、部门 ACL |
+| `domains/users` | 部门、账号、平台管理员约束、账号直授知识库与只读工具 |
+| `domains/knowledge` | 知识库、文件夹、部门继承与账号直授 ACL |
 | `domains/documents` | 上传、版本、入库任务、删除和重建 |
 | `domains/agents` | 智能体配置、授权、会话和聊天任务 |
 | `domains/prompts` | 个人提示词模板隔离 |
@@ -68,9 +68,10 @@ application → routers → services → repositories → database driver
 
 - 管理员写操作：`PLATFORM_ADMIN` 部门互斥行 → actor/target 用户 → 用户部门关系 → 当前启用管理员集合。
 - 知识库/文件夹写操作：知识库与 ACL → 父目录/目标目录 → 子目录或文档集合。
-- 对话最终落库：账号/部门 → 智能体及绑定 → 知识库/文档 ACL → 已使用工具绑定 → 会话/任务 → 消息与运行结果。
+- 总助手最终落库：账号/部门与账号直授能力 → 知识库/文档 ACL → 已使用工具授权 → 会话/任务 → 消息与运行结果。
+- 专业智能体最终落库：账号与用户智能体分发 → 智能体启用状态及绑定 → 活跃知识库/文档和只读工具 → 会话/任务 → 消息与运行结果。
 
-对话生成期间只持久化任务阶段和进度状态，不保存或返回模型生成正文，`partial_answer` 始终为空。只有最终事务重新核对账号、部门、智能体、知识库、文档、工具、会话和任务状态后，完整回答、引用、运行结果才会一起发布；失败、撤权、取消和进程重启都不写 assistant 消息。
+对话生成期间只持久化任务阶段和进度状态，不保存或返回模型生成正文，`partial_answer` 始终为空。总助手不会借用专业智能体能力；专业智能体的知识库和工具委托只在该智能体任务内生效。只有最终事务重新核对对应永久权限或临时委托、会话和任务状态后，完整回答、引用、运行结果才会一起发布；失败、撤权、归档、取消和进程重启都不写 assistant 消息。
 
 ## 后台任务与扩容限制
 
@@ -93,12 +94,12 @@ application → routers → services → repositories → database driver
 1. 在 `app/domains/<name>/` 创建 `schemas.py`、`repository.py`、`service.py`、`router.py` 和 `__init__.py`。
 2. 先写 Service/Router 行为测试以及未授权、并发状态变化和敏感信息错误路径测试。
 3. Repository 只接收游标并执行 SQL；Service 接收 UnitOfWork，完成权限检查并显式提交。
-4. 将 Router 加入 `application.ROUTERS`，运行 78 条 `/api/v1` 路由契约测试；新增或有意变更 API 时同步评审并更新契约 fixture。
+4. 将 Router 加入 `application.ROUTERS`，运行 94 条 `/api/v1` 路由契约测试；新增或有意变更 API 时同步评审并更新契约 fixture。
 5. 若需要长任务，把执行器放入 `runtime/`，通过显式依赖调用领域能力，不导入 `app.main`。
 6. 若需要外部存储或协议客户端，把适配器放入 `infrastructure/` 或 `runtime/`，并复用出站白名单、超时、脱敏和幂等约束。
 7. 运行后端全量测试、前端 lint/typecheck/test/build、双 Compose 配置展开和仓库敏感文件检查。
 
-数据库变更只能新增下一序号迁移；已执行的 `database/mysql/001` 至 `012` 不得修改、合并或删除。空数据卷由 MySQL 官方镜像按文件名顺序执行目录中的全部 `*.sql`（当前为 001 至 012）；已有数据卷必须逐个、且仅一次执行新增迁移。代码回滚不能依赖破坏性数据库回滚。
+数据库变更只能新增下一序号迁移；已执行的 `database/mysql/001` 至 `014` 不得修改、合并或删除。空数据卷由 MySQL 官方镜像按文件名顺序执行目录中的全部 `*.sql`（当前为 001 至 014）；已有数据卷必须逐个、且仅一次执行新增迁移。代码回滚不能依赖破坏性数据库回滚。014 之后旧 `agent_department_acl` 不再同步，不能作为用户级权限的回滚来源。
 
 ## 验证边界
 

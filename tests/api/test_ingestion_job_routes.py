@@ -30,7 +30,7 @@ class JobRepository:
         self.document_status = "active"
         self.knowledge_base_status = "active"
 
-    def list_accessible_knowledge_base_ids(self, department_ids):
+    def list_accessible_knowledge_base_ids(self, department_ids, user_id=None):
         return [10] if 2 in department_ids else []
 
     def get_active_knowledge_base(self, knowledge_base_id, for_update=False, include_archived=False):
@@ -42,6 +42,15 @@ class JobRepository:
             "owner_department_id": 2,
             "status": self.knowledge_base_status,
         }
+
+    def knowledge_base_permission(self, knowledge_base_id, user_id, department_ids, for_update=False):
+        self.events.append(f"kb-permission:{knowledge_base_id}:{user_id}:{for_update}")
+        grants = [
+            permission
+            for department_id, permission in self.permissions.items()
+            if department_id in department_ids
+        ]
+        return "manage" if "manage" in grants else ("read" if grants else None)
 
     def knowledge_base_acl(self, knowledge_base_id, for_update=False):
         self.events.append(f"acl:{knowledge_base_id}:{for_update}")
@@ -81,7 +90,15 @@ class JobRepository:
             "status": self.document_status,
         }
 
-    def has_document_permission(self, document_id, department_ids, manage, for_update=False):
+    def has_document_permission(
+        self,
+        document_id,
+        department_ids,
+        manage,
+        for_update=False,
+        user_id=None,
+        knowledge_base_id=None,
+    ):
         self.events.append(f"document-acl:{document_id}:{manage}:{for_update}")
         return 2 in department_ids and self.permissions.get(2) == "manage"
 
@@ -114,7 +131,7 @@ def test_job_retry_uses_locked_kb_acl_folder_document_job_order() -> None:
     assert repository.events[:7] == [
         "job:51:False",
         "kb:10:True:False",
-        "acl:10:True",
+        "kb-permission:10:8:True",
         "folder:20:True",
         "document:31:True",
         "document-acl:31:True:True",
@@ -143,9 +160,25 @@ def test_delete_job_retry_allows_soft_deleted_document_and_archived_knowledge_ba
     assert repository.events[:6] == [
         "job:51:False",
         "kb:10:True:True",
-        "acl:10:True",
+        "kb-permission:10:8:True",
         "cleanup-document:31:True",
         "document-acl:31:True:True",
         "job:51:True",
     ]
     assert not any(event.startswith("folder:") for event in repository.events)
+
+
+def test_job_retry_rejects_document_from_another_knowledge_base() -> None:
+    """Catches a stale or corrupted job snapshot crossing knowledge-base boundaries."""
+    from app.core.errors import NotFoundError
+
+    repository = JobRepository()
+
+    def mismatched_document(document_id, for_update=False):
+        repository.events.append(f"document:{document_id}:{for_update}")
+        return {"id": document_id, "knowledge_base_id": 99, "folder_id": 20}
+
+    repository.get_document = mismatched_document
+    with pytest.raises(NotFoundError):
+        service(repository).retry_job(USER, 51)
+    assert "write:retry:51" not in repository.events

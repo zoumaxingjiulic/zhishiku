@@ -6,9 +6,11 @@ from ..auth.router import current_user, platform_admin
 from .schemas import (
     DepartmentCreate,
     DepartmentView,
+    KnowledgeBasePermissionView,
     TemporaryPasswordResponse,
     UserCreate,
     UserCreated,
+    UserPermissionDetail,
     UserStatusUpdate,
     UserSummary,
     UserUpdate,
@@ -52,6 +54,20 @@ def create_department(
 
 
 @router.get(
+    "/api/v1/departments/{department_id}/knowledge-base-grants",
+    tags=["administration"],
+    response_model=list[KnowledgeBasePermissionView],
+    operation_id="get_department_knowledge_base_grants_api_v1_departments__department_id__knowledge_base_grants_get",
+)
+def get_department_knowledge_base_grants(
+    department_id: int,
+    user: dict = Depends(platform_admin),
+    service: UsersService = Depends(get_user_service),
+) -> list[dict]:
+    return service.get_department_knowledge_base_grants(user["id"], department_id)
+
+
+@router.get(
     "/api/v1/users",
     tags=["administration"],
     response_model=list[UserSummary],
@@ -62,6 +78,20 @@ def list_users(
     service: UsersService = Depends(get_user_service),
 ) -> list[dict]:
     return service.list_users(user["id"])
+
+
+@router.get(
+    "/api/v1/users/{user_id}/permissions",
+    tags=["administration"],
+    response_model=UserPermissionDetail,
+    operation_id="get_user_permissions_api_v1_users__user_id__permissions_get",
+)
+def get_user_permissions(
+    user_id: int,
+    user: dict = Depends(platform_admin),
+    service: UsersService = Depends(get_user_service),
+) -> dict:
+    return service.get_user_permissions(user["id"], user_id)
 
 
 @router.post(

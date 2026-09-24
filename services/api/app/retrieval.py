@@ -144,11 +144,12 @@ def keyword_candidates(
                 "must": [{"match": {"text": {"query": question}}}],
                 "filter": [
                     {"terms": {"knowledge_base_id": knowledge_base_ids}},
-                    {"terms": {"department_ids": department_ids}},
                 ],
             }
         },
     }
+    if department_ids:
+        body["query"]["bool"]["filter"].append({"terms": {"department_ids": department_ids}})
     if document_ids is not None:
         body["query"]["bool"]["filter"].append({"terms": {"document_id": document_ids}})
     try:

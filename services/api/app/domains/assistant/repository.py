@@ -44,21 +44,20 @@ class AssistantRepository:
         if not users or users[0]['status'] != 1 or users[0].get('deleted_at') is not None:
             raise AuthorizationError('用户已停用')
         memberships = self._lock_rows('user_department', 'user_id', [user_id])
+        self._lock_rows('user_knowledge_base_acl', 'user_id', [user_id])
+        self._lock_rows('user_connector_tool_acl', 'user_id', [user_id])
         departments = self._lock_rows('department', 'id', [m['department_id'] for m in memberships])
         active_departments = [d for d in departments if d['status'] == 1]
         self._locked_user = {'id': user_id, 'department_ids': [d['id'] for d in active_departments],
                              'is_platform_admin': any(d['code'] == 'PLATFORM_ADMIN' for d in active_departments)}
-        agent_ids = sorted({root_id, *(r.id for r in snapshot.agents), *snapshot.tool_authority_agent_ids,
-                            *(aid for ids in snapshot.tool_authority.values() for aid in ids)})
+        agent_ids = [root_id]
         agents = self._lock_rows('agent', 'id', agent_ids)
         self.locked_agents = {r['id']: r for r in agents}
         root = self.locked_agents.get(root_id)
         if not root or root['status'] != 'active' or root['code'] != 'ENTERPRISE_ASSISTANT':
             raise NotFoundError('企业总助手未启用')
-        self._lock_rows('agent_department_acl', 'agent_id', agent_ids)
-        agent_kbs = self._lock_rows('agent_knowledge_base', 'agent_id', agent_ids)
         self.locked_bindings = self._lock_rows('agent_connector_tool', 'agent_id', agent_ids)
-        kb_ids = sorted({*(r.id for r in snapshot.knowledge_bases), *(r['knowledge_base_id'] for r in agent_kbs)})
+        kb_ids = sorted(r.id for r in snapshot.knowledge_bases)
         self._lock_rows('knowledge_base', 'id', kb_ids)
         self._lock_rows('knowledge_base_department_acl', 'knowledge_base_id', kb_ids)
         tool_ids = [r.id for r in snapshot.tools]
@@ -170,23 +169,6 @@ class AssistantRepository:
     def _department_ids(user: dict[str, Any]) -> list[int]:
         return list(dict.fromkeys(int(item) for item in user.get("department_ids") or []))
 
-    @staticmethod
-    def _agent_access_clause(department_ids: list[int]) -> tuple[str, list[int]]:
-        placeholders = ",".join(["%s"] * len(department_ids))
-        clause = (
-            "(EXISTS (SELECT 1 FROM agent_department_acl aa "
-            "JOIN department explicit_d ON explicit_d.id=aa.department_id AND explicit_d.status=1 "
-            "WHERE aa.agent_id=a.id AND aa.permission='use' "
-            f"AND aa.department_id IN ({placeholders})) OR "
-            "(COALESCE(JSON_EXTRACT(a.settings_json,'$.explicit_acl'),FALSE)=FALSE AND "
-            "EXISTS (SELECT 1 FROM agent_knowledge_base ak "
-            "JOIN knowledge_base k ON k.id=ak.knowledge_base_id AND k.status='active' "
-            "JOIN knowledge_base_department_acl ka ON ka.knowledge_base_id=k.id "
-            "JOIN department knowledge_d ON knowledge_d.id=ka.department_id AND knowledge_d.status=1 "
-            f"WHERE ak.agent_id=a.id AND ka.department_id IN ({placeholders}))))"
-        )
-        return clause, [*department_ids, *department_ids]
-
     def load_current_user(self, user_id: int) -> dict[str, Any] | None:
         if self._locked_user is not None:
             return self._locked_user if self._locked_user['id'] == user_id else None
@@ -218,37 +200,29 @@ class AssistantRepository:
             )
         else:
             department_ids = self._department_ids(user)
-            if not department_ids:
-                return []
-            placeholders = ",".join(["%s"] * len(department_ids))
+            department_clause = ""
+            parameters: list[int] = []
+            if department_ids:
+                placeholders = ",".join(["%s"] * len(department_ids))
+                department_clause = (
+                    "EXISTS (SELECT 1 FROM knowledge_base_department_acl da "
+                    "JOIN department d ON d.id=da.department_id AND d.status=1 "
+                    f"WHERE da.knowledge_base_id=k.id AND da.department_id IN ({placeholders})) OR "
+                )
+                parameters.extend(department_ids)
             self.cursor.execute(
                 "SELECT DISTINCT k.id,k.code,k.name,k.description FROM knowledge_base k "
-                "JOIN knowledge_base_department_acl acl ON acl.knowledge_base_id=k.id "
-                "JOIN department d ON d.id=acl.department_id AND d.status=1 "
-                f"WHERE k.status='active' AND acl.department_id IN ({placeholders}) ORDER BY k.id",
-                department_ids,
+                "WHERE k.status='active' AND (" + department_clause +
+                "EXISTS (SELECT 1 FROM user_knowledge_base_acl ua "
+                "WHERE ua.knowledge_base_id=k.id AND ua.user_id=%s "
+                "AND ua.permission IN ('read','manage'))) ORDER BY k.id",
+                [*parameters, int(user["id"])],
             )
-        return self._scope_rows('knowledge_bases', list(self.cursor.fetchall()))
-
+        return self._scope_rows("knowledge_bases", list(self.cursor.fetchall()))
     def list_agents(self, user: dict[str, Any]) -> list[dict]:
-        routable = "a.code<>'ENTERPRISE_ASSISTANT' AND a.launch_mode='chat'"
-        if user.get("is_platform_admin"):
-            self.cursor.execute(
-                "SELECT a.id,a.code,a.name,a.description FROM agent a "
-                f"WHERE a.status='active' AND {routable} ORDER BY a.id"
-            )
-        else:
-            department_ids = self._department_ids(user)
-            if not department_ids:
-                return []
-            access_clause, access_parameters = self._agent_access_clause(department_ids)
-            self.cursor.execute(
-                "SELECT DISTINCT a.id,a.code,a.name,a.description FROM agent a "
-                f"WHERE a.status='active' AND {routable} AND {access_clause} ORDER BY a.id",
-                access_parameters,
-            )
-        return self._scope_rows('agents', list(self.cursor.fetchall()))
-
+        # The enterprise assistant never delegates to professional agents.
+        # Agents are launched only from their own user-assigned entry points.
+        return []
     def list_tools(self, user: dict[str, Any]) -> list[dict]:
         select = (
             "SELECT DISTINCT ct.id,ct.connector_id,ct.tool_name,ct.title,ct.description,"
@@ -260,45 +234,32 @@ class AssistantRepository:
                 select + "WHERE ct.status='active' AND c.status='active' ORDER BY ct.id"
             )
         else:
-            department_ids = self._department_ids(user)
-            if not department_ids:
-                return []
-            access_clause, access_parameters = self._agent_access_clause(department_ids)
-            locked_agents_clause = ''
-            if self._locked_scope is not None:
-                locked_ids = sorted({aid for ids in self._locked_scope.tool_authority.values() for aid in ids})
-                if not locked_ids:
-                    return []
-                locked_agents_clause = 'AND a.id IN (' + ','.join(['%s'] * len(locked_ids)) + ') '
-                access_parameters.extend(locked_ids)
             self.cursor.execute(
-                select.replace('SELECT DISTINCT ct.id', 'SELECT DISTINCT a.id authority_agent_id,ct.id')
-                + "JOIN agent_connector_tool act ON act.connector_tool_id=ct.id AND act.permission='read' "
-                + "JOIN agent a ON a.id=act.agent_id AND a.status='active' "
-                + f"WHERE ct.status='active' AND c.status='active' "
-                + f"AND {access_clause} " + locked_agents_clause + "ORDER BY ct.id",
-                access_parameters,
+                select
+                + "JOIN user_connector_tool_acl ua ON ua.connector_tool_id=ct.id "
+                + "WHERE ua.user_id=%s AND ua.permission='use' "
+                + "AND ct.status='active' AND c.status='active' ORDER BY ct.id",
+                (int(user["id"]),),
             )
         tools: list[dict] = []
         for raw_row in self.cursor.fetchall():
             row = dict(raw_row)
-            if self._locked_scope is not None and not user.get('is_platform_admin'):
-                original = self._locked_scope.tool_authority.get(str(row['id']), ())
-                if row.get('authority_agent_id') not in original:
-                    continue
             if _parse_object(row.pop("annotations_json", None)).get("readOnlyHint") is not True:
                 continue
             row["code"] = f"{row.pop('connector_code')}.{row['tool_name']}"
             row["name"] = row.pop("title") or row["tool_name"]
             row["read_only"] = True
             tools.append(row)
-        return self._scope_rows('tools', tools)
-
+        return self._scope_rows("tools", tools)
     def list_skills(self, user: dict[str, Any]) -> list[dict]:
+        common = (
+            "s.status='active' "
+            "AND NOT EXISTS (SELECT 1 FROM assistant_skill_agent sa WHERE sa.skill_id=s.id) "
+        )
         if user.get("is_platform_admin"):
             self.cursor.execute(
                 "SELECT s.id,s.code,s.name,s.description FROM assistant_skill s "
-                "WHERE s.status='active' ORDER BY s.id"
+                f"WHERE {common} ORDER BY s.id"
             )
         else:
             department_ids = self._department_ids(user)
@@ -309,11 +270,27 @@ class AssistantRepository:
                 "SELECT DISTINCT s.id,s.code,s.name,s.description FROM assistant_skill s "
                 "JOIN assistant_skill_department sd ON sd.skill_id=s.id "
                 "JOIN department d ON d.id=sd.department_id AND d.status=1 "
-                f"WHERE s.status='active' AND sd.department_id IN ({placeholders}) ORDER BY s.id",
-                department_ids,
+                f"WHERE {common} AND sd.department_id IN ({placeholders}) "
+                "AND NOT EXISTS (SELECT 1 FROM assistant_skill_knowledge_base sk "
+                "JOIN knowledge_base k ON k.id=sk.knowledge_base_id AND k.status='active' "
+                "WHERE sk.skill_id=s.id AND NOT ("
+                "EXISTS (SELECT 1 FROM user_knowledge_base_acl uka "
+                "WHERE uka.user_id=%s AND uka.knowledge_base_id=sk.knowledge_base_id "
+                "AND uka.permission IN ('read','manage')) OR "
+                f"EXISTS (SELECT 1 FROM knowledge_base_department_acl kda "
+                "JOIN department kd ON kd.id=kda.department_id AND kd.status=1 "
+                f"WHERE kda.knowledge_base_id=sk.knowledge_base_id AND kda.department_id IN ({placeholders})))) "
+                "AND NOT EXISTS (SELECT 1 FROM assistant_skill_tool st "
+                "WHERE st.skill_id=s.id AND NOT EXISTS ("
+                "SELECT 1 FROM user_connector_tool_acl uta "
+                "JOIN connector_tool ct ON ct.id=uta.connector_tool_id AND ct.status='active' "
+                "AND JSON_EXTRACT(ct.annotations_json,'$.readOnlyHint')=TRUE "
+                "JOIN system_connector c ON c.id=ct.connector_id AND c.status='active' "
+                "WHERE uta.user_id=%s AND uta.permission='use' "
+                "AND uta.connector_tool_id=st.connector_tool_id)) ORDER BY s.id",
+                [*department_ids, int(user["id"]), *department_ids, int(user["id"])],
             )
-        return self._scope_rows('skills', list(self.cursor.fetchall()))
-
+        return self._scope_rows("skills", list(self.cursor.fetchall()))
     def list_managed_skills(self, status: str | None = None) -> list[dict]:
         where = " WHERE status=%s" if status else ""
         parameters = (status,) if status else ()

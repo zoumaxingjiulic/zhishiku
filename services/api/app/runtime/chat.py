@@ -21,8 +21,8 @@ from ..domains.agents.service import AgentService
 from ..domains.auth.repository import AuthRepository
 from ..domains.auth.service import AuthService
 from .mcp import McpError, StreamableHttpMcpClient
-from .retrieval import effective_departments, hydrate_units
-from ..quality import RetrievalPolicy, retrieve, retrieval_query
+from .retrieval import retrieve_for_agent
+from ..quality import RetrievalPolicy, retrieval_query
 
 
 log = logging.getLogger("kb-api.chat")
@@ -45,7 +45,10 @@ def require_same_knowledge_scope(expected: list[int], current: list[int]) -> Non
 def bound_agent_tools(agent_id: int) -> list[dict]:
     with UnitOfWork() as uow:
         rows = AgentRepository(uow.cursor).bound_tools(agent_id)
-    return [sanitize_bound_tool(row) for row in rows]
+    return [
+        sanitize_bound_tool(row) for row in rows
+        if row.get("annotations", {}).get("readOnlyHint") is True
+    ]
 
 
 def load_runtime_user(user_id: int) -> dict:
@@ -184,7 +187,8 @@ def execute_bound_tool(
 
 def checked_executor(
     user: dict, agent_id: int, redaction_secrets: list[str] | tuple[str, ...] = (),
-    progress_callback=None, *, deadline: float | None = None, check_active=None,
+    progress_callback=None, *, task: dict | None = None,
+    deadline: float | None = None, check_active=None,
 ):
     def execute(tool: dict, arguments: dict) -> tuple[dict, dict]:
         if progress_callback:
@@ -193,6 +197,16 @@ def checked_executor(
             repository = AgentRepository(uow.cursor)
             fresh_user = AuthService(uow, AuthRepository(uow.cursor)).load_user(user["id"])
             AgentService(uow, repository).authorize_agent(fresh_user, agent_id)
+            if task:
+                current_task = repository.get_task(task["id"], user["id"], for_update=True)
+                if (
+                    not current_task
+                    or current_task.get("agent_id") != agent_id
+                    or current_task.get("session_id") != task.get("session_id")
+                    or current_task.get("status") != "running"
+                    or current_task.get("cancel_requested")
+                ):
+                    raise TaskCancelled()
             raw = next((item for item in repository.bound_tools(agent_id) if item["id"] == tool["id"]), None)
         fresh = sanitize_bound_tool(raw) if raw else None
         if not fresh or fresh.get("annotations", {}).get("readOnlyHint") is not True:
@@ -303,13 +317,12 @@ def persist_successful_chat(
     if not repository.get_session(session_id, agent_id, user_id, for_update=True):
         raise NotFoundError("会话不存在")
 
-    departments = [] if fresh_user.get("is_platform_admin") else list(fresh_user.get("department_ids") or [])
     for citation in citations:
         document_id = citation.get("document_id")
         if not document_id or not repository.citation_document(
             document_id,
             current_agent["knowledge_base_ids"],
-            departments,
+            [],
             for_update=True,
         ):
             raise AuthorizationError("引用资料授权已变更，请重新提交问题")
@@ -409,7 +422,6 @@ def execute_chat(agent_id: int, payload, user: dict, *, ip_address: str,
     tools = bound_agent_tools(agent_id)
     safe_history = []
     allowed_tools = {(item["connector_code"], item["tool_name"]) for item in tools}
-    departments = effective_departments(user)
     for message in history:
         if message["role"] == "assistant":
             try:
@@ -418,7 +430,7 @@ def execute_chat(agent_id: int, payload, user: dict, *, ip_address: str,
                     denied = any(
                         not repository.citation_document(
                             citation["document_id"], knowledge_base_ids,
-                            [] if user.get("is_platform_admin") else departments,
+                            [],
                         )
                         for citation in parse_json(message.get("citations_json"), [])
                     )
@@ -443,9 +455,12 @@ def execute_chat(agent_id: int, payload, user: dict, *, ip_address: str,
             if emit:
                 emit("stage", "检索与重排序")
             query, _ = retrieval_query(payload.question, history, config["query_rewrite"])
-            units, counts, rerank_method, _ = retrieve(
-                query, knowledge_base_ids, departments, None, user, config, hydrate_units
+            outcome = retrieve_for_agent(
+                user, agent, query, config
             )
+            units = outcome["units"]
+            counts = outcome["counts"]
+            rerank_method = outcome["rerank"]
             retrieve_ms = round((time.perf_counter() - stage) * 1000, 1)
         else:
             retrieve_ms = 0.0
@@ -457,7 +472,7 @@ def execute_chat(agent_id: int, payload, user: dict, *, ip_address: str,
                 agent["system_prompt"], payload.question, units, history, tools,
                 checked_executor(
                     user, agent_id, [gateway.get("api_key", "")] if gateway else [],
-                    progress_callback=emit,
+                    progress_callback=emit, task=task,
                 ),
                 agent.get("llm_model"), gateway,
                 config["context_max_chars"], emit=emit,

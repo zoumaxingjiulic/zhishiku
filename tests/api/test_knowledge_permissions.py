@@ -14,6 +14,8 @@ ADMIN = {"id": 1, "department_ids": [1], "is_platform_admin": True}
 HR_MANAGER = {"id": 2, "department_ids": [2], "is_platform_admin": False}
 TECH_READER = {"id": 3, "department_ids": [3], "is_platform_admin": False}
 UNASSIGNED = {"id": 4, "department_ids": [], "is_platform_admin": False}
+DIRECT_READER = {"id": 5, "department_ids": [], "is_platform_admin": False}
+DIRECT_MANAGER = {"id": 6, "department_ids": [], "is_platform_admin": False}
 
 
 class MemoryKnowledgeRepository:
@@ -25,6 +27,7 @@ class MemoryKnowledgeRepository:
         }
         self.departments = {1, 2, 3}
         self.acl = {(10, 2): "manage", (10, 3): "read", (11, 3): "manage"}
+        self.user_acl = {(10, 5): "read", (11, 6): "manage"}
         self.folders = {
             20: {"id": 20, "knowledge_base_id": 10, "parent_id": None, "name": "制度", "row_version": 1},
             21: {"id": 21, "knowledge_base_id": 10, "parent_id": 20, "name": "培训", "row_version": 1},
@@ -38,15 +41,27 @@ class MemoryKnowledgeRepository:
         self._next_kb = 12
         self._next_folder = 23
 
-    def list_knowledge_bases(self, department_ids: list[int] | None) -> list[dict]:
+    def list_knowledge_bases(
+        self,
+        department_ids: list[int] | None,
+        user_id: int | None = None,
+    ) -> list[dict]:
         rows = []
         for item in self.knowledge_bases.values():
             if item["status"] != "active":
                 continue
-            permission = "manage" if department_ids is None else next(
-                (self.acl[(item["id"], department_id)] for department_id in department_ids if (item["id"], department_id) in self.acl),
-                None,
-            )
+            if department_ids is None:
+                permission = "manage"
+            else:
+                grants = [
+                    self.acl[(item["id"], department_id)]
+                    for department_id in department_ids
+                    if (item["id"], department_id) in self.acl
+                ]
+                direct = self.user_acl.get((item["id"], user_id))
+                if direct:
+                    grants.append(direct)
+                permission = "manage" if "manage" in grants else ("read" if grants else None)
             if permission is not None:
                 rows.append({**item, "permission": permission, "document_count": self.document_counts[item["id"]]})
         return rows
@@ -61,9 +76,13 @@ class MemoryKnowledgeRepository:
         department_ids: list[int],
         manage: bool,
         for_update: bool = False,
+        user_id: int | None = None,
     ) -> bool:
         accepted = {"manage"} if manage else {"read", "manage"}
-        return any(self.acl.get((knowledge_base_id, department_id)) in accepted for department_id in department_ids)
+        return (
+            any(self.acl.get((knowledge_base_id, department_id)) in accepted for department_id in department_ids)
+            or self.user_acl.get((knowledge_base_id, user_id)) in accepted
+        )
 
     def active_department_ids(
         self,
@@ -176,6 +195,53 @@ def test_admin_has_global_visibility_and_regular_users_only_see_authorized_bases
     assert service(repository).list_knowledge_bases(UNASSIGNED) == []
 
 
+def test_direct_read_grant_allows_listing_and_read_but_rejects_folder_write() -> None:
+    """A per-user read grant is KB-wide, but never escalates into content management."""
+    from app.core.errors import AuthorizationError
+
+    FolderCreate, _, _, _ = schemas()
+    repository = MemoryKnowledgeRepository()
+
+    assert {row["id"] for row in service(repository).list_knowledge_bases(DIRECT_READER)} == {10}
+    assert service(repository).list_folders(DIRECT_READER, 10)
+    with pytest.raises(AuthorizationError, match="无权管理该知识库"):
+        service(repository).create_folder(
+            DIRECT_READER,
+            FolderCreate(knowledge_base_id=10, parent_id=None, name="越权目录"),
+            "127.0.0.1",
+        )
+
+
+def test_direct_manage_grant_allows_folder_management_without_department_membership() -> None:
+    """A per-user manage grant is sufficient even when the account has no department."""
+    FolderCreate, _, _, _ = schemas()
+    repository = MemoryKnowledgeRepository()
+
+    created = service(repository).create_folder(
+        DIRECT_MANAGER,
+        FolderCreate(knowledge_base_id=11, parent_id=None, name="直授目录"),
+        "127.0.0.1",
+    )
+
+    assert created["name"] == "直授目录"
+    assert repository.folders[created["id"]]["knowledge_base_id"] == 11
+
+
+def test_user_grants_do_not_authorize_writes_outside_the_granted_knowledge_base() -> None:
+    """A direct grant must remain scoped to its exact knowledge base."""
+    from app.core.errors import AuthorizationError
+
+    FolderCreate, _, _, _ = schemas()
+    repository = MemoryKnowledgeRepository()
+
+    with pytest.raises(AuthorizationError, match="无权管理该知识库"):
+        service(repository).create_folder(
+            DIRECT_MANAGER,
+            FolderCreate(knowledge_base_id=10, parent_id=None, name="越权目录"),
+            "127.0.0.1",
+        )
+
+
 def test_cross_department_create_and_manage_are_rejected() -> None:
     """Catches a user creating or changing a knowledge base outside their departments."""
     from app.core.errors import AuthorizationError
@@ -272,6 +338,7 @@ class LatestAclRepository(MemoryKnowledgeRepository):
         department_ids: list[int],
         manage: bool,
         for_update: bool = False,
+        user_id: int | None = None,
     ) -> bool:
         return not for_update
 
@@ -291,6 +358,48 @@ def test_waiting_mutation_uses_latest_locked_acl_instead_of_auth_snapshot() -> N
             payload,
             "127.0.0.1",
         )
+
+
+def test_document_permission_combines_direct_kb_grant_with_document_department_acl() -> None:
+    """A department KB grant alone must not bypass a document's narrower ACL."""
+    from app.domains.documents.repository import DocumentRepository
+
+    class Cursor:
+        def __init__(self, direct=None, document=None):
+            self.direct = direct
+            self.document = document
+            self.current = None
+            self.statements = []
+
+        def execute(self, statement, parameters=()):
+            normalized = " ".join(statement.split())
+            self.statements.append(normalized)
+            if "FROM user_knowledge_base_acl" in normalized:
+                self.current = {"permission": self.direct} if self.direct else None
+            elif "FROM document_department_acl" in normalized:
+                self.current = {"permission": self.document} if self.document else None
+            else:
+                raise AssertionError(normalized)
+
+        def fetchone(self):
+            return self.current
+
+    denied = Cursor()
+    assert not DocumentRepository(denied).has_document_permission(
+        31, [2], False, user_id=8, knowledge_base_id=10
+    )
+    assert any("FROM document_department_acl" in statement for statement in denied.statements)
+    assert all("knowledge_base_department_acl" not in statement for statement in denied.statements)
+
+    direct = Cursor(direct="read")
+    assert DocumentRepository(direct).has_document_permission(
+        31, [], False, user_id=8, knowledge_base_id=10
+    )
+
+    department = Cursor(document="manage")
+    assert DocumentRepository(department).has_document_permission(
+        31, [2], True, user_id=8, knowledge_base_id=10
+    )
 
 
 class LatestTreeRepository(MemoryKnowledgeRepository):

@@ -3,7 +3,7 @@ import re
 from datetime import datetime
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from ...quality import RetrievalPolicy
 
@@ -155,6 +155,8 @@ class AgentStep(BaseModel):
 
 
 class AgentWrite(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     code: str = Field(pattern=r"^[A-Z][A-Z0-9_]{1,63}$")
     name: str = Field(min_length=2, max_length=128)
     description: str = Field(default="", max_length=4000)
@@ -162,7 +164,7 @@ class AgentWrite(BaseModel):
     launch_mode: Literal["chat", "workflow"] = "chat"
     status: Literal["active", "disabled"] = "active"
     llm_gateway_profile_id: int | None = None
-    department_ids: list[int] = Field(default_factory=list, max_length=200)
+    user_ids: list[int] = Field(default_factory=list, max_length=1000)
     knowledge_base_ids: list[int] = Field(default_factory=list, max_length=100)
     tool_ids: list[int] = Field(default_factory=list, max_length=30)
     retrieval: RetrievalPolicy = Field(default_factory=RetrievalPolicy)
