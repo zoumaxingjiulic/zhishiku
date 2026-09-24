@@ -22,7 +22,7 @@ from ...runtime.chat import (
 )
 from ...runtime.retrieval import retrieve_for_agent
 from .capabilities import CapabilityCatalog
-from .intent import IntentRouter
+from .intent import IntentModelBusy, IntentRouter
 from .repository import AssistantRepository
 from .schemas import CapabilitySelection
 from .parameters import skill_parameters
@@ -82,7 +82,7 @@ class ProductionIntentModel:
 
     def decide(self, *, timeout_seconds, **kwargs):
         if not _intent_slots.acquire(blocking=False):
-            raise TimeoutError('Intent model busy')
+            raise IntentModelBusy('Intent model busy')
         done = threading.Event()
         result = {}
 
@@ -138,7 +138,9 @@ class ProductionIntentModel:
 class AssistantOrchestrator:
     def __init__(self, repository, *, model, adapters, router=None):
         self.repository, self.model, self.adapters = repository, model, adapters
-        self.router = router or IntentRouter()
+        self.router = router or IntentRouter(
+            timeout_seconds=settings.assistant_intent_timeout_seconds,
+        )
 
     def run(self, task, user=None):
         started = time.monotonic()

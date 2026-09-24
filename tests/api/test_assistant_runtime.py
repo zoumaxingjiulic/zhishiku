@@ -133,6 +133,16 @@ def test_production_model_deadline_clarifies_without_executing(monkeypatch):
     assert store.events[-1] == 'finished'
 
 
+def test_default_orchestrator_uses_configured_intent_deadline():
+    from app.core.config import settings
+    from app.domains.assistant.orchestrator import AssistantOrchestrator
+
+    orchestrator = AssistantOrchestrator(Store(), model=Model('general_chat', {}), adapters=None)
+
+    assert orchestrator.router.timeout_seconds == settings.assistant_intent_timeout_seconds
+    assert orchestrator.router.timeout_seconds == 15.0
+
+
 def test_worker_claim_loads_agent_code_and_dispatches(monkeypatch):
     from app.runtime import chat_tasks
     calls = []

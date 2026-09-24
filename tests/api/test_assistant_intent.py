@@ -174,6 +174,87 @@ def test_model_timeout_falls_back_without_external_selection():
     assert decision.needs_clarification is False
 
 
+def test_model_timeout_routes_explicit_expiring_certificate_query_to_trusted_read_only_tool():
+    """Catches a slow intent model making the built-in expiry query unusable."""
+    from app.domains.assistant.intent import IntentRouter
+    from app.domains.assistant.schemas import CapabilityCatalogSnapshot, ToolCapabilityRef
+
+    catalog = CapabilityCatalogSnapshot(tools=(ToolCapabilityRef(
+        id=8,
+        code="ZONGHENG_BID.zongheng_list_expiring_certificates",
+        name="查询即将到期资质",
+        description="查询未来指定天数内即将到期的资质证书",
+        connector_id=3,
+        read_only=True,
+    ),))
+
+    decision = IntentRouter().route(
+        "有哪些资质证书30天内过期",
+        catalog,
+        model=FakeModel(error=TimeoutError()),
+    )
+
+    assert decision.intent_type == "system_query"
+    assert decision.selection.tool_ids == [8]
+    assert decision.needs_clarification is False
+
+
+def test_model_timeout_never_routes_expiry_query_to_untrusted_or_writable_tool():
+    """Catches timeout fallback broadening into arbitrary or state-changing tools."""
+    from app.domains.assistant.intent import IntentRouter
+    from app.domains.assistant.schemas import CapabilityCatalogSnapshot, ToolCapabilityRef
+
+    tools = (
+        ToolCapabilityRef(
+            id=8,
+            code="OTHER.expiring_certificates",
+            name="查询即将到期资质",
+            connector_id=3,
+            read_only=True,
+        ),
+        ToolCapabilityRef(
+            id=9,
+            code="ZONGHENG_BID.zongheng_list_expiring_certificates",
+            name="查询即将到期资质",
+            connector_id=3,
+            read_only=False,
+        ),
+    )
+
+    decision = IntentRouter().route(
+        "有哪些资质证书30天内过期",
+        CapabilityCatalogSnapshot(tools=tools),
+        model=FakeModel(error=TimeoutError()),
+    )
+
+    assert decision.intent_type == "clarification"
+    assert decision.selection.tool_ids == []
+
+
+def test_busy_intent_model_never_uses_timeout_tool_fallback():
+    """Catches capacity saturation bypassing the intent-model concurrency gate."""
+    from app.domains.assistant.intent import IntentModelBusy, IntentRouter
+    from app.domains.assistant.schemas import CapabilityCatalogSnapshot, ToolCapabilityRef
+
+    catalog = CapabilityCatalogSnapshot(tools=(ToolCapabilityRef(
+        id=8,
+        code="ZONGHENG_BID.zongheng_list_expiring_certificates",
+        name="查询即将到期资质",
+        connector_id=3,
+        read_only=True,
+    ),))
+
+    decision = IntentRouter().route(
+        "有哪些资质证书30天内过期",
+        catalog,
+        model=FakeModel(error=IntentModelBusy()),
+    )
+
+    assert decision.intent_type == "clarification"
+    assert decision.selection.tool_ids == []
+    assert decision.reason == "Intent model busy"
+
+
 def test_explicit_enterprise_system_write_is_forbidden_before_model_call():
     """Catches delegating an explicit state-changing ERP request to a probabilistic model."""
     from app.domains.assistant.intent import IntentRouter

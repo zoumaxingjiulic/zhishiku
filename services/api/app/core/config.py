@@ -46,6 +46,10 @@ class Settings:
     llm_base_url: str = os.getenv("LLM_BASE_URL", "")
     llm_api_key: str = os.getenv("LLM_API_KEY", "")
     llm_model: str = os.getenv("LLM_MODEL", "")
+    assistant_intent_timeout_seconds: float = min(
+        30.0,
+        max(5.0, float(os.getenv("ASSISTANT_INTENT_TIMEOUT_SECONDS", "15"))),
+    )
     model_credential_key: str = os.getenv("MODEL_CREDENTIAL_KEY", "")
     mcp_allowed_hosts: tuple[str, ...] = env_csv("MCP_ALLOWED_HOSTS")
     mcp_allowed_cidrs: tuple[str, ...] = env_csv("MCP_ALLOWED_CIDRS")

@@ -33,6 +33,17 @@ _KNOWLEDGE_PATTERNS = (
     re.compile(r"(?:流程|制度|规定|指南|教程|说明).*(?:是什么|有哪些|如何|怎么|怎样|吗|？|\?)"),
 )
 _GENERAL_CHAT = re.compile(r"^\s*(?:你好|您好|嗨|hello|hi)[！!。.]?\s*$", re.IGNORECASE)
+_EXPIRING_CERTIFICATE_QUERY = re.compile(
+    r"(?=.*(?:资质|证书))(?=.*(?:到期|过期|失效))",
+    re.DOTALL,
+)
+_EXPIRING_CERTIFICATE_TOOL_CODE = (
+    "zongheng_bid.zongheng_list_expiring_certificates"
+)
+
+
+class IntentModelBusy(TimeoutError):
+    """The bounded intent-model worker pool is saturated."""
 
 
 def _empty_selection() -> CapabilitySelection:
@@ -46,6 +57,36 @@ def _safe_decision(intent_type: str, *, reason: str, clarify: bool) -> IntentDec
         selection=_empty_selection(),
         needs_clarification=clarify,
         reason=reason,
+    )
+
+
+def _trusted_timeout_fallback(
+    question: str,
+    catalog: CapabilityCatalogSnapshot,
+) -> IntentDecision | None:
+    """Resolve one narrow, trusted, read-only query when the intent model is slow.
+
+    Tool names and descriptions are connector-controlled and therefore remain
+    untrusted. The fallback matches only a platform-known stable tool code that
+    is already present in the user's immutable authorization snapshot.
+    """
+    if not _EXPIRING_CERTIFICATE_QUERY.search(question):
+        return None
+    matches = [
+        tool
+        for tool in catalog.tools
+        if tool.read_only
+        and tool.code.casefold() == _EXPIRING_CERTIFICATE_TOOL_CODE
+    ]
+    if len(matches) != 1:
+        return None
+    return IntentDecision(
+        intent_type="system_query",
+        confidence=1,
+        selection=CapabilitySelection(tool_ids=[matches[0].id]),
+        needs_clarification=False,
+        risk="low",
+        reason="Trusted read-only fallback after intent model timeout",
     )
 
 
@@ -172,9 +213,14 @@ class IntentRouter:
                 **({'history': history} if history else {}),
             )
             decision = _parse_decision(raw_decision)
+        except IntentModelBusy:
+            return _safe_decision("clarification", reason="Intent model busy", clarify=True)
         except TimeoutError:
             if _GENERAL_CHAT.match(question):
                 return _safe_decision("general_chat", reason="Intent model timed out", clarify=False)
+            fallback = _trusted_timeout_fallback(question, catalog)
+            if fallback is not None:
+                return fallback
             return _safe_decision("clarification", reason="Intent model timed out", clarify=True)
         except (ValidationError, json.JSONDecodeError, TypeError, ValueError):
             return _safe_decision("clarification", reason="Intent model returned an invalid decision", clarify=True)
