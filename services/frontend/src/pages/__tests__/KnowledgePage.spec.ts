@@ -108,6 +108,44 @@ describe("KnowledgePage enterprise layout", () => {
     await waitFor(() => expect(uploadBodies).toHaveLength(1));
     expect(uploadBodies[0].get("file")).toBe(pending);
   });
+
+  it("keeps document details, index progress, and every action visible in four compact columns", async () => {
+    const documentItem = {
+      id: 9,
+      title: "员工手册",
+      original_filename: "employee-handbook.pdf",
+      file_size_bytes: 4096,
+      process_status: "completed",
+      chunk_count: 8,
+      vector_count: 8,
+      fulltext_count: 8,
+      updated_at: "2026-09-24T09:30:00",
+      row_version: 1,
+    };
+    apiMock.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/knowledge-bases") return [knowledgeBase];
+      if (path === "/api/v1/folders?knowledge_base_id=3") return [];
+      if (path === "/api/v1/documents?knowledge_base_id=3&folder_id=0") return [documentItem];
+      throw new Error(`Unexpected API call: ${path}`);
+    });
+
+    const view = render(KnowledgePage, { props: { user } });
+    await screen.findByText("员工手册");
+
+    expect(screen.getAllByRole("columnheader").map(item => item.textContent?.trim())).toEqual([
+      "资料信息",
+      "处理状态",
+      "索引进度",
+      "操作",
+    ]);
+    const table = view.container.querySelector(".knowledge-document-table");
+    expect(table).toHaveAttribute("data-fit-actions", "true");
+    expect(screen.getByText("4.0 KB")).toBeInTheDocument();
+    expect(view.container.querySelector(".document-index-summary")).toHaveTextContent("切片8向量8/8全文8/8");
+    for (const action of ["切片", "下载", "移动", "重建", "删除"]) {
+      expect(screen.getByRole(action === "下载" ? "link" : "button", { name: action })).toBeInTheDocument();
+    }
+  });
 });
 
 describe("management page async states", () => {

@@ -22,7 +22,7 @@ const passwordForm = reactive({ current_password: "", new_password: "", confirma
 let toastTimer: number | undefined;
 
 const currentMeta = computed(() => ({
-  title: String(route.meta.title || "企业智能体平台"),
+  title: String(route.meta.title || "灵智平台"),
   subtitle: String(route.meta.subtitle || ""),
 }));
 const isAdmin = computed(() => Boolean(authUser.value?.is_platform_admin));
@@ -217,12 +217,12 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div v-if="!authReady" class="boot-screen"><div class="brand-mark">智</div><p>正在连接企业知识平台…</p></div>
+  <div v-if="!authReady" class="boot-screen"><div class="brand-mark">灵</div><p>正在连接灵智平台…</p></div>
 
   <main v-else-if="!authUser" class="login-shell">
     <section class="login-brand">
-      <div class="brand-mark">智</div>
-      <div><h1>企业智能体平台</h1><p>让制度、技术资料与业务知识安全地服务每个部门</p></div>
+      <div class="brand-mark">灵</div>
+      <div><h1>灵智平台</h1><p>让制度、技术资料与业务知识安全地服务每个部门</p></div>
     </section>
     <form class="login-card" @submit.prevent="login">
       <div><span class="eyebrow">INTERNAL PLATFORM</span><h2>欢迎登录</h2><p class="muted">使用管理员创建的企业账号</p></div>
@@ -250,8 +250,8 @@ onBeforeUnmount(() => {
       @keydown="handleSidebarKeydown"
     >
       <div class="logo">
-        <div class="brand-mark small">智</div>
-        <div><strong>企业智能体</strong><small>KNOWLEDGE OS</small></div>
+        <div class="brand-mark small">灵</div>
+        <div><strong>灵智平台</strong><small>ENTERPRISE AI</small></div>
         <button
           v-if="isNarrow"
           class="sidebar-close"

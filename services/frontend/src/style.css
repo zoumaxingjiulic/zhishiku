@@ -175,6 +175,36 @@
   padding: var(--space-1);
   pointer-events: none;
 }
+.knowledge-document-table-wrap { overflow-x: hidden; }
+.knowledge-document-table { min-width: 0; table-layout: fixed; }
+.knowledge-document-table th,
+.knowledge-document-table td { white-space: normal; }
+.knowledge-document-table th:nth-child(1) { width: 32%; }
+.knowledge-document-table th:nth-child(2) { width: 13%; }
+.knowledge-document-table th:nth-child(3) { width: 24%; }
+.knowledge-document-table th:nth-child(4) { width: 31%; }
+.document-info { min-width: 0; display: grid; gap: var(--space-1); }
+.document-info > strong,
+.document-info > small { overflow-wrap: anywhere; }
+.document-meta { display: flex; flex-wrap: wrap; gap: var(--space-2) var(--space-4); color: var(--color-text-muted); }
+.document-index-summary { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: var(--space-2); }
+.document-index-summary span { min-width: 0; display: grid; gap: 2px; }
+.document-index-summary small { color: var(--color-text-muted); font-size: .625rem; }
+.document-index-summary strong { font-size: .75rem; overflow-wrap: anywhere; }
+.knowledge-document-actions { min-width: 0; flex-wrap: wrap; align-content: center; }
+.knowledge-document-actions > * { white-space: nowrap; }
+
+@media (max-width: 900px) {
+  .knowledge-document-table-wrap { overflow: visible; border: 0; }
+  .knowledge-document-table,
+  .knowledge-document-table tbody,
+  .knowledge-document-table tr,
+  .knowledge-document-table td { display: block; width: 100%; }
+  .knowledge-document-table thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+  .knowledge-document-table tr { margin-bottom: var(--space-3); border: 1px solid var(--color-border); border-radius: var(--radius-md); padding: var(--space-3); background: var(--color-surface); }
+  .knowledge-document-table td { border: 0; padding: var(--space-2); }
+  .knowledge-document-table td:last-child { padding-top: var(--space-3); border-top: 1px solid var(--color-border); }
+}
 /* Authoring surfaces: bounded columns, readable step outputs and keyboard-native controls. */
 .studio-shell{display:grid;grid-template-columns:240px minmax(0,1fr);gap:20px;align-items:start}
 .studio-list{display:flex;flex-direction:column;gap:8px}

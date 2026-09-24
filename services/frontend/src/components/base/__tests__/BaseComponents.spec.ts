@@ -146,6 +146,7 @@ describe("application shell", () => {
     await router.isReady();
     render(App, { global: { plugins: [router] } });
 
+    expect(screen.getByText("灵智平台")).toBeInTheDocument();
     const toggle = screen.getByRole("button", { name: "打开导航菜单" });
     const sidebar = document.getElementById("app-sidebar");
     const main = toggle.closest("main");

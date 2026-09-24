@@ -21,14 +21,27 @@ describe("enterprise assistant workbench", () => {
 
   afterEach(() => { cleanup(); vi.clearAllMocks(); });
 
-  it("renders the three-column assistant workspace and quick questions", async () => {
-    render(DashboardPage);
+  it("keeps the composer outside the scrollable message region and opens capabilities on demand", async () => {
+    const view = render(DashboardPage);
     expect(await screen.findByRole("heading", { name: "从一个问题开始" })).toBeInTheDocument();
     expect(screen.getByRole("complementary", { name: "会话列表" })).toBeInTheDocument();
-    expect(screen.getByRole("complementary", { name: "可用能力" })).toBeInTheDocument();
+    expect(view.container.querySelector(".assistant-workspace")).toHaveAttribute("data-viewport-bound", "true");
+    const messages = screen.getByRole("region", { name: "对话消息" });
+    expect(messages).toHaveAttribute("data-scroll-region", "true");
+    expect(within(messages).queryByRole("textbox")).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "向企业总助手提问" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "年假怎么申请？" })).toBeInTheDocument();
+    expect(screen.queryByRole("dialog", { name: "可用能力" })).not.toBeInTheDocument();
+    const capabilityTrigger = screen.getByRole("button", { name: "查看可用能力" });
+    await fireEvent.click(capabilityTrigger);
+    const capabilityDialog = screen.getByRole("complementary", { name: "可用能力" });
+    expect(capabilityDialog).toHaveClass("is-open");
+    expect(screen.getByRole("complementary", { name: "会话列表" })).not.toHaveAttribute("inert");
     expect(screen.getByText("制度知识库")).toBeInTheDocument();
     expect(screen.queryByText("知识处理链路")).not.toBeInTheDocument();
+    await fireEvent.keyDown(capabilityDialog, { key: "Escape" });
+    expect(screen.queryByRole("complementary", { name: "可用能力" })).not.toBeInTheDocument();
+    expect(capabilityTrigger).toHaveFocus();
   });
 
   it("shows an explicit no-capability state", async () => {
@@ -39,6 +52,7 @@ describe("enterprise assistant workbench", () => {
       throw new Error(`Unexpected API call: ${path}`);
     });
     render(DashboardPage);
+    await fireEvent.click(await screen.findByRole("button", { name: "查看可用能力" }));
     expect(await screen.findByText("暂无已授权的企业能力")).toBeInTheDocument();
   });
 
@@ -47,6 +61,7 @@ describe("enterprise assistant workbench", () => {
     render(DashboardPage);
     expect(await screen.findByRole("alert")).toHaveTextContent("服务连接失败");
     expect(screen.getByRole("button", { name: "新建会话" })).toBeInTheDocument();
+    await fireEvent.click(screen.getByRole("button", { name: "查看可用能力" }));
     expect(screen.queryByText("系统服务正常")).not.toBeInTheDocument();
     expect(screen.getByText("服务状态未知")).toBeInTheDocument();
   });
@@ -60,7 +75,7 @@ describe("enterprise assistant workbench", () => {
     expect(document.querySelector(".assistant-capability-panel")).toHaveAttribute("aria-hidden", "true");
     expect(document.querySelector(".assistant-chat-panel")).toHaveAttribute("inert");
     await fireEvent.click(screen.getByRole("button", { name: "关闭会话列表" }));
-    await fireEvent.click(screen.getByRole("button", { name: "打开能力面板" }));
+    await fireEvent.click(screen.getByRole("button", { name: "查看可用能力" }));
     expect(screen.getByRole("dialog", { name: "可用能力" })).toHaveClass("is-open");
     expect(document.querySelector(".assistant-session-panel")).toHaveAttribute("aria-hidden", "true");
   });
@@ -68,8 +83,9 @@ describe("enterprise assistant workbench", () => {
   it("uses drawer layout at 1100px so the application sidebar cannot crop capabilities", async () => {
     Object.defineProperty(window, "innerWidth", { configurable: true, value: 1100 });
     render(DashboardPage);
-    await waitFor(() => expect(screen.getByRole("button", { name: "打开能力面板" })).toBeInTheDocument());
+    await waitFor(() => expect(screen.getByRole("button", { name: "查看可用能力" })).toBeInTheDocument());
     expect(document.querySelector(".assistant-workspace")).toHaveAttribute("data-layout", "compact");
+    await fireEvent.click(screen.getByRole("button", { name: "查看可用能力" }));
     expect(document.querySelector(".assistant-capability-panel")).toHaveClass("is-drawer");
   });
 
