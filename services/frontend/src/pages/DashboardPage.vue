@@ -128,7 +128,7 @@ onBeforeUnmount(() => window.removeEventListener("resize", syncViewport));
 
     <main class="assistant-chat-panel" :inert="drawerOpen ? true : undefined">
       <header class="assistant-chat-heading">
-        <div><span class="assistant-eyebrow">ENTERPRISE ASSISTANT</span><h2>{{ activeSession?.title || "企业总助手" }}</h2><p>统一访问企业知识、只读系统工具与专业智能体</p></div>
+        <div><span class="assistant-eyebrow">ENTERPRISE ASSISTANT</span><h2>{{ activeSession?.title || "企业总助手" }}</h2><p>统一访问已授权企业知识与只读系统工具</p></div>
         <div class="assistant-chat-actions">
           <span v-if="activeTask" class="assistant-status">{{ activeTask.stage || activeTask.status }}</span>
           <button type="button" class="assistant-capability-trigger" aria-label="查看可用能力" :aria-expanded="capabilitiesOpen" @click="openCapabilities">

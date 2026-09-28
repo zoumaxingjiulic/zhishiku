@@ -10,7 +10,7 @@ from ...core.database import UnitOfWork
 from ...core.errors import AuthorizationError, ConflictError, NotFoundError, RateLimitError, ValidationError
 from ...quality import RetrievalPolicy
 from ..users.repository import UsersRepository
-from .repository import AgentRepository, parse_json
+from .repository import AgentRepository, RESERVED_AGENT_CODE, parse_json
 
 
 class AgentService:
@@ -23,11 +23,15 @@ class AgentService:
         self.admin_repository = admin_repository or UsersRepository(uow.cursor)
 
     def list_agents(self, user: dict) -> list[dict]:
-        return self.repository.list_agents(user)
+        return [
+            agent for agent in self.repository.list_agents(user)
+            if agent.get("code") != RESERVED_AGENT_CODE
+        ]
 
     def authorize_agent(self, user: dict, agent_id: int, for_update: bool = False) -> dict:
         agent = self.repository.get_agent(agent_id, for_update=for_update)
-        if not agent or agent.get("status") != "active":
+        if (not agent or agent.get("status") != "active"
+                or agent.get("code") == RESERVED_AGENT_CODE):
             raise NotFoundError("智能体不存在或未启用")
         configured = self.repository.agent_knowledge_base_ids(agent_id, for_update=for_update)
         agent = dict(agent)
@@ -47,7 +51,8 @@ class AgentService:
 
     def list_managed_agents(self, user: dict) -> list[dict]:
         self._require_admin(user)
-        return [self._snapshot_or_raise(agent_id) for agent_id in self.repository.list_agent_ids()]
+        rows = [self._snapshot_or_raise(agent_id) for agent_id in self.repository.list_agent_ids()]
+        return [row for row in rows if row.get("code") != RESERVED_AGENT_CODE]
 
     def create_agent(self, user: dict, payload: Any) -> dict:
         self._require_current_admin(user["id"])
@@ -64,7 +69,7 @@ class AgentService:
     def update_agent(self, user: dict, agent_id: int, payload: Any) -> dict:
         self._require_current_admin(user["id"])
         locked = self.repository.get_agent(agent_id, for_update=True)
-        if not locked:
+        if not locked or locked.get("code") == RESERVED_AGENT_CODE:
             raise NotFoundError("智能体不存在")
         if locked["config_version"] != payload.config_version:
             raise ConflictError("配置已变更，请刷新后再编辑")
@@ -75,7 +80,8 @@ class AgentService:
 
     def list_revisions(self, user: dict, agent_id: int) -> list[dict]:
         self._require_admin(user)
-        if not self.repository.get_agent(agent_id):
+        agent = self.repository.get_agent(agent_id)
+        if not agent or agent.get("code") == RESERVED_AGENT_CODE:
             raise NotFoundError("智能体不存在")
         current_user_ids = list(self._snapshot_or_raise(agent_id).get("user_ids") or [])
         rows = self.repository.list_revisions(agent_id)

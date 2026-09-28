@@ -8,7 +8,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "shared" / "python"))
 sys.path.insert(0, str(ROOT / "services" / "api"))
 
-from app.core.errors import AuthorizationError
+from app.core.errors import AuthorizationError, NotFoundError
 
 
 class Uow:
@@ -88,7 +88,107 @@ def test_agent_catalog_sql_uses_only_direct_user_distribution():
     assert "user_agent_acl" in cursor.statement
     assert "agent_department_acl" not in cursor.statement
     assert "knowledge_base_department_acl" not in cursor.statement
-    assert cursor.parameters == [8]
+    assert "a.code<>%s" in cursor.statement
+    assert cursor.parameters == ["ENTERPRISE_ASSISTANT", 8]
+
+
+def test_agent_catalog_never_returns_enterprise_assistant_even_if_repository_does():
+    from app.domains.agents.service import AgentService
+
+    class Repository:
+        def list_agents(self, user):
+            return [
+                {"id": 1, "code": "ENTERPRISE_ASSISTANT", "name": "企业总助手"},
+                {"id": 2, "code": "HR_AGENT", "name": "人资助手"},
+            ]
+
+    rows = AgentService(Uow(), Repository()).list_agents(
+        {"id": 1, "is_platform_admin": True}
+    )
+
+    assert [row["code"] for row in rows] == ["HR_AGENT"]
+
+
+def test_general_agent_authorization_rejects_enterprise_assistant():
+    from app.domains.agents.service import AgentService
+
+    class Repository:
+        def get_agent(self, agent_id, for_update=False):
+            return {
+                "id": agent_id,
+                "code": "ENTERPRISE_ASSISTANT",
+                "status": "active",
+                "launch_mode": "chat",
+            }
+
+        def agent_knowledge_base_ids(self, agent_id, for_update=False):
+            raise AssertionError("reserved assistant must be rejected before loading bindings")
+
+    with pytest.raises(NotFoundError, match="智能体不存在"):
+        AgentService(Uow(), Repository()).authorize_agent(
+            {"id": 1, "is_platform_admin": True}, 1
+        )
+
+
+def test_studio_catalog_never_returns_enterprise_assistant():
+    from app.domains.agents.service import AgentService
+
+    class Repository:
+        def list_agent_ids(self):
+            return [1, 2]
+
+        def snapshot(self, agent_id):
+            if agent_id == 1:
+                return {"id": 1, "code": "ENTERPRISE_ASSISTANT", "retrieval": {"mode": "hybrid"}}
+            return {"id": 2, "code": "HR_AGENT", "retrieval": {"mode": "hybrid"}}
+
+    rows = AgentService(Uow(), Repository()).list_managed_agents(
+        {"id": 1, "is_platform_admin": True}
+    )
+
+    assert [row["code"] for row in rows] == ["HR_AGENT"]
+
+
+def test_studio_revision_endpoint_rejects_enterprise_assistant():
+    from app.domains.agents.service import AgentService
+
+    class Repository:
+        def get_agent(self, agent_id):
+            return {"id": agent_id, "code": "ENTERPRISE_ASSISTANT", "status": "active"}
+
+        def snapshot(self, agent_id):
+            raise AssertionError("reserved assistant must be rejected before loading its snapshot")
+
+    with pytest.raises(NotFoundError, match="智能体不存在"):
+        AgentService(Uow(), Repository()).list_revisions(
+            {"id": 1, "is_platform_admin": True}, 1
+        )
+
+
+def test_studio_update_rejects_enterprise_assistant():
+    from app.domains.agents.service import AgentService
+
+    class Repository:
+        def get_agent(self, agent_id, for_update=False):
+            return {"id": agent_id, "code": "ENTERPRISE_ASSISTANT", "status": "active"}
+
+    class AdminRepository:
+        def lock_users(self, user_ids):
+            return {1: {"id": 1, "status": 1, "deleted_at": None}}
+
+        def platform_admin_department_id(self):
+            return 9
+
+        def lock_user_department_ids(self, user_id):
+            return [9]
+
+    class Payload:
+        config_version = 1
+
+    with pytest.raises(NotFoundError, match="智能体不存在"):
+        AgentService(
+            Uow(), Repository(), admin_repository=AdminRepository()
+        ).update_agent({"id": 1, "is_platform_admin": True}, 1, Payload())
 
 
 def test_agent_write_uses_user_ids_instead_of_department_ids():

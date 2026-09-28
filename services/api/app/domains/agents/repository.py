@@ -6,6 +6,9 @@ from typing import Any
 from ...core.audit import write_audit
 
 
+RESERVED_AGENT_CODE = "ENTERPRISE_ASSISTANT"
+
+
 def parse_json(value: Any, fallback: Any) -> Any:
     if value is None:
         return fallback
@@ -40,7 +43,7 @@ class AgentRepository:
 
     def list_agents(self, user: dict) -> list[dict]:
         access_clause = ""
-        access_parameters: list[Any] = []
+        access_parameters: list[Any] = [RESERVED_AGENT_CODE]
         if not user.get("is_platform_admin"):
             access_clause = (
                 "AND EXISTS (SELECT 1 FROM user_agent_acl ua "
@@ -59,7 +62,7 @@ class AgentRepository:
             "WHERE act.agent_id=a.id AND act.permission='read' AND ct.status='active' AND sc.status='active') tools "
             "FROM agent a LEFT JOIN agent_knowledge_base ak ON ak.agent_id=a.id "
             "LEFT JOIN knowledge_base k ON k.id=ak.knowledge_base_id AND k.status='active' "
-            f"WHERE a.status='active' {access_clause} GROUP BY a.id ORDER BY a.id",
+            f"WHERE a.status='active' AND a.code<>%s {access_clause} GROUP BY a.id ORDER BY a.id",
             access_parameters,
         )
         return list(self.cursor.fetchall())
@@ -111,7 +114,7 @@ class AgentRepository:
         return result
 
     def list_agent_ids(self) -> list[int]:
-        self.cursor.execute("SELECT id FROM agent ORDER BY id")
+        self.cursor.execute("SELECT id FROM agent WHERE code<>%s ORDER BY id", (RESERVED_AGENT_CODE,))
         return [row["id"] for row in self.cursor.fetchall()]
 
     def active_reference_ids(self, table: str, ids: list[int], for_update: bool = True) -> set[int]:

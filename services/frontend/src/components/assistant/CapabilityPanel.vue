@@ -15,7 +15,6 @@ const props = defineProps<{
 const groups = computed(() => props.capabilities ? [
   { key: "knowledge", label: "知识库", items: props.capabilities.knowledge_bases },
   { key: "tool", label: "只读工具", items: props.capabilities.tools },
-  { key: "agent", label: "专业智能体", items: props.capabilities.agents },
   { key: "skill", label: "Skill", items: props.capabilities.skills },
 ] : []);
 const capabilityCount = computed(() => groups.value.reduce((sum, group) => sum + group.items.length, 0));
