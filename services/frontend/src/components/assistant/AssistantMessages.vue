@@ -2,6 +2,7 @@
 import BaseBadge from "../base/BaseBadge.vue";
 import BaseEmptyState from "../base/BaseEmptyState.vue";
 import BaseIcon from "../base/BaseIcon.vue";
+import MarkdownContent from "../base/MarkdownContent.vue";
 import type { AssistantCapabilities, AssistantMessage, AssistantTask, CapabilityRef, ExecutionSummary } from "../../shared/types/assistant";
 
 const props = defineProps<{
@@ -51,7 +52,8 @@ function pageLabel(page?: number | null, pageEnd?: number | null) {
     <article v-for="message in messages" v-else :key="message.id" class="assistant-message" :class="message.role">
       <div class="assistant-message-avatar" aria-hidden="true">{{ message.role === 'user' ? '我' : '智' }}</div>
       <div class="assistant-message-body">
-        <div class="assistant-message-copy">{{ message.content }}</div>
+        <MarkdownContent v-if="message.role === 'assistant'" class="assistant-message-copy" :content="message.content" />
+        <div v-else class="assistant-message-copy">{{ message.content }}</div>
         <span v-if="message.optimistic" class="assistant-saving">正在保存…</span>
         <div v-if="selectedCapabilities(message).length" class="assistant-capability-tags" aria-label="本次使用的能力">
           <BaseBadge v-for="item in selectedCapabilities(message)" :key="`${item.kind}-${item.id}`" tone="info" :title="item.kind">{{ item.name }}</BaseBadge>

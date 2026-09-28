@@ -69,4 +69,52 @@ describe("AssistantMessages", () => {
     render(AssistantMessages, { props: { messages: [], task: null, capabilities: null } });
     expect(screen.getByRole("heading", { name: "从一个问题开始" })).toBeInTheDocument();
   });
+
+  it("renders assistant Markdown while keeping user messages as plain text", () => {
+    const { container } = render(AssistantMessages, {
+      props: {
+        messages: [
+          { id: 1, role: "user", content: "**用户输入不应加粗**" },
+          {
+            id: 2,
+            role: "assistant",
+            content: "**重点结果**\n\n| 部门 | 数量 |\n| --- | ---: |\n| 信息部 | 8 |",
+          },
+        ],
+        task: null,
+        capabilities: null,
+      },
+    });
+
+    const userMessage = container.querySelector("article.user");
+    const assistantMessage = container.querySelector("article.assistant");
+    expect(userMessage).toHaveTextContent("**用户输入不应加粗**");
+    expect(userMessage?.querySelector("strong")).toBeNull();
+    expect(assistantMessage?.querySelector("strong")).toHaveTextContent("重点结果");
+    expect(assistantMessage?.querySelector("table")).toBeInTheDocument();
+    expect(assistantMessage?.querySelector("th")).toHaveTextContent("部门");
+    expect(assistantMessage?.querySelector("td")).toHaveTextContent("信息部");
+  });
+
+  it("sanitizes unsafe assistant Markdown and secures external links", () => {
+    const { container } = render(AssistantMessages, {
+      props: {
+        messages: [{
+          id: 1,
+          role: "assistant",
+          content: '<img src=x onerror="alert(1)">\n\n[危险链接](javascript:alert(1))\n\n[安全链接](https://example.com)',
+        }],
+        task: null,
+        capabilities: null,
+      },
+    });
+
+    const assistantMessage = container.querySelector("article.assistant");
+    expect(assistantMessage?.querySelector("img")).toBeNull();
+    expect(assistantMessage?.querySelector('a[href^="javascript:"]')).toBeNull();
+    const safeLink = screen.getByRole("link", { name: "安全链接" });
+    expect(safeLink).toHaveAttribute("href", "https://example.com");
+    expect(safeLink).toHaveAttribute("target", "_blank");
+    expect(safeLink).toHaveAttribute("rel", "noopener noreferrer");
+  });
 });
