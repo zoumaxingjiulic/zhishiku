@@ -33,7 +33,6 @@ function selectedCapabilities(message: AssistantMessage) {
   return [
     ...selected(props.capabilities.knowledge_bases, selection.knowledge_base_ids).map(item => ({ ...item, kind: "知识库" })),
     ...selected(props.capabilities.tools, selection.tool_ids).map(item => ({ ...item, kind: "工具" })),
-    ...selected(props.capabilities.agents, selection.agent_ids).map(item => ({ ...item, kind: "智能体" })),
     ...selected(props.capabilities.skills, selection.skill_ids).map(item => ({ ...item, kind: "Skill" })),
   ];
 }
@@ -46,7 +45,7 @@ function pageLabel(page?: number | null, pageEnd?: number | null) {
 
 <template>
   <div class="assistant-messages" aria-live="polite">
-    <BaseEmptyState v-if="!messages.length" title="从一个问题开始" description="查询制度、企业系统数据，或让专业智能体协助完成复杂任务。">
+    <BaseEmptyState v-if="!messages.length" title="从一个问题开始" description="查询已授权的企业制度、知识资料和只读系统数据。">
       <template #icon><BaseIcon name="sparkles" :size="30" /></template>
     </BaseEmptyState>
     <article v-for="message in messages" v-else :key="message.id" class="assistant-message" :class="message.role">

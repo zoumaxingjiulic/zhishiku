@@ -29,9 +29,10 @@ describe("AssistantMessages", () => {
     });
 
     expect(screen.getByText("《库存管理制度》")).toHaveAttribute("href", "/api/v1/documents/11/download");
-    for (const label of ["制度库", "ERP 库存", "ERP 助手", "库存查询 Skill"]) {
+    for (const label of ["制度库", "ERP 库存", "库存查询 Skill"]) {
       expect(screen.getByText(label)).toBeInTheDocument();
     }
+    expect(screen.queryByText("ERP 助手")).not.toBeInTheDocument();
     const timeline = screen.getByText("执行时间线").closest("details");
     expect(timeline).not.toHaveAttribute("open");
     await fireEvent.click(screen.getByText("执行时间线"));
@@ -41,7 +42,7 @@ describe("AssistantMessages", () => {
     expect(screen.getByText(/2026-09-22T10:30:00Z/)).toBeInTheDocument();
   });
 
-  it("binds execution provenance to message ids and never guesses from the latest answer", () => {
+  it("does not expose agent provenance or guess capabilities from the latest answer", () => {
     render(AssistantMessages, {
       props: {
         messages: [
@@ -60,7 +61,7 @@ describe("AssistantMessages", () => {
       },
     });
 
-    expect(screen.getByText("历史专家")).toBeInTheDocument();
+    expect(screen.queryByText("历史专家")).not.toBeInTheDocument();
     expect(screen.queryByText("不应串到最新回答")).not.toBeInTheDocument();
   });
 

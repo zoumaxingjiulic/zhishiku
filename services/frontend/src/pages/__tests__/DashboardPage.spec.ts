@@ -24,6 +24,9 @@ describe("enterprise assistant workbench", () => {
   it("keeps the composer outside the scrollable message region and opens capabilities on demand", async () => {
     const view = render(DashboardPage);
     expect(await screen.findByRole("heading", { name: "从一个问题开始" })).toBeInTheDocument();
+    expect(screen.getByText("统一访问已授权企业知识与只读系统工具")).toBeInTheDocument();
+    expect(screen.getByText("查询已授权的企业制度、知识资料和只读系统数据。")).toBeInTheDocument();
+    expect(screen.queryByText(/专业智能体/)).not.toBeInTheDocument();
     expect(screen.getByRole("complementary", { name: "会话列表" })).toBeInTheDocument();
     expect(view.container.querySelector(".assistant-workspace")).toHaveAttribute("data-viewport-bound", "true");
     const messages = screen.getByRole("region", { name: "对话消息" });
@@ -38,6 +41,7 @@ describe("enterprise assistant workbench", () => {
     expect(capabilityDialog).toHaveClass("is-open");
     expect(screen.getByRole("complementary", { name: "会话列表" })).not.toHaveAttribute("inert");
     expect(screen.getByText("制度知识库")).toBeInTheDocument();
+    expect(screen.queryByText("专业智能体")).not.toBeInTheDocument();
     expect(screen.queryByText("知识处理链路")).not.toBeInTheDocument();
     await fireEvent.keyDown(capabilityDialog, { key: "Escape" });
     expect(screen.queryByRole("complementary", { name: "可用能力" })).not.toBeInTheDocument();
