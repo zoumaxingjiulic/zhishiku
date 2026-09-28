@@ -119,4 +119,35 @@ describe("AgentsPage chat task status", () => {
     await screen.findByText("问答助手");
     expect(view.container.querySelector(".agents-grid")).toHaveClass("enterprise-card-grid");
   });
+
+  it("renders assistant Markdown safely and keeps user messages as plain text", async () => {
+    apiMock.mockImplementation(async (path: string) => {
+      if (path === "/api/v1/agents") return [{ id: 7, name: "问答助手", launch_mode: "chat" }];
+      if (path === "/api/v1/agents/7/chat/sessions") return [{ id: "running-session", title: "Markdown 对话", message_count: 2, latest_task_status: "succeeded" }];
+      if (path === "/api/v1/agents/7/chat/sessions/running-session") {
+        return {
+          id: "running-session",
+          messages: [
+            { id: 1, role: "user", content: "**用户原文**" },
+            { id: 2, role: "assistant", content: "**智能体重点**\n\n![外部图](https://attacker.example/pixel.png)\n\n[外部链接](https://example.com)" },
+          ],
+        };
+      }
+      if (path === "/api/v1/agents/7/chat/sessions/running-session/task") return null;
+      throw new Error(`Unexpected API call: ${path}`);
+    });
+
+    const view = render(AgentsPage);
+
+    await screen.findByText("智能体重点");
+    const userMessage = view.container.querySelector(".message.user");
+    const assistantMessage = view.container.querySelector(".message.assistant");
+    expect(userMessage).toHaveTextContent("**用户原文**");
+    expect(userMessage?.querySelector("strong")).toBeNull();
+    expect(assistantMessage?.querySelector("strong")).toHaveTextContent("智能体重点");
+    expect(assistantMessage?.querySelector("img")).toBeNull();
+    const externalLink = screen.getByRole("link", { name: "外部链接" });
+    expect(externalLink).toHaveAttribute("target", "_blank");
+    expect(externalLink).toHaveAttribute("rel", "noopener noreferrer");
+  });
 });

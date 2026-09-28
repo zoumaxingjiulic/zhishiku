@@ -102,7 +102,7 @@ describe("AssistantMessages", () => {
         messages: [{
           id: 1,
           role: "assistant",
-          content: '<img src=x onerror="alert(1)">\n\n[危险链接](javascript:alert(1))\n\n[安全链接](https://example.com)',
+          content: '<img src=x onerror="alert(1)">\n\n![外部跟踪图](https://attacker.example/pixel.png)\n\n[危险链接](javascript:alert(1))\n\n[安全链接](https://example.com)\n\n[协议相对链接](//example.com/path)',
         }],
         task: null,
         capabilities: null,
@@ -116,5 +116,8 @@ describe("AssistantMessages", () => {
     expect(safeLink).toHaveAttribute("href", "https://example.com");
     expect(safeLink).toHaveAttribute("target", "_blank");
     expect(safeLink).toHaveAttribute("rel", "noopener noreferrer");
+    const protocolRelativeLink = screen.getByRole("link", { name: "协议相对链接" });
+    expect(protocolRelativeLink).toHaveAttribute("target", "_blank");
+    expect(protocolRelativeLink).toHaveAttribute("rel", "noopener noreferrer");
   });
 });

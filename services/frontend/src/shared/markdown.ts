@@ -13,7 +13,7 @@ const defaultLinkOpen = markdown.renderer.rules.link_open
 
 markdown.renderer.rules.link_open = (tokens, index, options, environment, renderer) => {
   const href = String(tokens[index].attrGet("href") ?? "");
-  if (/^https?:\/\//i.test(href)) {
+  if (/^(?:https?:)?\/\//i.test(href)) {
     tokens[index].attrSet("target", "_blank");
     tokens[index].attrSet("rel", "noopener noreferrer");
   }
@@ -25,7 +25,7 @@ export function renderAssistantMarkdown(content: string): string {
     ADD_ATTR: ["target"],
     ALLOW_UNKNOWN_PROTOCOLS: false,
     FORBID_ATTR: ["style"],
-    FORBID_TAGS: ["button", "embed", "form", "iframe", "input", "object", "style"],
+    FORBID_TAGS: ["button", "embed", "form", "iframe", "img", "input", "object", "style"],
     USE_PROFILES: { html: true },
   });
 }
