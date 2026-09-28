@@ -140,7 +140,7 @@ def test_default_orchestrator_uses_configured_intent_deadline():
     orchestrator = AssistantOrchestrator(Store(), model=Model('general_chat', {}), adapters=None)
 
     assert orchestrator.router.timeout_seconds == settings.assistant_intent_timeout_seconds
-    assert orchestrator.router.timeout_seconds == 15.0
+    assert orchestrator.router.timeout_seconds == 30.0
 
 
 def test_worker_claim_loads_agent_code_and_dispatches(monkeypatch):

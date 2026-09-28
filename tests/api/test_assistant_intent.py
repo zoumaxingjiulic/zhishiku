@@ -309,26 +309,48 @@ def test_model_clarification_flag_always_clears_executable_selection():
     }
 
 
-def test_executable_intent_rejects_selection_from_another_capability_class():
-    """Catches a valid catalog ID bypassing the execution branch implied by the declared intent."""
+def test_executable_selection_normalizes_mislabeled_intent_without_business_keywords():
+    """Catches an authorized typed selection being discarded only because the model mislabeled it."""
     from app.domains.assistant.intent import IntentRouter
 
     cases = [
-        ("knowledge_query", {"tool_ids": [11]}),
-        ("system_query", {"knowledge_base_ids": [2]}),
-        ("agent_task", {"skill_ids": [5]}),
+        ("knowledge_query", {"tool_ids": [11]}, "system_query"),
+        ("agent_task", {"tool_ids": [11]}, "system_query"),
+        ("system_query", {"knowledge_base_ids": [2]}, "knowledge_query"),
+        ("knowledge_query", {"knowledge_base_ids": [2], "tool_ids": [11]}, "multi_capability"),
+        ("system_query", {"skill_ids": [5]}, "multi_capability"),
     ]
 
-    for intent_type, selection in cases:
+    for intent_type, selection, expected_intent in cases:
         decision = IntentRouter().route(
             "route this",
             _catalog(),
             model=FakeModel(_response(intent_type, selection=selection)),
         )
 
-        assert decision.intent_type == "clarification"
-        assert decision.needs_clarification is True
-        assert all(not ids for ids in decision.selection.model_dump().values())
+        assert decision.intent_type == expected_intent
+        assert decision.needs_clarification is False
+        assert decision.selection.model_dump() == {
+            "knowledge_base_ids": selection.get("knowledge_base_ids", []),
+            "tool_ids": selection.get("tool_ids", []),
+            "agent_ids": [],
+            "skill_ids": selection.get("skill_ids", []),
+        }
+
+
+def test_agent_selection_remains_blocked_even_when_model_uses_another_intent_label():
+    """Catches intent normalization re-enabling professional-agent delegation from the root assistant."""
+    from app.domains.assistant.intent import IntentRouter
+
+    decision = IntentRouter().route(
+        "route this",
+        _catalog(),
+        model=FakeModel(_response("system_query", selection={"agent_ids": [7]})),
+    )
+
+    assert decision.intent_type == "clarification"
+    assert decision.needs_clarification is True
+    assert all(not ids for ids in decision.selection.model_dump().values())
 
 
 def test_non_executing_intents_clear_selection_and_multi_capability_accepts_skills():

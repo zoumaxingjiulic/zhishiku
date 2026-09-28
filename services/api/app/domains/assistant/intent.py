@@ -134,16 +134,29 @@ def _has_unknown_ids(decision: IntentDecision, snapshot: CapabilityCatalogSnapsh
     return any(not set(selected[kind]).issubset(ids) for kind, ids in authorized.items())
 
 
-def _selection_matches_intent(decision: IntentDecision) -> bool:
-    allowed_by_intent = {
-        "knowledge_query": {"knowledge_base_ids"},
-        "system_query": {"tool_ids"},
-        "multi_capability": {
-            "knowledge_base_ids", "tool_ids", "skill_ids",
-        },
+def _intent_from_typed_selection(selection: CapabilitySelection) -> str | None:
+    """Derive execution class from already-authorized, schema-typed capability IDs.
+
+    The model may identify the right capability while using the wrong high-level
+    label.  Capability fields are the executable contract, so normalize the
+    label generically instead of adding business-specific keyword rules.
+    """
+    if selection.agent_ids:
+        return None
+    selected = {
+        kind
+        for kind, ids in selection.model_dump().items()
+        if ids
     }
-    allowed = allowed_by_intent.get(decision.intent_type, set())
-    return all(not ids or kind in allowed for kind, ids in decision.selection.model_dump().items())
+    if not selected:
+        return None
+    if selected == {"knowledge_base_ids"}:
+        return "knowledge_query"
+    if selected == {"tool_ids"}:
+        return "system_query"
+    if selected.issubset({"knowledge_base_ids", "tool_ids", "skill_ids"}):
+        return "multi_capability"
+    return None
 
 
 class IntentRouter:
@@ -214,18 +227,19 @@ class IntentRouter:
                 risk=decision.risk,
                 reason=decision.reason,
             )
-        if decision.intent_type == "agent_task":
+        if decision.intent_type in {"general_chat", "forbidden"}:
+            return decision.model_copy(update={"selection": _empty_selection()})
+        if decision.selection.agent_ids:
             return _safe_decision(
                 "clarification",
                 reason="Enterprise assistant does not delegate professional agents",
                 clarify=True,
             )
-        if decision.intent_type in {"general_chat", "forbidden"}:
-            return decision.model_copy(update={"selection": _empty_selection()})
-        if not _selection_matches_intent(decision):
+        normalized_intent = _intent_from_typed_selection(decision.selection)
+        if normalized_intent is None:
             return _safe_decision(
                 "clarification",
-                reason="Intent selection does not match the declared capability class",
+                reason="Intent model did not select an executable authorized capability",
                 clarify=True,
             )
-        return decision
+        return decision.model_copy(update={"intent_type": normalized_intent})
