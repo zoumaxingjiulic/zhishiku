@@ -27,5 +27,9 @@ export async function api<T = any>(path: string, options: RequestInit = {}): Pro
       : (typeof body === "string" ? body : readable) || `请求失败 (${response.status})`;
     throw new ApiError(message, response.status);
   }
+  if (!contentType.includes("json")) {
+    if (body === "") return undefined as T;
+    throw new ApiError("平台接口返回格式错误，请检查前端代理与 API 服务", 502);
+  }
   return body as T;
 }

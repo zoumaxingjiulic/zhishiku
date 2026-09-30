@@ -75,7 +75,7 @@ function saveRename() {
 .assistant-session-select { min-width: 0; border: 0; padding: var(--space-1); background: transparent; color: var(--color-text); text-align: left; }
 .assistant-session-select strong, .assistant-session-select small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .assistant-session-select small { margin-top: var(--space-1); color: var(--color-text-muted); font-size: .6875rem; }
-.assistant-session-actions { display: flex; gap: var(--space-1); opacity: 0; }
+.assistant-session-actions { display: flex; gap: var(--space-1); opacity: .85; }
 li:hover .assistant-session-actions, li:focus-within .assistant-session-actions, li.active .assistant-session-actions { opacity: 1; }
 .assistant-session-actions button { border: 0; padding: var(--space-1); background: transparent; color: var(--color-text-muted); font-size: .6875rem; }
 .assistant-session-actions button:last-child { color: var(--color-danger); }

@@ -28,6 +28,17 @@ function session(id: string, status: string | null = null, taskId?: string) {
 }
 
 describe("useAssistantChat", () => {
+  it("shows a recoverable error if the sessions endpoint returns a malformed JSON shape", async () => {
+    apiMock.mockImplementation(async (path: string) => {
+      if (path.endsWith("/capabilities")) return { knowledge_bases: [], tools: [], agents: [], skills: [] };
+      if (path.endsWith("/sessions")) return { detail: "unexpected payload" };
+      throw new Error(`Unexpected API call: ${path}`);
+    });
+    render(Harness);
+    await waitFor(() => expect(screen.getByRole("alert")).toHaveTextContent("会话列表格式错误"));
+    expect(screen.getByTestId("active")).toHaveTextContent("");
+  });
+
   it.each([[409, false], [422, false], [0, false], [409, true]])("does not accept a rejected or unrelated task after submit failure %s (same key %s)", async (status, sameKey) => {
     const keys: string[] = [];
     apiMock.mockImplementation(async (path: string, options?: RequestInit) => {

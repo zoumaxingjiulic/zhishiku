@@ -118,6 +118,9 @@ describe("AgentsPage chat task status", () => {
 
     await screen.findByText("问答助手");
     expect(view.container.querySelector(".agents-grid")).toHaveClass("enterprise-card-grid");
+    const agentEntry = screen.getByRole("button", { name: /问答助手/ });
+    await fireEvent.click(agentEntry);
+    expect(routerMock.push).toHaveBeenCalledWith({ name: "agent", params: { agentId: 7 } });
   });
 
   it("renders assistant Markdown safely and keeps user messages as plain text", async () => {

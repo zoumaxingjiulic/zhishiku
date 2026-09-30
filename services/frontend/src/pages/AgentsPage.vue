@@ -255,7 +255,8 @@ async function feedback(message:any,rating:number){try{await api(`/api/v1/messag
       <div v-if="loading" class="page-loading" role="status" aria-label="正在加载智能体"><BaseSkeleton height="84px" /><BaseSkeleton height="84px" /><BaseSkeleton height="84px" /></div>
       <BaseEmptyState v-else-if="loadError" title="智能体加载失败" :description="loadError" role="alert"><template #action><BaseButton variant="secondary" @click="loadAgents">重试</BaseButton></template></BaseEmptyState>
       <div v-else-if="agents.length" class="agents-grid enterprise-card-grid">
-      <BaseCard v-for="agent in agents" :key="agent.id" as="article" class="agent-list-card" padding="sm" @click="open(agent)">
+      <BaseCard v-for="agent in agents" :key="agent.id" as="article" class="agent-list-card" padding="sm">
+        <button class="agent-card-action" type="button" :aria-label="`打开${agent.name}`" @click="open(agent)"></button>
         <div class="agent-card-top"><div class="agent-symbol compact"><BaseIcon :name="agent.icon||modeMeta[agent.launch_mode]?.icon||'bot'" /></div><BaseBadge>{{modeMeta[agent.launch_mode]?.label||agent.agent_type}}</BaseBadge></div>
         <div class="agent-list-content"><h2>{{agent.name}}</h2><p>{{agent.description||modeMeta[agent.launch_mode]?.hint}}</p><div class="agent-card-foot"><small>{{agent.category||modeMeta[agent.launch_mode]?.hint}}</small><span>打开 <BaseIcon name="arrow-right" :size="14" /></span></div></div>
       </BaseCard>

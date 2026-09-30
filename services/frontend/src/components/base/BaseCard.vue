@@ -23,5 +23,5 @@ withDefaults(defineProps<{
   box-shadow: var(--shadow-sm);
 }
 .base-card--sm { padding: var(--space-4); }
-.base-card--md { padding: var(--space-6); }
+.base-card--md { padding: var(--space-5); }
 </style>

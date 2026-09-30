@@ -199,7 +199,11 @@ export function useAssistantChat(options: AssistantChatOptions = {}) {
   async function requestSessionsTruth() {
     const generation = ++sessionsRequestGeneration;
     const revision = sessionsRevision;
-    const truth = await api<AssistantSession[]>("/api/v1/assistant/sessions");
+    const response = await api<unknown>("/api/v1/assistant/sessions");
+    if (!Array.isArray(response) || response.some(item => !item || typeof item.id !== "string")) {
+      throw new Error("会话列表格式错误，请稍后重试");
+    }
+    const truth = response as AssistantSession[];
     if (generation !== sessionsRequestGeneration || revision !== sessionsRevision) return null;
     return truth;
   }

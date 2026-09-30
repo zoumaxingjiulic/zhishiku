@@ -13,7 +13,7 @@ const renderedContent = computed(() => renderAssistantMarkdown(props.content));
 <style scoped>
 .markdown-content {
   max-width: 100%;
-  overflow-x: auto;
+  min-width: 0;
   overflow-wrap: anywhere;
   line-height: 1.7;
 }
@@ -36,10 +36,14 @@ const renderedContent = computed(() => renderAssistantMarkdown(props.content));
 .markdown-content :deep(code) { border-radius: 4px; padding: .12em .35em; background: var(--color-background); font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .9em; }
 .markdown-content :deep(pre) { max-width: 100%; overflow-x: auto; margin: .8em 0; border-radius: var(--radius-md); padding: var(--space-4); background: #10233f; color: #eef5ff; }
 .markdown-content :deep(pre code) { padding: 0; background: transparent; color: inherit; }
-.markdown-content :deep(table) { width: 100%; min-width: 420px; margin: .8em 0; border-collapse: collapse; font-size: .92em; }
+.markdown-content :deep(table) { width: 100%; min-width: 0; table-layout: fixed; margin: .8em 0; border-collapse: collapse; font-size: .92em; }
 .markdown-content :deep(th),
-.markdown-content :deep(td) { border: 1px solid var(--color-border); padding: .55em .7em; text-align: left; vertical-align: top; }
+.markdown-content :deep(td) { min-width: 0; border: 1px solid var(--color-border); padding: .55em .7em; text-align: left; vertical-align: top; overflow-wrap: anywhere; word-break: break-word; white-space: normal; }
 .markdown-content :deep(th) { background: var(--color-background); font-weight: 700; }
 .markdown-content :deep(tbody tr:nth-child(even)) { background: color-mix(in srgb, var(--color-background) 62%, transparent); }
 .markdown-content :deep(hr) { margin: 1em 0; border: 0; border-top: 1px solid var(--color-border); }
+@media (max-width: 640px) {
+  .markdown-content :deep(table) { font-size: .78em; }
+  .markdown-content :deep(th), .markdown-content :deep(td) { padding: .4em; }
+}
 </style>

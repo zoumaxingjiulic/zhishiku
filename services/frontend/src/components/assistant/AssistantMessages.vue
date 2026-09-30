@@ -80,13 +80,14 @@ function pageLabel(page?: number | null, pageEnd?: number | null) {
 </template>
 
 <style scoped>
-.assistant-messages { min-height: 0; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-5); padding: var(--space-6); background: linear-gradient(180deg, #f9fbff, var(--color-surface)); }
-.assistant-message { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: start; gap: var(--space-3); width: min(780px, 92%); }
-.assistant-message.user { align-self: flex-end; grid-template-columns: minmax(0, 1fr) 34px; }
+.assistant-messages { min-height: 0; min-width: 0; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: var(--space-5); padding: clamp(16px, 2vw, 30px); background: linear-gradient(180deg, #f7f9fd, var(--color-surface)); }
+.assistant-message { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: start; gap: var(--space-3); width: min(1080px, 100%); }
+.assistant-message.user { align-self: flex-end; width: fit-content; max-width: min(780px, 84%); grid-template-columns: minmax(0, 1fr) 34px; }
 .assistant-message.user .assistant-message-avatar { grid-column: 2; }.assistant-message.user .assistant-message-body { grid-column: 1; grid-row: 1; justify-self: end; background: var(--color-primary); color: var(--color-on-primary); }
 .assistant-message-avatar { display: grid; place-items: center; width: 34px; height: 34px; border-radius: 10px; background: var(--color-nav); color: white; font-size: .75rem; font-weight: 800; }
 .assistant-message-body { min-width: 0; border: 1px solid var(--color-border); border-radius: 4px var(--radius-lg) var(--radius-lg); padding: var(--space-4); background: var(--color-surface); box-shadow: var(--shadow-sm); }
 .assistant-message-copy { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.7; }
+.assistant-message.assistant .assistant-message-copy { white-space: normal; }
 .assistant-saving { display: block; margin-top: var(--space-2); opacity: .72; font-size: .6875rem; }
 .assistant-capability-tags { display: flex; flex-wrap: wrap; gap: var(--space-2); margin-top: var(--space-3); }
 .assistant-citations { margin-top: var(--space-4); border-top: 1px solid var(--color-border); padding-top: var(--space-3); color: var(--color-text-muted); font-size: .75rem; }

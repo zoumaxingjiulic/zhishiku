@@ -278,7 +278,7 @@ onBeforeUnmount(() => {
           </RouterLink>
         </section>
       </nav>
-      <div class="sidebar-foot"><span class="health-dot"></span>服务运行正常</div>
+      <div class="sidebar-foot">企业数据按权限访问</div>
     </aside>
 
     <main class="main" :inert="isNarrow && sidebarOpen ? true : undefined">

@@ -1,17 +1,18 @@
-@import "../style.css";
+@import "./styles/layout.css";
 
 :root {
-  --color-primary: #2563eb;
-  --color-primary-hover: #1d4ed8;
-  --color-primary-strong: #1e4fbf;
-  --color-primary-soft: #eaf1ff;
+  --color-primary: #2457dc;
+  --color-primary-hover: #1d48bc;
+  --color-primary-strong: #1642ae;
+  --color-primary-soft: #edf3ff;
   --color-nav: #10233f;
-  --color-nav-active: #193557;
+  --color-nav-active: #27476f;
   --color-surface: #ffffff;
-  --color-surface-muted: #f5f7fb;
-  --color-text: #172033;
-  --color-text-muted: #657187;
-  --color-border: #e2e7f0;
+  --color-surface-muted: #f2f5fa;
+  --color-text: #16243b;
+  --color-text-muted: #5a6b82;
+  --color-border: #dce4ef;
+  --color-background: #f2f5fa;
   --color-neutral-soft: #edf1f7;
   --color-success: #147a52;
   --color-success-soft: #e8f8f1;
@@ -31,9 +32,9 @@
   --space-8: 40px;
   --radius-sm: 8px;
   --radius-md: 12px;
-  --radius-lg: 16px;
-  --shadow-sm: 0 4px 16px rgba(29, 46, 77, .06);
-  --shadow-md: 0 16px 40px rgba(29, 46, 77, .14);
+  --radius-lg: 13px;
+  --shadow-sm: 0 5px 22px rgba(19, 41, 78, .055);
+  --shadow-md: 0 18px 48px rgba(19, 41, 78, .16);
 
   /* Compatibility aliases for pages that will migrate incrementally. */
   --navy: var(--color-nav);
@@ -59,8 +60,8 @@
 .nav-section { display: grid; gap: var(--space-1); }
 .nav-section h2 {
   margin: 0;
-  padding: var(--space-1) var(--space-4);
-  color: #7890af;
+  padding: var(--space-2) var(--space-3) var(--space-1);
+  color: #91a9c9;
   font-size: .6875rem;
   font-weight: 750;
   letter-spacing: .12em;
@@ -70,6 +71,7 @@
   align-items: center;
   gap: var(--space-3);
 }
+.sidebar nav a:focus-visible { outline: 2px solid #a9c8ff; outline-offset: -2px; }
 .sidebar nav a > span { width: auto; font-size: inherit; }
 .sidebar-backdrop { display: none; }
 .drawer-toggle {
@@ -133,7 +135,7 @@
   align-items: flex-start;
   justify-content: space-between;
   gap: var(--space-4);
-  margin-bottom: var(--space-4);
+  margin-bottom: var(--space-5);
 }
 .page-header h2 { margin: 0; font-size: 1.25rem; }
 .page-header p { margin: var(--space-1) 0 0; color: var(--color-text-muted); font-size: .8125rem; }
@@ -176,9 +178,9 @@
   pointer-events: none;
 }
 .knowledge-document-table-wrap { overflow-x: hidden; }
-.knowledge-document-table { min-width: 0; table-layout: fixed; }
-.knowledge-document-table th,
-.knowledge-document-table td { white-space: normal; }
+.knowledge-document-table-wrap > .knowledge-document-table { min-width: 0; table-layout: fixed; }
+.knowledge-document-table-wrap > .knowledge-document-table th,
+.knowledge-document-table-wrap > .knowledge-document-table td { white-space: normal; }
 .knowledge-document-table th:nth-child(1) { width: 32%; }
 .knowledge-document-table th:nth-child(2) { width: 13%; }
 .knowledge-document-table th:nth-child(3) { width: 24%; }
