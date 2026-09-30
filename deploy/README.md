@@ -1,6 +1,6 @@
 # 部署说明
 
-本 Compose 供 Ubuntu 上的单机 MVP 使用，服务镜像均固定了版本。它不是高可用生产集群配置；生产阶段应将 MySQL、Milvus、OpenSearch 的备份、监控、容量与容灾单独设计。
+本 Compose 供 Ubuntu 上的单机 MVP 使用。基础服务使用明确镜像版本；本地模型覆盖文件仍使用 `michaelf34/infinity:latest-cpu`，上线前应固定已验证的镜像摘要或版本。它不是高可用生产集群配置；生产阶段应将 MySQL、Milvus、OpenSearch 的备份、监控、容量与容灾单独设计。
 
 ## 启动前检查
 
@@ -15,17 +15,20 @@ docker compose --env-file .env -f deploy/docker-compose.yml config
 docker compose --env-file .env -f deploy/docker-compose.yml up -d --build
 ```
 
-首次启动时，MySQL 会自动执行 `database/mysql/001_initial_schema.sql`；该机制只针对全新的 MySQL 数据目录。后续变更必须新增编号迁移脚本并由迁移工具执行，不能修改已在生产环境执行过的脚本。
+首次启动时，MySQL 会按文件名顺序执行挂载在初始化目录中的 `database/mysql/*.sql`；该机制只针对全新的 MySQL 数据目录。已有数据目录不会重新执行初始化脚本；后续变更必须新增编号迁移脚本，备份后按迁移台账执行，不能修改已在生产环境执行过的脚本。
+
+Redis 已从运行配置中移除：当前任务队列和状态均使用 MySQL，没有 Redis 业务调用。`up -d` 不会自动停止旧的 Redis 容器。升级现有部署时，先核对容器标签确为本项目的 `redis` 服务、没有其他消费者，再执行 `docker stop enterprise-kb-redis-1`；不要执行 `down -v` 或删除 `${DATA_ROOT}/redis`。保留容器和数据目录一个观察版本，确认无回滚需求后再单独决定是否清理。
 
 ## 验证
 
 ```bash
 docker compose --env-file .env -f deploy/docker-compose.yml ps
-curl http://127.0.0.1:8000/healthz
-curl --fail http://127.0.0.1:8000/readyz
-curl --fail http://127.0.0.1:18080/healthz
-curl -k -u "admin:${OPENSEARCH_INITIAL_ADMIN_PASSWORD}" https://127.0.0.1:9200/_cluster/health
+curl --fail http://127.0.0.1:18000/healthz
+curl --fail http://127.0.0.1:18000/readyz
+curl --fail http://192.168.1.33:18080/healthz
 ```
+
+上述地址是当前服务器的实际端口；若 `.env` 中改了绑定地址或端口，请替换命令里的地址。`docker compose --env-file` 只向 Compose 传递变量，不会把变量导出到当前 shell。
 
 已有环境先核对 [迁移记录](../database/mysql/README.md)，备份后按编号执行尚未应用的迁移，每个文件仅执行一次。当前平台 1.1 的迁移与验收入口为：
 

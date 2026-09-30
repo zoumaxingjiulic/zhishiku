@@ -2,7 +2,7 @@
 
 ## 架构形态
 
-当前后端是模块化单体，不是微服务。一个 FastAPI API 进程提供同步 HTTP 接口；独立的 `chat-runner` 处理对话、工作流和评测任务；独立 Worker 处理文档解析、OCR、切片和索引。任务状态持久化在 MySQL，Redis 目前不是任务队列。
+当前后端是模块化单体，不是微服务。一个 FastAPI API 进程提供同步 HTTP 接口；独立的 `chat-runner` 处理对话、工作流和评测任务；独立 Worker 处理文档解析、OCR、切片和索引。任务状态持久化在 MySQL，当前不依赖 Redis。
 
 ~~~text
 main.py

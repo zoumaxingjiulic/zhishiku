@@ -62,19 +62,6 @@ services:
       retries: 18
     networks: [kb-internal]
 
-  redis:
-    image: redis:7.4.2-alpine
-    restart: unless-stopped
-    command: ["redis-server", "--appendonly", "yes", "--save", "60", "1000"]
-    volumes:
-      - ${DATA_ROOT}/redis:/data
-    healthcheck:
-      test: ["CMD", "redis-cli", "ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 12
-    networks: [kb-internal]
-
   milvus:
     image: milvusdb/milvus:v2.6.11
     restart: unless-stopped
@@ -134,7 +121,6 @@ services:
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
-      REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: minio:9000
       MINIO_BUCKET: ${MINIO_BUCKET}
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
@@ -178,7 +164,6 @@ services:
       retries: 3
     depends_on:
       mysql: {condition: service_healthy}
-      redis: {condition: service_healthy}
       milvus: {condition: service_healthy}
       opensearch: {condition: service_healthy}
       minio: {condition: service_healthy}
@@ -216,7 +201,6 @@ services:
       MYSQL_USER: ${MYSQL_USER}
       MYSQL_PASSWORD: ${MYSQL_PASSWORD}
       MYSQL_DATABASE: ${MYSQL_DATABASE}
-      REDIS_URL: redis://redis:6379/0
       MINIO_ENDPOINT: minio:9000
       MINIO_BUCKET: ${MINIO_BUCKET}
       MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
@@ -241,7 +225,6 @@ services:
       retries: 3
     depends_on:
       mysql: {condition: service_healthy}
-      redis: {condition: service_healthy}
       milvus: {condition: service_healthy}
       opensearch: {condition: service_healthy}
       minio: {condition: service_healthy}

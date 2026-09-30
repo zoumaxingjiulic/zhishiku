@@ -44,9 +44,17 @@ def test_base_supports_external_models(configurations):
 def test_local_models_gate_api_without_losing_base_dependencies(configurations):
     dependencies = configurations["models"]["api"]["depends_on"]
     assert dependencies.get("infinity", {}).get("condition") == "service_healthy"
-    for name in ("mysql", "redis", "milvus", "opensearch", "minio"):
+    for name in ("mysql", "milvus", "opensearch", "minio"):
         assert dependencies[name]["condition"] == "service_healthy"
     assert dependencies["minio-init"]["condition"] == "service_completed_successfully"
+
+
+def test_unused_redis_is_not_a_service_or_startup_dependency(configurations):
+    for services in configurations.values():
+        assert "redis" not in services
+        for name in ("api", "chat-runner", "worker"):
+            assert "redis" not in services[name].get("depends_on", {})
+            assert "REDIS_URL" not in services[name].get("environment", {})
 
 
 def test_minio_initialization_precedes_api_and_is_idempotent(configurations):

@@ -19,7 +19,6 @@
   → 前端 Nginx
   → FastAPI API
        ├─ MySQL：部门、账号、权限、知识库、文件夹、文档、任务、审计
-       ├─ Redis：预留缓存基础服务（当前任务队列使用 MySQL）
        ├─ MinIO：原始文件对象存储
        ├─ Milvus：语义向量检索
        ├─ OpenSearch：关键词/全文检索
@@ -36,7 +35,6 @@ Worker：从 MySQL ingestion_job 领取任务，执行解析/OCR、切片、向�
 | MySQL 8.4 | 元数据、权限、事务、审计 |
 | Milvus 2.6 | 稠密向量及 document_id 等过滤字段 |
 | OpenSearch 3 | 关键词召回、全文索引 |
-| Redis 7 | 预留缓存基础设施；当前任务持久化在 MySQL |
 | Infinity CPU | BAAI/bge-m3、BAAI/bge-reranker-v2-m3 |
 | DeepSeek | 当前阶段的外部 LLM 生成服务 |
 
@@ -222,7 +220,6 @@ DATA_ROOT 当前通常为：
 ~~~text
 data/minio/                 MinIO 对象数据
 data/mysql/                 MySQL 数据
-data/redis/                 Redis AOF
 data/milvus/                Milvus 持久化数据
 data/opensearch/            OpenSearch 索引
 data/models/infinity/       Infinity 缓存
@@ -233,7 +230,7 @@ data/models/source/         本地 BGE 模型权重
 
 - 前端：FRONTEND_BIND_IP=192.168.1.33，FRONTEND_PORT=18080。
 - API：HOST_BIND_IP=127.0.0.1，不直接对办公网开放。
-- MinIO、MySQL、Redis、Milvus、OpenSearch、Infinity 仅在 Docker 内部网络 enterprise-kb-internal 通信。
+- MinIO、MySQL、Milvus、OpenSearch、Infinity 仅在 Docker 内部网络 enterprise-kb-internal 通信。
 - 正式推广前应补充 HTTPS、AUTH_COOKIE_SECURE=true、SSO、备份、监控和告警。
 
 ## 初次部署

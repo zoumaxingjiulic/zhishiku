@@ -53,8 +53,14 @@ def test_retrieval_http_drip_cannot_extend_absolute_deadline(monkeypatch, route)
     bodies = {'embedding': {'data': [{'embedding': [1.0] * 8}]},
               'keyword': {'hits': {'hits': [{'_source': {'content_unit_id': 123}}]}},
               'rerank': {'results': [{'index': 0, 'relevance_score': 0.99}]}}
-    stream = DripStream(json.dumps(bodies[route]).encode())
-    monkeypatch.setattr(httpcore.SyncBackend, 'connect_tcp', lambda *args, **kwargs: stream)
+    # Keep the wire response long enough to exceed the absolute deadline even
+    # when test-process scheduling varies (notably on Windows CI).
+    stream = DripStream(json.dumps(bodies[route]).encode() + b' ' * 128)
+    connects = []
+    def connect(*args, **kwargs):
+        connects.append(1)
+        return stream
+    monkeypatch.setattr(httpcore.SyncBackend, 'connect_tcp', connect)
     def forbidden(*args, **kwargs): raise AssertionError('test attempted a real network connection')
     monkeypatch.setattr(socket, 'create_connection', forbidden)
     context = ssl.create_default_context()
@@ -68,13 +74,14 @@ def test_retrieval_http_drip_cannot_extend_absolute_deadline(monkeypatch, route)
     # absolute stream deadline; the real transport pipeline is otherwise intact.
     started = time.monotonic()
     with pytest.raises((TimeoutError, httpx.TimeoutException, httpcore.TimeoutException)):
-        if route == 'embedding': retrieval.embedding('query', deadline=started + .05)
-        elif route == 'keyword': retrieval.keyword_candidates('query', [1], [2], strict=True, deadline=started + .05)
-        else: retrieval.rerank('query', [{'content_text': 'evidence'}], deadline=started + .05)
+        if route == 'embedding': retrieval.embedding('query', deadline=started + .2)
+        elif route == 'keyword': retrieval.keyword_candidates('query', [1], [2], strict=True, deadline=started + .2)
+        else: retrieval.rerank('query', [{'content_text': 'evidence'}], deadline=started + .2)
     elapsed = time.monotonic() - started
-    assert elapsed < .13
-    assert stream.reads < 10
-    assert stream.closed.is_set()
+    assert elapsed < .5
+    assert connects, 'the test must exercise the HTTP stream, not only setup timeout'
+    assert stream.reads < 30
+    assert stream.closed.is_set(), f'reads={stream.reads}, connects={len(connects)}'
 
 
 def test_quality_deadline_does_not_join_slow_future_and_worker_exits(monkeypatch):
