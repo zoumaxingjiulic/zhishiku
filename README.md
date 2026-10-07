@@ -1,12 +1,12 @@
 # 企业智能体平台与部门知识库
 
-当前 API 版本为 `1.2.0`。1.2 在 1.1 的智能体、评测和持久化任务能力上增加企业总助手、显式意图识别、声明式 Skill 与统一工作台；1.1 的使用方法和历史验证范围仍见 [平台 1.1 说明](docs/platform-v11.md) 与 [部署验收记录](docs/verification-v11.md)。
+当前 API 版本为 `1.2.0`，提供企业总助手、专业问答智能体、知识库、MCP 系统连接、声明式 Skill、评测及运行审计。
 
 面向企业内网的单机部署知识库与企业智能体平台。当前已具备部门隔离、资料管理、文件夹、异步入库、混合检索、多轮 AI 问答、MCP 企业系统工具、账号管理、运行追踪及审计能力。
 
-平台正在从知识问答 MVP 演进为统一企业智能体平台；全局模块、权限边界、智能体运行形态、大模型网关与系统连接器路线见 [企业智能体平台全局设计](docs/enterprise-agent-platform-design.md)。知识库内部设计仍保持独立演进。
+平台的权限边界、智能体运行形态、大模型网关与系统连接器路线见 [企业智能体平台全局设计](docs/enterprise-agent-platform-design.md)。知识库内部设计保持独立演进。
 
-后端当前采用模块化单体：各业务域在一个 FastAPI 进程内独立组织 Router、Service、Repository 与 Schema，聊天、工作流和 MCP 等长流程放在 Runtime 层，数据库、对象存储和出站网络放在 Core/Infrastructure 边界。详细依赖方向、事务约束和扩展方式见 [后端架构说明](docs/architecture.md)。
+后端当前采用模块化单体：各业务域在一个 FastAPI 进程内独立组织 Router、Service、Repository 与 Schema，对话、检索、评测和 MCP 能力放在 Runtime 层，数据库、对象存储和出站网络放在 Core/Infrastructure 边界。详细依赖方向、事务约束和扩展方式见 [后端架构说明](docs/architecture.md)。
 
 办公网入口：<http://192.168.1.33:18080>
 
@@ -24,9 +24,9 @@
        ├─ OpenSearch：关键词/全文检索
        ├─ Infinity：本地 embedding、rerank
        ├─ DeepSeek API：最终回答与工具选择
-       └─ MCP：按账号直授或按专业智能体绑定的 ERP、OA、PLM、MOM 只读工具
+       └─ MCP：按账号直授或按专业智能体绑定的 ERP U9、OA、纵横标书只读工具
 
-Worker：从 MySQL ingestion_job 领取任务，执行解析/OCR、切片、向量化和全文索引。chat-runner 从 MySQL 领取总助手对话、专业智能体对话、兼容工作流和评测任务。
+Worker：从 MySQL ingestion_job 领取任务，执行解析/OCR、切片、向量化和全文索引。chat-runner 从 MySQL 领取总助手对话、专业智能体对话和评测任务。PLM、MOM 尚未接入。
 ~~~
 
 | 组件 | 版本/用途 |
@@ -64,32 +64,33 @@ Worker：从 MySQL ingestion_job 领取任务，执行解析/OCR、切片、向�
 | `clarification` | 缺少必要参数、置信度不足或请求专业智能体代办时，先澄清或引导到对应入口 |
 | `forbidden` | 越权或系统写操作，拒绝自动执行并记录审计 |
 
-总助手只自动执行 `readOnlyHint=true` 且当前账号获直接授权的系统工具，不能写入 ERP、OA、MOM 或 PLM，也不能通过 Skill 绕过知识库或工具权限。`agent_task` 不进入执行链路；专业智能体必须从“智能体”页面单独启动。
+总助手只自动执行 `readOnlyHint=true` 且当前账号获直接授权的系统工具，不能写入企业系统，也不能通过 Skill 绕过知识库或工具权限。专业智能体须从“智能体”页面单独启动。
 
-Skill 是管理员维护、带版本的声明式业务能力包，包含说明、触发示例、系统指令、输入 JSON Schema 以及知识库和只读工具依赖。总助手只展示依赖均在用户永久权限内、且不绑定专业智能体的 Skill。Skill 不能执行 Shell、原始 SQL、任意 URL 或未授权代码；复杂算法与长任务由经过测试并单独分发给用户的专业智能体承担。
+Skill 是管理员维护、带版本的声明式业务能力包，包含说明、触发示例、系统指令、输入 JSON Schema 以及知识库和只读工具依赖。总助手只展示依赖均在用户永久权限内、且不绑定专业智能体的 Skill。Skill 不能执行 Shell、原始 SQL、任意 URL 或未授权代码。
 
-低代码工作流已退役：平台只发布问答型专业智能体，不提供工作流创建、运行或审批 API。旧表与重复字段在经过备份、权限和检索策略核对的迁移 016 中删除；历史迁移文件保留以便已有库按顺序升级。
+当前平台发布问答型专业智能体；企业总助手与专业智能体的授权和会话相互独立。
 
-## 问答链路
+## 知识检索与专业问答链路
+
+企业总助手先执行上节的意图识别，只在选中 `knowledge_query` 或包含知识库的 `multi_capability` 时使用账号永久授权知识库检索；纯系统工具查询不会经过 Milvus 或 OpenSearch。专业问答智能体从“智能体”入口启动，使用管理员为该智能体绑定的知识库和只读工具，不执行总助手的顶层意图分类，也不会借用用户在总助手中的账号直授工具。两种入口共用下面的知识检索能力，但授权来源和回答编排不同：
 
 ~~~text
-用户问题
-→ 身份/部门/知识库/文件夹范围校验
-→ 读取同一会话最近的多轮上下文
-→ BGE-M3 生成问题向量
+当前入口的授权知识库范围 + 用户问题（可结合本会话历史改写检索问题）
+→ 在召回前限定知识库及可访问文档
+→ BGE-M3 生成检索问题向量
 → Milvus 语义召回 + OpenSearch 关键词召回
 → RRF 融合
 → BGE Reranker 重排序
 → 上下文去重与长度预算
-→ DeepSeek 基于最终切片生成回答与引用，或选择已授权 MCP 工具
-→ 保存引用、工具事件、各阶段耗时与匿名问题哈希
+→ 当前入口按检索切片、对话历史及允许的工具生成回答与引用
+→ 再校验授权，保存回答、引用、工具事件与运行记录
 ~~~
 
 - Milvus 使用 COSINE 度量。
 - BAAI/bge-m3 输出 1024 维向量。
-- 权限和范围过滤在检索、rerank、LLM 调用之前执行；跨部门资料不得进入候选集。
+- 总助手按部门继承和账号直授权限过滤文档；专业智能体按自身绑定的知识库过滤，两者均在生成回答前限制检索范围并在发布结果前复核权限。
 - 未配置模型 rerank 时系统会降级为本地词项重排序；当前已使用模型 rerank。
-- 每个智能体的检索参数统一保存于 `agent.settings_json.retrieval`，包括 `candidate_k`、`top_k`、`score_threshold`、`context_max_chars` 和 `history_messages`。原知识库绑定上的旧参数由迁移 015 对账搬迁。
+- 每个智能体的检索参数统一保存于 `agent.settings_json.retrieval`，包括 `candidate_k`、`top_k`、`score_threshold`、`context_max_chars` 和 `history_messages`。
 - MCP 工具必须在服务端明确声明 `readOnlyHint=true`。企业总助手只使用账号直授工具；专业智能体只使用自身绑定工具，两者都在执行时重新校验当前授权。
 
 ## MCP 企业系统连接
@@ -110,7 +111,7 @@ Skill 是管理员维护、带版本的声明式业务能力包，包含说明�
 → 只保存工具名、成功状态、耗时和追踪 ID，不保存业务结果
 ~~~
 
-当前已接入 ERP U9 料品查询与 OA 通讯录查询。系统连接页面可以查看连接状态和重新发现工具；账号直授权限在“用户与部门”维护，专业智能体绑定在“智能体工作室”维护。敏感写操作默认不接入；未来接入写工具时必须增加参数校验、人工确认、幂等键和审批审计。
+当前部署已配置 ERP U9、OA 和纵横标书三个 MCP 连接器，并发现各自的只读工具；“已连接/已发现”不等于已向每个账号授权，也不代表每项业务查询都已完成端到端验收。系统连接页面可以查看连接状态和重新发现工具；账号直授权限在“用户与部门”维护，专业智能体绑定在“智能体工作室”维护。敏感写操作默认不接入；未来接入写工具时必须增加参数校验、人工确认、幂等键和审批审计。
 
 ## 权限与资料模型
 
@@ -139,11 +140,11 @@ Skill 是管理员维护、带版本的声明式业务能力包，包含说明�
 ~~~text
 部门
  └─ 知识库（权限、管理与检索边界）
-     └─ 文件夹树（资料整理、范围限定）
+     └─ 文件夹树（资料整理）
          └─ 文档 → 文档版本 → 内容切片
 ~~~
 
-- 知识库不是文件夹：知识库承担权限与检索边界，文件夹仅整理资料。
+- 知识库不是文件夹：知识库承担权限与检索边界，文件夹仅整理资料；当前问答检索不按文件夹过滤。
 - 文件夹由 knowledge_folder 保存；非空文件夹不可删除。
 - 移动文件夹或文档只改 MySQL 元数据，不重新 OCR、切片或向量化。
 - document 是逻辑资料；document_version 记录原文件版本、对象路径、校验信息和处理状态。
@@ -169,11 +170,9 @@ Skill 是管理员维护、带版本的声明式业务能力包，包含说明�
 ~~~text
 deploy/
   docker-compose.yml              基础服务 Compose
-  docker-compose.models.yml       本地模型覆盖文件（服务器创建）
+  docker-compose.models.yml       本地模型覆盖文件
   verify-platform.py              平台集成与权限隔离验收
   apply-mysql-migration.sh        单个迁移执行器
-  backup-legacy-schema.sh         旧结构退役前整库备份及恢复演练
-  retire-legacy-schema.sh         经预检后执行旧结构物理清理
   queue-reindex.py                既有文档重建索引任务
 database/mysql/                   001~016 MySQL 初始化与增量迁移
 services/api/                     FastAPI 管理、检索、问答、审计
@@ -181,7 +180,7 @@ services/api/                     FastAPI 管理、检索、问答、审计
   app/core/                       配置、事务、安全、审计和出站策略
   app/domains/                    按业务域拆分的 Router/Service/Repository/Schema
   app/infrastructure/             对象存储等基础设施适配器
-  app/runtime/                    聊天、工作流、评测和 MCP 运行时
+  app/runtime/                    对话、检索、评测和 MCP 运行时
 services/worker/                  解析、OCR、切片、Embedding、索引
 services/frontend/                管理与问答前端
 ~~~
@@ -192,6 +191,7 @@ services/frontend/                管理与问答前端
 
 ~~~bash
 python -m pip install -r requirements-test.txt
+python -m pip install ./shared/python
 python -m pytest -q
 npm --prefix services/frontend ci
 npm --prefix services/frontend run lint
@@ -266,38 +266,9 @@ vm.max_map_count=262144 是 OpenSearch 必需内核参数，应在生产系统�
 
 ModelScope 用于下载模型文件；Infinity 从本地加载权重并提供 HTTP 推理服务。
 
-服务器的 deploy/docker-compose.models.yml：
+模型服务配置以 [本地模型 Compose 文件](deploy/docker-compose.models.yml) 为准，避免在 README 里维护第二份 YAML。模型权重目录只读挂载，当前 Infinity 限额为 16 核、24 GB 内存；这是上限，不代表启动即占满。Infinity 不开放宿主机端口，仅供内部 Docker 网络调用。
 
-~~~yaml
-services:
-  infinity:
-    image: michaelf34/infinity:latest-cpu
-    restart: unless-stopped
-    command: >
-      v2 --engine torch
-      --model-id /models/bge-m3
-      --served-model-name BAAI/bge-m3
-      --model-id /models/bge-reranker-v2-m3
-      --served-model-name BAAI/bge-reranker-v2-m3
-      --port 7997
-    environment:
-      HF_HOME: /app/.cache
-      HF_HUB_DISABLE_TELEMETRY: "1"
-      OMP_NUM_THREADS: "6"
-    volumes:
-      - ${DATA_ROOT}/models/infinity:/app/.cache
-      - ${DATA_ROOT}/models/source:/models:ro
-    cpus: 6
-    mem_limit: 24g
-    networks:
-      - kb-internal
-~~~
-
-- 模型目录以只读方式挂载。
-- cpus: 6、mem_limit: 24g 是模型服务上限，不代表启动即占满。
-- Infinity 不开放宿主机端口，仅供 API/Worker 的内部 Docker 网络调用。
-
-当前 .env 的模型部分：
+本地模型环境配置示例（部署时以服务器实际 `.env` 为准）：
 
 ~~~dotenv
 MODEL_ALLOWED_HOSTS=dashscope.aliyuncs.com,infinity
@@ -391,158 +362,15 @@ PY
 
 不要执行 docker compose down -v，也不要对生产数据目录执行 rm -rf，除非已完成备份并明确需要清库。
 
-## 当前 014 权限迁移与回滚边界
+## 数据库初始化与升级
 
-014 只新增账号知识库、账号只读工具和账号智能体三类 ACL，并把启用部门的旧智能体分发一次性展开为用户分发；不会更改知识库正文、文档、切片、MinIO、Milvus 或 OpenSearch。部署前必须完成数据库备份与恢复演练，随后执行：
+全新 MySQL 数据目录由镜像按文件名顺序执行 001–016 初始化脚本；已有数据目录不会重新执行初始化 SQL。升级已有库前必须备份并在隔离环境恢复验证，核对已应用迁移和当前表结构后按 [部署说明](deploy/README.md#遗留结构退役) 与 [MySQL 迁移说明](database/mysql/README.md) 执行，不能直接重放初始化脚本。
 
-~~~bash
-bash deploy/apply-mysql-migration.sh database/mysql/014_user_scoped_capabilities.sql
-~~~
+当前生产环境已完成 015–016，不应重新执行。备份和核对记录留在服务器受控目录，不提交仓库。
 
-014 部署后的应用不再同步 `agent_department_acl`。一旦管理员在新版本中修改过账号或智能体权限，禁止只回滚应用代码，否则旧代码可能按陈旧部门授权放大权限。此时优先前向修复；确需整体回退时，只能在维护窗口恢复已验证的 014 前数据库备份，并单独核对备份后新增的业务数据。
+## 验收和排查
 
-## 历史：1.2 / 013 增量部署、健康检查与回滚
-
-以下是 013 阶段保留的历史生产/验收步骤，不代表 014 的回滚策略。本地测试不会自动执行。先确认当前提交、目标环境与维护窗口；不要在未授权环境运行备份、迁移、构建或重启。
-
-### 1. 备份并应用 013
-
-013 只新增企业总助手种子、意图决策表、Skill 表和绑定表。它不修改或重建知识库、文档、切片、MinIO 对象、Milvus 集合、OpenSearch 索引，也不删除历史工作流。既有环境只能执行一次；已执行的迁移文件不得修改。
-
-先用同版本、同配置的完整备份在隔离环境做恢复演练，确认可以登录并核对关键表；只有恢复演练通过后才能把 `BACKUP_RESTORE_VERIFIED` 设为 `yes`。下面脚本启用 fail-fast：转储先写入权限受限的临时文件，只有命令成功、文件非空且包含 MySQL 转储头和完成标记时才原子改名；任一步失败或恢复验证闸门未打开都不会执行 013。首次不设置闸门运行会安全停在迁移前，可用打印出的最终文件做恢复演练；通过后设置闸门重新运行，脚本会再生成并保留一份迁移前有效备份。
-
-~~~bash
-cd /home/ai/zhishiku
-set -euo pipefail
-umask 077
-
-backup_dir=backup
-mkdir -p "$backup_dir"
-chmod 700 "$backup_dir"
-backup_stamp="$(date +%Y%m%d-%H%M%S)"
-backup_tmp="$(mktemp "${backup_dir}/.mysql-before-013-${backup_stamp}.XXXXXX")"
-backup_final="${backup_dir}/mysql-before-013-${backup_stamp}.sql"
-
-cleanup_backup() { rm -f -- "$backup_tmp"; }
-trap cleanup_backup EXIT HUP INT TERM
-
-docker compose --env-file .env \
-  -f deploy/docker-compose.yml \
-  -f deploy/docker-compose.models.yml \
-  exec -T mysql sh -ec \
-  'exec mysqldump --single-transaction --routines --triggers -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE"' \
-  > "$backup_tmp"
-
-test -s "$backup_tmp"
-grep -aFq -- '-- MySQL dump ' "$backup_tmp"
-grep -aFq -- '-- Dump completed on ' "$backup_tmp"
-chmod 600 "$backup_tmp"
-test ! -e "$backup_final"
-mv -- "$backup_tmp" "$backup_final"
-trap - EXIT HUP INT TERM
-printf 'backup ready: %s\n' "$backup_final"
-
-test -s "$backup_final"
-grep -aFq -- '-- Dump completed on ' "$backup_final"
-test "${BACKUP_RESTORE_VERIFIED:-no}" = yes
-bash deploy/apply-mysql-migration.sh database/mysql/013_enterprise_assistant.sql
-~~~
-
-不要删除或覆盖打印出的 `backup_final`；至少保留到 013、应用回滚窗口和真实账号验收全部结束。恢复演练必须使用隔离数据库/环境，不得覆盖生产库；记录备份文件名、校验值和演练结果，但不要记录密码或业务数据。`MYSQL_ROOT_PASSWORD` 只在 MySQL 容器内由 `.env` 注入并展开，不出现在宿主机命令参数或日志中。
-
-迁移后应检查新表和保留数据，不输出凭据或业务正文：
-
-~~~bash
-docker compose --env-file .env -f deploy/docker-compose.yml exec -T mysql sh -c \
-  'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" -e \
-  "SHOW TABLES LIKE '\''assistant_%'\''; SELECT id,code,status FROM agent WHERE code='\''ENTERPRISE_ASSISTANT'\'';"'
-~~~
-
-### 2. 构建并使用双 Compose 文件启动
-
-重启前先更新现有 `.env`：它不会自动继承新版 `.env.example`。本地模型必须在 `MODEL_ALLOWED_HOSTS` 中包含 `infinity`，并将 `MODEL_ALLOWED_CIDRS` 配置为网络实际子网；核对命令为 `docker network inspect enterprise-kb-internal --format '{{range .IPAM.Config}}{{println .Subnet}}{{end}}'`，只输出子网、不输出秘密。示例 `172.16.0.0/12` 仅覆盖上述常见 Docker 范围；实际网络不在其中时须调整。保留现有凭据与仍在使用的精确外部模型主机，不要覆盖整个 `.env`。
-
-本地 Infinity 只定义在 `deploy/docker-compose.models.yml`，所以构建、启动、查看状态和后续重启都必须同时带两个文件；当前仓库没有为此定义 Compose profile。
-
-~~~bash
-docker compose --env-file .env \
-  -f deploy/docker-compose.yml \
-  -f deploy/docker-compose.models.yml \
-  build api worker frontend
-
-docker compose --env-file .env \
-  -f deploy/docker-compose.yml \
-  -f deploy/docker-compose.models.yml \
-  up -d
-~~~
-
-### 3. 区分 liveness 与 readiness
-
-~~~bash
-docker compose --env-file .env \
-  -f deploy/docker-compose.yml \
-  -f deploy/docker-compose.models.yml ps
-
-# 仅读取仓库实际使用的 HOST_BIND_IP/API_PORT；不 source 含凭据的 .env
-read_dotenv_value() {
-  sed -n "s/^$1=//p" .env | tail -n 1 | tr -d '\r'
-}
-api_health_host="${HOST_BIND_IP:-$(read_dotenv_value HOST_BIND_IP)}"
-api_health_port="${API_PORT:-$(read_dotenv_value API_PORT)}"
-api_health_host="${api_health_host:-127.0.0.1}"
-api_health_port="${api_health_port:-8000}"
-
-# API liveness：进程可响应，不代表依赖已就绪
-curl -fsS "http://${api_health_host}:${api_health_port}/healthz"
-
-# API readiness：MySQL、MinIO、Milvus、OpenSearch 与模型依赖可用
-curl -fsS "http://${api_health_host}:${api_health_port}/readyz"
-
-# 前端稳定健康端点；不依赖首页标题或其他页面文案
-docker compose --env-file .env \
-  -f deploy/docker-compose.yml \
-  -f deploy/docker-compose.models.yml \
-  exec -T frontend wget -qO- http://127.0.0.1/healthz
-
-# Infinity 模型目录，应包含 embedding 与 rerank 模型
-docker compose --env-file .env \
-  -f deploy/docker-compose.yml \
-  -f deploy/docker-compose.models.yml \
-  exec -T api python -c \
-  'import httpx; r=httpx.get("http://infinity:7997/models",timeout=30); r.raise_for_status(); print(r.json())'
-~~~
-
-API 地址使用仓库 Compose 已定义的 `HOST_BIND_IP` 与 `API_PORT`，变量未设置时分别回退到 `.env.example` 的 `127.0.0.1` 与 `8000`；脚本不会 `source` 整份 `.env`。`/healthz` 是 liveness；只有 `/readyz` 成功且前端、Infinity 与容器状态均正常，才进入账号业务验收。
-
-### 4. 停止发布与回滚
-
-任一迁移、readiness、权限隔离或真实账号验收失败时，立即停止发布，不把新版本加入办公网流量。先保存提交号、迁移时间、镜像标签、容器状态和仅含错误类型的日志；不要在日志中复制 Token、密码或业务结果。
-
-013 是向后兼容的增量表结构，优先把应用回滚到上一个已验收提交/镜像，并保留 013 新表等待修复，旧版本会忽略它们：
-
-~~~bash
-git checkout <previous-tested-commit>
-docker compose --env-file .env \
-  -f deploy/docker-compose.yml \
-  -f deploy/docker-compose.models.yml \
-  up -d --build
-~~~
-
-不要临时 `DROP` 013 表。只有确认迁移造成必须恢复的数据问题、停止写入并经过变更审批后，才在维护窗口从 `backup/mysql-before-013-*.sql` 恢复整个 MySQL 备份；恢复会覆盖备份时间之后的数据库写入，必须先评估和保全增量数据。不得执行 `docker compose down -v`，也不得删除 `data/`。
-
-### 5. 真实账号验收清单
-
-使用管理员和两个不同部门普通账号验证：部门继承与账号直授权限、总助手会话/任务隔离、知识问答与引用、账号直授 ERP/OA/纵横标书只读调用、专业智能体分发及其会话临时权限、页面切换后任务恢复、越权与写操作拒绝、运行追踪和审计记录。记录 Git 提交、迁移时间、镜像、命令结果和未通过项；“页面可打开”不等于业务验收通过。
-
-## 数据库迁移、验收和排查
-
-全新 MySQL 数据目录会由官方 MySQL 镜像按文件名顺序自动执行挂载目录中的全部 SQL，即当前的 `001_initial_schema.sql` 至 `014_user_scoped_capabilities.sql`；数据目录初始化后不会再次自动执行。既有环境的后续迁移每个文件只能执行一次，例如当前最新迁移：
-
-~~~bash
-bash deploy/apply-mysql-migration.sh database/mysql/014_user_scoped_capabilities.sql
-~~~
-
-历史迁移见 [database/mysql/README.md](database/mysql/README.md)。已执行过的迁移绝不能修改或重写。
+迁移步骤见上一节和 [MySQL 迁移说明](database/mysql/README.md)；已执行的迁移不能重写或重复执行。
 
 完成迁移后，在已确认的验收环境运行当前平台集成验收（会创建并清理临时业务数据）：
 
@@ -553,7 +381,7 @@ docker compose --env-file .env \
   exec -T api python - < deploy/verify-platform.py
 ~~~
 
-它验证部门与文档权限、上传和父子切片、双路索引、混合检索与 rerank、配置版本、评测、持久化对话与幂等、模型回答与引用、反馈所有权、任务取消，以及旧工作流 API 已不可用。脚本清理本次创建的资料与智能体，停用临时账号和部门、归档临时知识库并保留审计记录；既有历史验收记录见 [平台 1.1 验收记录](docs/verification-v11.md)。MCP 连接发现与工具授权另在系统连接页面验证，验收时不要调用会产生业务副作用的工具。
+它验证部门与文档权限、上传和父子切片、双路索引、混合检索与 rerank、配置版本、评测、持久化对话与幂等、模型回答与引用、反馈所有权及任务取消。脚本清理本次创建的资料与智能体，停用临时账号和部门、归档临时知识库并保留审计记录。MCP 连接发现与工具授权另在系统连接页面验证；不要对真实业务数据调用有副作用的工具。
 
 本地质量门禁与容器构建检查见 [部署说明](deploy/README.md#本地质量门禁与镜像构建)。API 与 chat-runner 复用 `enterprise-kb-api:${APP_IMAGE_TAG:-local}` 镜像，更新时一起重建、重建容器以保持版本一致。
 
@@ -578,4 +406,4 @@ docker compose --env-file .env \
 新集合 → 全量重向量化 → 抽样验收 → 切换查询 → 保留旧集合回滚 → 最终清理
 ~~~
 
-当前没有正式资料，因此已从 kb_content_units_qwen37_v1 直接切换到 kb_content_units_bge_m3_v1，无需历史重向量化。
+当前检索集合为 `kb_content_units_bge_m3_v1`。日后更换 embedding 模型时，应按上面的步骤新建集合并重建已有资料索引，不能仅因新旧模型都是 1024 维就复用向量。
