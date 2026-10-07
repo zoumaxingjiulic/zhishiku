@@ -93,5 +93,3 @@ bash deploy/retire-legacy-schema.sh "$BACKUP_DIR/enterprise_kb.sql"
 ```
 
 退役脚本不接受用户传入的策略快照；它会重新读取当前生产库的有效策略，与绑定到这次备份的迁移前快照核对。016 还会检查旧 ACL 是否全部转为用户授权、旧工作流和文档资产是否为空、旧模型列是否为空及其他表是否新增外键。只有检查全部通过才删除 `workflow_run`、`user_role`、`app_role`、`agent_department_acl`、`document_asset` 和三个重复列。`document_department_acl`、现用用户 ACL、文档和索引都保留。DDL 不能作为单一事务回滚；若中途失败，不要只回滚应用镜像，保留备份并先排查数据库实际状态。
-
-`017_align_enterprise_assistant_prompt.sql` 只修正企业总助手原始默认描述和系统提示词，不覆盖管理员自定义内容，不修改表结构。已有库在 016 完成后执行一次；新库初始化时自动执行。
