@@ -495,6 +495,77 @@ def test_mcp_tool_result_validates_bound_output_schema_and_rebuilds_content(monk
         chat.execute_bound_tool(tool, {})
 
 
+def test_mcp_tool_result_preserves_many_business_records_within_byte_budget(monkeypatch):
+    """A valid certificate list must not fail merely because it has many fields."""
+    from app.runtime import chat
+
+    class Runtime:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def call_tool(self, name, arguments):
+            return {"structuredContent": {"records": [
+                {"id": index, "name": f"certificate-{index}", "source": "external"}
+                for index in range(150)
+            ]}}
+
+    monkeypatch.setattr(chat, "StreamableHttpMcpClient", Runtime)
+    monkeypatch.setattr(chat, "decrypt_credential", lambda value: "")
+    tool = {
+        "base_url": "https://certs.test/mcp", "protocol_version": "2025-06-18",
+        "tool_name": "expiring_certificates", "connector_code": "CERTS",
+        "connector_name": "Certificates", "output_schema": {},
+    }
+    result, event = chat.execute_bound_tool(tool, {})
+    assert len(result["records"]) == 150
+    assert result["records"][149] == {"id": 149, "name": "certificate-149", "source": "external"}
+    assert event["success"] is True
+
+
+def test_mcp_tool_content_preserves_more_than_one_hundred_blocks(monkeypatch):
+    from app.runtime import chat
+
+    class Runtime:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def call_tool(self, name, arguments):
+            return {"content": [{"type": "text", "text": f"record-{index}"} for index in range(101)]}
+
+    monkeypatch.setattr(chat, "StreamableHttpMcpClient", Runtime)
+    monkeypatch.setattr(chat, "decrypt_credential", lambda value: "")
+    tool = {
+        "base_url": "https://certs.test/mcp", "protocol_version": "2025-06-18",
+        "tool_name": "expiring_certificates", "connector_code": "CERTS",
+        "connector_name": "Certificates", "output_schema": {},
+    }
+    result, _ = chat.execute_bound_tool(tool, {})
+    assert len(result["content"]) == 101
+    assert result["content"][-1] == {"type": "text", "text": "record-100"}
+
+
+def test_mcp_tool_result_still_rejects_oversized_payload(monkeypatch):
+    from app.runtime import chat
+    from app.runtime.mcp import McpError
+
+    class Runtime:
+        def __init__(self, *args, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def call_tool(self, name, arguments):
+            return {"structuredContent": {"records": ["x" * 30_000 for _ in range(9)]}}
+
+    monkeypatch.setattr(chat, "StreamableHttpMcpClient", Runtime)
+    monkeypatch.setattr(chat, "decrypt_credential", lambda value: "")
+    tool = {
+        "base_url": "https://certs.test/mcp", "protocol_version": "2025-06-18",
+        "tool_name": "expiring_certificates", "connector_code": "CERTS",
+        "connector_name": "Certificates", "output_schema": {},
+    }
+    with pytest.raises(McpError, match="大小上限"):
+        chat.execute_bound_tool(tool, {})
+
+
 def test_discover_identity_closes_its_connection_before_return(monkeypatch):
     from app.domains.connectors import router
 

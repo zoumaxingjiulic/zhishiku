@@ -28,7 +28,6 @@ from ..quality import RetrievalPolicy, retrieval_query
 log = logging.getLogger("kb-api.chat")
 
 MAX_TOOL_RESULT_DEPTH = 16
-MAX_TOOL_RESULT_ITEMS = 500
 MAX_TOOL_TEXT_CHARS = 32_000
 MAX_TOOL_RESULT_BYTES = 256 * 1024
 
@@ -56,17 +55,13 @@ def load_runtime_user(user_id: int) -> dict:
         return AuthService(uow, AuthRepository(uow.cursor)).load_user(user_id)
 
 
-def _bounded_tool_value(value, depth: int = 0, counter: list[int] | None = None):
+def _bounded_tool_value(value, depth: int = 0):
     if depth > MAX_TOOL_RESULT_DEPTH:
         raise McpError("MCP 工具结果层级超过上限")
-    counter = counter or [0]
-    counter[0] += 1
-    if counter[0] > MAX_TOOL_RESULT_ITEMS:
-        raise McpError("MCP 工具结果条目超过上限")
     if isinstance(value, dict):
-        clean = {str(key): _bounded_tool_value(item, depth + 1, counter) for key, item in value.items()}
+        clean = {str(key): _bounded_tool_value(item, depth + 1) for key, item in value.items()}
     elif isinstance(value, list):
-        clean = [_bounded_tool_value(item, depth + 1, counter) for item in value]
+        clean = [_bounded_tool_value(item, depth + 1) for item in value]
     elif value is None or isinstance(value, (bool, int, float)):
         clean = value
     elif isinstance(value, str):
@@ -81,8 +76,8 @@ def _bounded_tool_value(value, depth: int = 0, counter: list[int] | None = None)
 
 
 def _safe_tool_content(content) -> list[dict]:
-    if not isinstance(content, list) or len(content) > 100:
-        raise McpError("MCP 工具内容格式无效或条目过多")
+    if not isinstance(content, list):
+        raise McpError("MCP 工具内容格式无效")
     clean = []
     for item in content:
         if not isinstance(item, dict):
