@@ -75,13 +75,11 @@ Do not roll back application code alone after any permission edit made by the 01
 
 已有库不能直接运行 `016_bootstrap.sql`，也不能通过通用迁移命令运行 `manual/016_retire_legacy_schema.sql`。当前 `schema_migration` 台账从 015 开始；001–014 仍须按表结构和既有部署记录确认，不能重复执行。详细步骤见 [退役操作手册](../../deploy/README.md#遗留结构退役)。
 
-在维护窗口先执行 `bash deploy/backup-legacy-schema.sh`。脚本对整库做一致性逻辑备份、SHA-256 校验、临时数据库恢复及关键表计数对账；只在全部成功后写入同目录的 `.verified` 标记，并删除精确命名的临时库。备份在 `backups/`，已被 Git 忽略，不得上传仓库。保存脚本打印的备份路径。
+在维护窗口先执行 `bash deploy/backup-legacy-schema.sh`。脚本对整库做一致性逻辑备份、SHA-256 校验、临时数据库恢复及关键表计数对账，并生成迁移前有效检索策略快照；只有精确命名的临时库删除成功后，才写入同时绑定备份及快照哈希的 `.verified` 标记。备份在 `backups/`，已被 Git 忽略，不得上传仓库。保存脚本打印的备份路径。
 
-在备份目录记录 015 前后的有效策略：
+备份脚本已在备份目录生成 `retrieval-before.json`。先执行非破坏性 015，再现场核对当前有效策略：
 
 ```bash
-docker compose --env-file .env -f deploy/docker-compose.yml exec -T api \
-  python - --phase before < deploy/verify-legacy-migration.py > "$BACKUP_DIR/retrieval-before.json"
 bash deploy/apply-mysql-migration.sh database/mysql/015_consolidate_agent_retrieval.sql
 docker compose --env-file .env -f deploy/docker-compose.yml exec -T api \
   python - --phase after < deploy/verify-legacy-migration.py > "$BACKUP_DIR/retrieval-after.json"
@@ -91,10 +89,7 @@ cmp "$BACKUP_DIR/retrieval-before.json" "$BACKUP_DIR/retrieval-after.json"
 其中 `BACKUP_DIR` 应明确设置为刚完成恢复验证的备份文件所在目录；不要把示例当作自动赋值。冲突、无效旧策略或策略差异必须先处理，不能跳过。迁移 015 只合并仍有效的检索配置，不改文档、切片和索引。发布不再使用旧结构的新应用并完成登录、权限、问答、评测和健康检查后，运行：
 
 ```bash
-bash deploy/retire-legacy-schema.sh \
-  "$BACKUP_DIR/enterprise_kb.sql" \
-  "$BACKUP_DIR/retrieval-before.json" \
-  "$BACKUP_DIR/retrieval-after.json"
+bash deploy/retire-legacy-schema.sh "$BACKUP_DIR/enterprise_kb.sql"
 ```
 
-016 在删除前再次检查备份验证标记、策略对账、旧 ACL 是否全部转为用户授权、旧工作流和文档资产是否为空、旧模型列是否为空及其他表是否新增外键。只有检查全部通过才删除 `workflow_run`、`user_role`、`app_role`、`agent_department_acl`、`document_asset` 和三个重复列。`document_department_acl`、现用用户 ACL、文档和索引都保留。DDL 不能作为单一事务回滚；若中途失败，不要只回滚应用镜像，保留备份并先排查数据库实际状态。
+退役脚本不接受用户传入的策略快照；它会重新读取当前生产库的有效策略，与绑定到这次备份的迁移前快照核对。016 还会检查旧 ACL 是否全部转为用户授权、旧工作流和文档资产是否为空、旧模型列是否为空及其他表是否新增外键。只有检查全部通过才删除 `workflow_run`、`user_role`、`app_role`、`agent_department_acl`、`document_asset` 和三个重复列。`document_department_acl`、现用用户 ACL、文档和索引都保留。DDL 不能作为单一事务回滚；若中途失败，不要只回滚应用镜像，保留备份并先排查数据库实际状态。

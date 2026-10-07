@@ -44,7 +44,7 @@ docker compose --env-file .env \
 
 此步骤仅适用于从 014 升级的已有库。新库由 MySQL 初始化脚本自动执行 015 和 `016_bootstrap.sql`；不能把 bootstrap 脚本用于生产升级。详细数据门槛见 [MySQL 迁移说明](../database/mysql/README.md#015016遗留工作流与旧权限表退役)。
 
-先在维护窗口执行 `bash deploy/backup-legacy-schema.sh`，它会生成整库备份、SHA-256 和关键表计数，再在精确命名的临时库恢复并对账。将输出中的备份目录明确设置为 `BACKUP_DIR`，不要把备份文件或 `.env` 提交 Git。用 `deploy/verify-legacy-migration.py` 分别采集 015 前后有效检索策略并 `cmp` 确认一致，之后发布新版 API、chat-runner、worker 和前端。完成登录、知识库、授权问答、评测和健康烟测后，运行 `bash deploy/retire-legacy-schema.sh "$BACKUP_DIR/enterprise_kb.sql" "$BACKUP_DIR/retrieval-before.json" "$BACKUP_DIR/retrieval-after.json"`。脚本会再次验证备份哈希和策略文件；SQL 会阻断未回填 ACL、非空旧工作流/文档资产或其他遗留数据。删除目标表后只回滚应用镜像是不安全的。
+先在维护窗口执行 `bash deploy/backup-legacy-schema.sh`，它会生成整库备份、SHA-256 和迁移前有效策略快照，再在精确命名的临时库恢复并对账、删除该临时库。将输出中的备份目录明确设置为 `BACKUP_DIR`，不要把备份文件或 `.env` 提交 Git。执行 015 并核对策略一致后，发布新版 API、chat-runner、worker 和前端。完成登录、知识库、授权问答、评测和健康烟测后，运行 `bash deploy/retire-legacy-schema.sh "$BACKUP_DIR/enterprise_kb.sql"`。该脚本会现场重新计算当前策略，并与绑定到备份哈希的迁移前快照比较；SQL 会阻断未回填 ACL、非空旧工作流/文档资产或其他遗留数据。删除目标表后只回滚应用镜像是不安全的。
 
 Compose 的一次性 `minio-init` 服务等待 MinIO healthy 后，使用同一固定版本镜像中的 `mc`，按 `MINIO_BUCKET` 幂等创建桶（`mc mb --ignore-existing`）；桶已存在时也成功退出。API 等待初始化成功退出后才启动，Worker 仍只等待 MinIO healthy。初始化失败时检查 `.env` 中的 MinIO 凭据和桶名后重新启动服务；初始化命令不输出凭据。API 启动和 readiness 探针都不创建桶。
 

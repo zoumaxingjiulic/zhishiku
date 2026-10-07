@@ -16,6 +16,25 @@ CREATE PROCEDURE migrate_agent_retrieval_015()
 BEGIN
     DECLARE invalid_count BIGINT DEFAULT 0;
     DECLARE conflict_count BIGINT DEFAULT 0;
+    DECLARE policy_schema JSON;
+
+    -- The previous runtime clipped several numeric fields before constructing
+    -- RetrievalPolicy. Directly copying an out-of-range JSON object would
+    -- break both the old (after 015) and new runtime. Stop before any UPDATE;
+    -- resolve such rows explicitly to their effective, normalized policy.
+    SET policy_schema = '{"type":"object","properties":{
+      "mode":{"type":"string","enum":["hybrid","vector","keyword"]},
+      "candidate_k":{"type":"integer","minimum":5,"maximum":100},
+      "top_k":{"type":"integer","minimum":1,"maximum":20},
+      "rerank_enabled":{"type":"boolean"},
+      "score_threshold":{"type":["number","null"],"minimum":0,"maximum":1},
+      "context_max_chars":{"type":"integer","minimum":2000,"maximum":40000},
+      "history_messages":{"type":"integer","minimum":0,"maximum":30},
+      "query_rewrite":{"type":"boolean"},
+      "parent_context":{"type":"boolean"},
+      "max_tool_rounds":{"type":"integer","minimum":1,"maximum":5},
+      "max_tool_calls":{"type":"integer","minimum":1,"maximum":12}
+    }}';
 
     IF EXISTS (SELECT 1 FROM schema_migration WHERE version = 15) THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Migration 015 already applied';
@@ -35,6 +54,19 @@ BEGIN
             AND JSON_TYPE(JSON_EXTRACT(a.settings_json, '$.retrieval')) NOT IN ('OBJECT', 'NULL')));
     IF invalid_count <> 0 THEN
         SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Invalid legacy or published retrieval JSON';
+    END IF;
+
+    SELECT COUNT(*) INTO invalid_count
+    FROM agent a JOIN agent_knowledge_base ak ON ak.agent_id = a.id
+    WHERE ak.retrieval_config_json IS NOT NULL
+      AND (JSON_EXTRACT(a.settings_json, '$.retrieval') IS NULL
+           OR JSON_TYPE(JSON_EXTRACT(a.settings_json, '$.retrieval')) = 'NULL'
+           OR JSON_LENGTH(JSON_EXTRACT(a.settings_json, '$.retrieval')) = 0)
+      AND (JSON_SCHEMA_VALID(policy_schema, ak.retrieval_config_json) = 0
+           OR CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(ak.retrieval_config_json, '$.top_k')), '8') AS UNSIGNED)
+              > CAST(COALESCE(JSON_UNQUOTE(JSON_EXTRACT(ak.retrieval_config_json, '$.candidate_k')), '40') AS UNSIGNED));
+    IF invalid_count <> 0 THEN
+        SIGNAL SQLSTATE '45000' SET MESSAGE_TEXT = 'Invalid legacy retrieval JSON; normalize effective policy first';
     END IF;
 
     SELECT COUNT(*) INTO conflict_count FROM (

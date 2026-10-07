@@ -13,11 +13,15 @@ VERIFY_DB="enterprise_kb_retirement_verify_$(date -u +%Y%m%d%H%M%S)_$$"
 
 compose=(docker compose --env-file .env -f deploy/docker-compose.yml)
 created=0
+drop_verify_database() {
+  [[ "$VERIFY_DB" =~ ^enterprise_kb_retirement_verify_[0-9]{14}_[0-9]+$ ]] || return 1
+  printf 'DROP DATABASE `%s`;\n' "$VERIFY_DB" |
+    "${compose[@]}" exec -T mysql sh -c \
+      'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD"' >/dev/null
+}
 cleanup() {
-  if (( created == 1 )) && [[ "$VERIFY_DB" =~ ^enterprise_kb_retirement_verify_[0-9]{14}_[0-9]+$ ]]; then
-    printf 'DROP DATABASE `%s`;\n' "$VERIFY_DB" |
-      "${compose[@]}" exec -T mysql sh -c \
-        'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD"' >/dev/null
+  if (( created == 1 )); then
+    drop_verify_database || echo "WARNING: temporary restore database needs manual cleanup: $VERIFY_DB" >&2
   fi
 }
 trap cleanup EXIT
@@ -65,6 +69,14 @@ printf '%s\n' "$COUNT_SQL" | "${compose[@]}" exec -e VERIFY_DATABASE="$VERIFY_DB
   > "$BACKUP_DIR/restored-counts.tsv"
 diff -u "$BACKUP_DIR/source-counts.tsv" "$BACKUP_DIR/restored-counts.tsv"
 
-cut -d ' ' -f 1 "$BACKUP_DIR/enterprise_kb.sql.sha256" > "$BACKUP_DIR/enterprise_kb.sql.verified"
+"${compose[@]}" exec -T api python - --phase before \
+  < deploy/verify-legacy-migration.py > "$BACKUP_DIR/retrieval-before.json"
+test -s "$BACKUP_DIR/retrieval-before.json"
+
+drop_verify_database
+created=0
+backup_sha="$(sha256sum "$BACKUP_FILE" | cut -d ' ' -f 1)"
+policy_sha="$(sha256sum "$BACKUP_DIR/retrieval-before.json" | cut -d ' ' -f 1)"
+printf '%s\n%s\n' "$backup_sha" "$policy_sha" > "$BACKUP_DIR/enterprise_kb.sql.verified"
 echo "Verified backup: $BACKUP_FILE"
-echo "Restore drill matched key table counts; temporary database will be removed."
+echo "Restore drill matched key table counts; temporary database removed."

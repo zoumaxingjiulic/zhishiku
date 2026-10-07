@@ -74,3 +74,26 @@ def test_retirement_sql_requires_backup_policy_and_acl_preflight():
         assert required in sql
     assert sql.index("DROP TABLE user_role") < sql.index("DROP TABLE app_role")
     assert "DROP TABLE document_department_acl" not in sql
+
+
+def test_preparation_sql_rejects_legacy_values_that_old_runtime_clamped():
+    sql = (ROOT / "database" / "mysql" / "015_consolidate_agent_retrieval.sql").read_text(
+        encoding="utf-8"
+    )
+    assert "JSON_SCHEMA_VALID" in sql
+    assert "Invalid legacy retrieval JSON" in sql
+    assert sql.index("Invalid legacy retrieval JSON") < sql.index("START TRANSACTION")
+
+
+def test_retirement_wrapper_rechecks_live_policy_instead_of_accepting_two_files():
+    script = (ROOT / "deploy" / "retire-legacy-schema.sh").read_text(encoding="utf-8")
+    assert "--phase after" in script
+    assert "retrieval-before.json" in script
+    assert "retrieval-after-" in script
+    assert "cmp --silent" in script
+    assert "if [[ $# -ne 1 ]]" in script
+
+
+def test_backup_marker_is_written_after_temporary_database_is_removed():
+    script = (ROOT / "deploy" / "backup-legacy-schema.sh").read_text(encoding="utf-8")
+    assert script.index("drop_verify_database\ncreated=0") < script.index("enterprise_kb.sql.verified")
