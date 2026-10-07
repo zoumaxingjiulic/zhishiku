@@ -14,9 +14,9 @@ from app.quality import RetrievalPolicy
 
 tag = 'QA_' + uuid.uuid4().hex[:10].upper()
 with connect() as conn, conn.cursor() as c:
-    c.execute("SELECT u.id FROM app_user u JOIN user_department ud ON ud.user_id=u.id JOIN department d ON d.id=ud.department_id WHERE d.code='PLATFORM_ADMIN' AND u.status=1 AND u.deleted_at IS NULL LIMIT 1")
-    admin_id = c.fetchone()['id']
-admin = httpx.Client(base_url='http://127.0.0.1:8000', headers={'Authorization':'Bearer '+create_token(admin_id)}, timeout=180)
+    c.execute("SELECT u.id,u.password_changed_at FROM app_user u JOIN user_department ud ON ud.user_id=u.id JOIN department d ON d.id=ud.department_id WHERE d.code='PLATFORM_ADMIN' AND u.status=1 AND u.deleted_at IS NULL LIMIT 1")
+    admin_row = c.fetchone()
+admin = httpx.Client(base_url='http://127.0.0.1:8000', headers={'Authorization':'Bearer '+create_token(admin_row['id'], admin_row['password_changed_at'])}, timeout=180)
 created = {'agents':[], 'users':[], 'departments':[], 'documents':[], 'kbs':[]}
 checks = []
 
