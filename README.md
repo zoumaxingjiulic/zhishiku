@@ -174,7 +174,7 @@ deploy/
   verify-platform.py              平台集成与权限隔离验收
   apply-mysql-migration.sh        单个迁移执行器
   queue-reindex.py                既有文档重建索引任务
-database/mysql/                   001~016 MySQL 初始化与增量迁移
+database/mysql/                   001~017 MySQL 初始化与增量迁移
 services/api/                     FastAPI 管理、检索、问答、审计
   app/application.py              应用工厂、生命周期、异常处理和路由装配
   app/core/                       配置、事务、安全、审计和出站策略
@@ -364,7 +364,7 @@ PY
 
 ## 数据库初始化与升级
 
-全新 MySQL 数据目录由镜像按文件名顺序执行 001–016 初始化脚本；已有数据目录不会重新执行初始化 SQL。升级已有库前必须备份并在隔离环境恢复验证，核对已应用迁移和当前表结构后按 [部署说明](deploy/README.md#遗留结构退役) 与 [MySQL 迁移说明](database/mysql/README.md) 执行，不能直接重放初始化脚本。
+全新 MySQL 数据目录由镜像按文件名顺序执行 001–017 初始化脚本；已有数据目录不会重新执行初始化 SQL。升级已有库前必须备份并在隔离环境恢复验证，核对已应用迁移和当前表结构后按 [部署说明](deploy/README.md#遗留结构退役) 与 [MySQL 迁移说明](database/mysql/README.md) 执行，不能直接重放初始化脚本。
 
 当前生产环境已完成 015–016，不应重新执行。备份和核对记录留在服务器受控目录，不提交仓库。
 
