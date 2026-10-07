@@ -115,7 +115,7 @@ def claim(table: str) -> dict | None:
 def recover_interrupted_runs() -> None:
     with UnitOfWork() as uow:
         cursor = uow.cursor
-        for table in ("chat_task", "evaluation_run", "workflow_run"):
+        for table in ("chat_task", "evaluation_run"):
             cursor.execute(
                 f"UPDATE {table} SET status='failed',error_code='WORKER_RESTARTED',finished_at=NOW(3) "
                 "WHERE status='running'"
@@ -129,10 +129,10 @@ def recover_interrupted_runs() -> None:
 
 
 def main() -> None:
-    from .workflows import run_evaluation, run_workflow
+    from .evaluations import run_evaluation
 
     recover_interrupted_runs()
-    handlers = {"chat_task": dispatch_chat_task, "workflow_run": run_workflow, "evaluation_run": run_evaluation}
+    handlers = {"chat_task": dispatch_chat_task, "evaluation_run": run_evaluation}
     with ThreadPoolExecutor(max_workers=4) as pool:
         running = set()
         while True:

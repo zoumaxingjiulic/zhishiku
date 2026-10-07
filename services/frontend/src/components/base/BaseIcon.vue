@@ -44,7 +44,6 @@ const paths: Record<string, string> = {
   upload: "M12 16V4m-5 5 5-5 5 5M4 15v5h16v-5",
   users: "M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8Zm7-1a4 4 0 0 1 0 7m5 4v-2a4 4 0 0 0-3-3.9",
   warning: "M12 3 2 21h20L12 3Zm0 6v5m0 3h.01",
-  workflow: "M5 5h5v5H5zM14 14h5v5h-5zM10 7h4a3 3 0 0 1 3 3v4M7 10v4a3 3 0 0 0 3 3h4",
 };
 
 const iconPath = computed(() => paths[props.name] ?? paths.sparkles);

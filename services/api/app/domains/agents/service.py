@@ -2,7 +2,7 @@
 
 import json
 import uuid
-from typing import Any, Callable
+from typing import Any
 
 import pymysql
 
@@ -15,17 +15,15 @@ from .repository import AgentRepository, RESERVED_AGENT_CODE, parse_json
 
 class AgentService:
     def __init__(self, uow: UnitOfWork, repository: AgentRepository | None = None,
-                 chat_executor: Callable[..., dict] | None = None,
                  admin_repository: UsersRepository | None = None) -> None:
         self.uow = uow
         self.repository = repository or AgentRepository(uow.cursor)
-        self._chat_executor = chat_executor
         self.admin_repository = admin_repository or UsersRepository(uow.cursor)
 
     def list_agents(self, user: dict) -> list[dict]:
         return [
             agent for agent in self.repository.list_agents(user)
-            if agent.get("code") != RESERVED_AGENT_CODE
+            if agent.get("code") != RESERVED_AGENT_CODE and agent.get("launch_mode") == "chat"
         ]
 
     def authorize_agent(self, user: dict, agent_id: int, for_update: bool = False) -> dict:
@@ -52,7 +50,7 @@ class AgentService:
     def list_managed_agents(self, user: dict) -> list[dict]:
         self._require_admin(user)
         rows = [self._snapshot_or_raise(agent_id) for agent_id in self.repository.list_agent_ids()]
-        return [row for row in rows if row.get("code") != RESERVED_AGENT_CODE]
+        return [row for row in rows if row.get("code") != RESERVED_AGENT_CODE and row.get("launch_mode") == "chat"]
 
     def create_agent(self, user: dict, payload: Any) -> dict:
         self._require_current_admin(user["id"])
@@ -141,13 +139,6 @@ class AgentService:
         self.uow.commit()
         return {"status": "deleted"}
 
-    def synchronous_chat(self, user: dict, agent_id: int, payload: Any, ip_address: str) -> dict:
-        if self._chat_executor is None:
-            raise RuntimeError("chat executor is not configured")
-        return self._chat_executor(
-            agent_id, payload, user, ip_address=ip_address, deprecated_sync=True
-        )
-
     def _messages(self, session_id: str) -> list[dict]:
         messages = self.repository.list_messages(session_id)
         for message in messages:
@@ -176,11 +167,9 @@ class AgentService:
             self.repository.insert_revision(agent_id, previous["config_version"], previous, user["id"], ignore=True)
         current_row = self.repository.get_agent(agent_id)
         settings = parse_json((current_row or {}).get("settings_json"), {})
-        settings.update(
-            retrieval=payload.retrieval.model_dump(),
-            inputs=payload.inputs,
-            steps=[step.model_dump() for step in payload.steps],
-        )
+        settings.pop("inputs", None)
+        settings.pop("steps", None)
+        settings["retrieval"] = payload.retrieval.model_dump()
         self.repository.update_agent(agent_id, payload, settings, version)
         for table, field, values in (
             ("user_agent_acl", "user_id", payload.user_ids),
@@ -227,7 +216,7 @@ class ChatTaskService:
     def submit_chat_task(self, user: dict, agent_id: int, payload: Any) -> dict:
         agent = self.agent_service.authorize_agent(user, agent_id, for_update=True)
         if agent.get("launch_mode") != "chat":
-            raise ValidationError("请使用工作流运行入口")
+            raise ValidationError("该智能体不是问答型入口")
         old = self.repository.find_task_by_request_key(user["id"], payload.request_key, for_update=True)
         if old:
             original = parse_json(old.get("request_json"), {})

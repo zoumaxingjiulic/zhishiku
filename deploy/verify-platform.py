@@ -66,16 +66,16 @@ try:
     assert all(c['parent_text'] for c in chunks)
     call(outsider,'GET',f'/api/v1/documents/{doc}/chunks',status=403)
     passed('upload, parent-child chunks, vector/fulltext ingestion and document ACL')
-    config={'code':tag,'name':'验收临时智能体','system_prompt':'只根据给定资料简短回答，未找到则说明。','department_ids':[dept], 'knowledge_base_ids':[kb], 'retrieval':RetrievalPolicy(candidate_k=5,top_k=2).model_dump()}
+    config={'code':tag,'name':'验收临时智能体','system_prompt':'只根据给定资料简短回答，未找到则说明。','user_ids':[created['users'][0]], 'knowledge_base_ids':[kb], 'retrieval':RetrievalPolicy(candidate_k=5,top_k=2).model_dump()}
     a=call(admin,'POST','/api/v1/studio/agents',json=config);aid=a['id'];created['agents'].append(aid)
-    a=call(admin,'PUT',f'/api/v1/studio/agents/{aid}',json=a)
-    stale={**a,'config_version':1}
+    a=call(admin,'PUT',f'/api/v1/studio/agents/{aid}',json={**config,'config_version':a['config_version']})
+    stale={**config,'config_version':1}
     call(admin,'PUT',f'/api/v1/studio/agents/{aid}',json=stale,status=409)
     revisions=call(admin,'GET',f'/api/v1/studio/agents/{aid}/revisions');assert len(revisions)==2
     assert any(x['id']==aid for x in call(employee,'GET','/api/v1/agents'))
     assert not any(x['id']==aid for x in call(outsider,'GET','/api/v1/agents'))
     call(outsider,'POST',f'/api/v1/agents/{aid}/chat/sessions',status=403)
-    passed('publish, version conflict, revision history and explicit department grants')
+    passed('publish, version conflict, revision history and direct user grants')
     preview=call(admin,'POST',f'/api/v1/studio/agents/{aid}/test',json={'question':'星河测试项目报销截止日期是什么'})
     assert preview['units'] and all(u['document_id']==doc for u in preview['units'])
     call(admin,'POST',f'/api/v1/studio/agents/{aid}/cases',json={'question':'星河测试项目报销截止日期','expected_document_ids':[doc]})
@@ -103,16 +103,9 @@ try:
     stopped=wait_until(lambda:call(employee,'GET',f'/api/v1/agents/{aid}/chat/sessions/{cancel_sid}/task'),lambda t:t['status'] in ('cancelled','failed','succeeded'))
     assert stopped['status']=='cancelled',stopped
     passed('background task cancellation reaches a terminal state')
-    flowconfig={**config,'code':tag+'_FLOW','name':'验收临时流程','launch_mode':'workflow','steps':[{'key':'lookup','type':'retrieve'},{'key':'review','type':'approval','instruction':'请核对虚构测试制度'},{'key':'summary','type':'llm','instruction':'根据前序检索结果，用一句话说明报销截止日期。'}]}
-    flow=call(admin,'POST','/api/v1/studio/agents',json=flowconfig);fid=flow['id'];created['agents'].append(fid)
-    fr=call(employee,'POST',f'/api/v1/agents/{fid}/workflow-runs',json={'question':'星河测试项目报销截止日期'},status=202)
-    waiting=wait_until(lambda:call(employee,'GET',f'/api/v1/agents/{fid}/workflow-runs'),lambda rs:rs and rs[0]['status'] in ('waiting','failed'))[0]
-    assert waiting['status']=='waiting' and waiting['state']['next']==1,waiting
-    call(outsider,'POST',f"/api/v1/workflow-runs/{fr['id']}/approve",status=404)
-    call(employee,'POST',f"/api/v1/workflow-runs/{fr['id']}/approve")
-    finished=wait_until(lambda:call(employee,'GET',f'/api/v1/agents/{fid}/workflow-runs'),lambda rs:rs and rs[0]['status'] in ('succeeded','failed'))[0]
-    assert finished['status']=='succeeded' and 'summary' in finished['state']['outputs'],finished
-    passed('workflow retrieval, persisted approval, approval isolation and model generation')
+    call(admin,'POST','/api/v1/studio/agents',json={**config,'code':tag+'_FLOW','launch_mode':'workflow'},status=422)
+    call(employee,'POST',f'/api/v1/agents/{aid}/workflow-runs',json={'question':'old'},status=404)
+    passed('retired workflow configuration and execution routes are unavailable')
 finally:
     # Only exact IDs created by this invocation are touched; preserve audit evidence.
     for doc in created['documents']:
@@ -128,8 +121,7 @@ finally:
     with connect() as conn,conn.cursor() as c:
         for aid in created['agents']:
             c.execute("UPDATE chat_task SET cancel_requested=TRUE WHERE agent_id=%s AND status IN ('queued','running')",(aid,))
-            c.execute("UPDATE workflow_run SET status='cancelled' WHERE agent_id=%s AND status IN ('queued','running','waiting')",(aid,))
-            for table in ('evaluation_case','evaluation_run','workflow_run','chat_session'):
+            for table in ('evaluation_case','evaluation_run','chat_session'):
                 c.execute(f'DELETE FROM {table} WHERE agent_id=%s',(aid,))
             c.execute('DELETE FROM agent WHERE id=%s AND code LIKE %s',(aid,tag+'%'))
         for doc in created['documents']:

@@ -60,12 +60,6 @@
     "deprecated": false
   },
   {
-    "path": "/api/v1/agents/{agent_id}/chat",
-    "method": "POST",
-    "operation_id": "chat_agent_api_v1_agents__agent_id__chat_post",
-    "deprecated": true
-  },
-  {
     "path": "/api/v1/agents/{agent_id}/chat/latest",
     "method": "GET",
     "operation_id": "latest_agent_chat_api_v1_agents__agent_id__chat_latest_get",
@@ -117,18 +111,6 @@
     "path": "/api/v1/agents/{agent_id}/runs",
     "method": "POST",
     "operation_id": "submit_api_v1_agents__agent_id__runs_post",
-    "deprecated": false
-  },
-  {
-    "path": "/api/v1/agents/{agent_id}/workflow-runs",
-    "method": "GET",
-    "operation_id": "flows_api_v1_agents__agent_id__workflow_runs_get",
-    "deprecated": false
-  },
-  {
-    "path": "/api/v1/agents/{agent_id}/workflow-runs",
-    "method": "POST",
-    "operation_id": "start_flow_api_v1_agents__agent_id__workflow_runs_post",
     "deprecated": false
   },
   {
@@ -555,12 +537,6 @@
     "path": "/api/v1/users/{user_id}/status",
     "method": "PATCH",
     "operation_id": "update_user_status_api_v1_users__user_id__status_patch",
-    "deprecated": false
-  },
-  {
-    "path": "/api/v1/workflow-runs/{run_id}/{action}",
-    "method": "POST",
-    "operation_id": "control_flow_api_v1_workflow_runs__run_id___action__post",
     "deprecated": false
   }
 ]

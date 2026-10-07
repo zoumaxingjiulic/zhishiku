@@ -10,7 +10,6 @@ import BaseEmptyState from "../components/base/BaseEmptyState.vue";
 import BaseIcon from "../components/base/BaseIcon.vue";
 import BaseSkeleton from "../components/base/BaseSkeleton.vue";
 import MarkdownContent from "../components/base/MarkdownContent.vue";
-import WorkflowRun from '../components/WorkflowRun.vue';
 
 const emit = defineEmits<{ toast: [message: string, bad?: boolean] }>();
 const route = useRoute();
@@ -27,10 +26,6 @@ const sessions = ref<any[]>([]);
 const task = ref<any>(null);
 const modeMeta: Record<string, { label: string; icon: string; hint: string }> = {
   chat: { label: "问答", icon: "bot", hint: "对话查询与知识检索" },
-  form: { label: "任务", icon: "form", hint: "填写参数后执行任务" },
-  workflow: { label: "流程", icon: "workflow", hint: "多步骤业务流程" },
-  dashboard: { label: "看板", icon: "activity", hint: "业务数据分析看板" },
-  external: { label: "系统", icon: "link", hint: "打开外部业务应用" },
 };
 const welcomeMessage = { role: "assistant", text: "您好，我会使用该智能体获授权的企业知识与只读系统工具协助您。" };
 const isAwaitingAnswer = computed(() => Boolean(
@@ -45,7 +40,7 @@ async function loadAgents() {
   loading.value = true;
   loadError.value = "";
   try {
-    agents.value = await api<any[]>("/api/v1/agents");
+    agents.value = (await api<any[]>("/api/v1/agents")).filter(agent => agent.launch_mode === "chat");
     await syncFromRoute();
   } catch (error: any) {
     loadError.value = error?.message || "智能体加载失败";
@@ -141,14 +136,6 @@ async function syncFromRoute() {
     return;
   }
   selected.value = agent;
-  if (agent.launch_mode !== "chat") {
-    sessionStorage.setItem("kb.lastAgentRoute", route.fullPath);
-    sessionId.value = null;
-    messages.value = [];
-    sessions.value = [];
-    return;
-  }
-
   try {
     await loadSessions();
     if (version !== routeSyncVersion) return;
@@ -249,7 +236,7 @@ async function feedback(message:any,rating:number){try{await api(`/api/v1/messag
 
 <template>
   <template v-if="!selected">
-    <div class="page-header"><div><h2>可用智能体</h2><p>问答、流程、任务和业务看板统一从这里进入</p></div></div>
+    <div class="page-header"><div><h2>可用智能体</h2><p>从这里进入已授权的问答智能体</p></div></div>
     <div class="page-toolbar"><BaseBadge tone="success">{{agents.length}} 个可用</BaseBadge></div>
     <BaseCard class="content-card" padding="sm">
       <div v-if="loading" class="page-loading" role="status" aria-label="正在加载智能体"><BaseSkeleton height="84px" /><BaseSkeleton height="84px" /><BaseSkeleton height="84px" /></div>
@@ -257,7 +244,7 @@ async function feedback(message:any,rating:number){try{await api(`/api/v1/messag
       <div v-else-if="agents.length" class="agents-grid enterprise-card-grid">
       <BaseCard v-for="agent in agents" :key="agent.id" as="article" class="agent-list-card" padding="sm">
         <button class="agent-card-action" type="button" :aria-label="`打开${agent.name}`" @click="open(agent)"></button>
-        <div class="agent-card-top"><div class="agent-symbol compact"><BaseIcon :name="agent.icon||modeMeta[agent.launch_mode]?.icon||'bot'" /></div><BaseBadge>{{modeMeta[agent.launch_mode]?.label||agent.agent_type}}</BaseBadge></div>
+        <div class="agent-card-top"><div class="agent-symbol compact"><BaseIcon :name="agent.icon||modeMeta.chat.icon" /></div><BaseBadge>{{modeMeta.chat.label}}</BaseBadge></div>
         <div class="agent-list-content"><h2>{{agent.name}}</h2><p>{{agent.description||modeMeta[agent.launch_mode]?.hint}}</p><div class="agent-card-foot"><small>{{agent.category||modeMeta[agent.launch_mode]?.hint}}</small><span>打开 <BaseIcon name="arrow-right" :size="14" /></span></div></div>
       </BaseCard>
       </div>
@@ -267,7 +254,7 @@ async function feedback(message:any,rating:number){try{await api(`/api/v1/messag
 
   <template v-else>
     <div class="agent-chat-head"><BaseButton variant="secondary" @click="backToList"><BaseIcon name="arrow-left" />返回智能体列表</BaseButton><div><h2>{{selected.name}}</h2><p>{{modeMeta[selected.launch_mode]?.hint}}</p></div></div>
-    <div v-if="selected.launch_mode==='chat'" class="chat-layout">
+    <div class="chat-layout">
       <div class="agent-card">
         <div class="agent-identity"><div class="agent-symbol light"><BaseIcon name="bot" /></div><span class="eyebrow">CHAT AGENT</span><h2>{{selected.name}}</h2><p>{{selected.description}}</p><div class="agent-scope dark"><small>授权知识 / 工具</small><strong>{{selected.knowledge_bases || selected.tools || '未配置'}}</strong></div></div>
         <div class="conversation-head"><strong>我的对话</strong><BaseButton class="new-chat" variant="ghost-inverse" size="sm" @click="newConversation"><BaseIcon name="add" :size="14" />新建</BaseButton></div>
@@ -280,7 +267,5 @@ async function feedback(message:any,rating:number){try{await api(`/api/v1/messag
         <form class="chat-input" @submit.prevent="send"><textarea v-model="question" :disabled="isAwaitingAnswer" placeholder="请输入您想查询的问题…" required></textarea><BaseButton type="submit" :loading="isAwaitingAnswer" loading-text="回答中…"><BaseIcon name="send" />发送</BaseButton></form>
       </BaseCard>
     </div>
-    <WorkflowRun v-else-if="selected.launch_mode==='workflow'" :key="selected.id" :agent-id="selected.id" />
-    <BaseCard v-else><BaseEmptyState title="该类型尚未配置运行器" description="请联系管理员完成运行器配置。" /></BaseCard>
   </template>
 </template>

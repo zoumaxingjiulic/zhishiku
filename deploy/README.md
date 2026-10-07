@@ -30,16 +30,21 @@ curl --fail http://192.168.1.33:18080/healthz
 
 上述地址是当前服务器的实际端口；若 `.env` 中改了绑定地址或端口，请替换命令里的地址。`docker compose --env-file` 只向 Compose 传递变量，不会把变量导出到当前 shell。
 
-已有环境先核对 [迁移记录](../database/mysql/README.md)，备份后按编号执行尚未应用的迁移，每个文件仅执行一次。当前平台 1.1 的迁移与验收入口为：
+已有环境先核对 [迁移记录](../database/mysql/README.md)，备份后按编号执行尚未应用的迁移，每个文件仅执行一次。平台集成验收入口为：
 
 ```bash
-bash deploy/apply-mysql-migration.sh database/mysql/012_platform_quality_runtime.sql
 docker compose --env-file .env \
   -f deploy/docker-compose.yml -f deploy/docker-compose.models.yml \
-  exec -T api python - < deploy/verify-platform-v11.py
+  exec -T api python - < deploy/verify-platform.py
 ```
 
 验收脚本会创建临时业务数据并在结束时清理或停用，仅在已确认的验收环境运行。初始管理员密码通过 `.env` 的 `ADMIN_PASSWORD` 配置；该文件不得提交。首次登录后修改密码。办公网正式开放前应增加 HTTPS 反向代理，将 `AUTH_COOKIE_SECURE` 改为 `true`，并配置备份与监控。
+
+## 遗留结构退役
+
+此步骤仅适用于从 014 升级的已有库。新库由 MySQL 初始化脚本自动执行 015 和 `016_bootstrap.sql`；不能把 bootstrap 脚本用于生产升级。详细数据门槛见 [MySQL 迁移说明](../database/mysql/README.md#015016遗留工作流与旧权限表退役)。
+
+先在维护窗口执行 `bash deploy/backup-legacy-schema.sh`，它会生成整库备份、SHA-256 和关键表计数，再在精确命名的临时库恢复并对账。将输出中的备份目录明确设置为 `BACKUP_DIR`，不要把备份文件或 `.env` 提交 Git。用 `deploy/verify-legacy-migration.py` 分别采集 015 前后有效检索策略并 `cmp` 确认一致，之后发布新版 API、chat-runner、worker 和前端。完成登录、知识库、授权问答、评测和健康烟测后，运行 `bash deploy/retire-legacy-schema.sh "$BACKUP_DIR/enterprise_kb.sql" "$BACKUP_DIR/retrieval-before.json" "$BACKUP_DIR/retrieval-after.json"`。脚本会再次验证备份哈希和策略文件；SQL 会阻断未回填 ACL、非空旧工作流/文档资产或其他遗留数据。删除目标表后只回滚应用镜像是不安全的。
 
 Compose 的一次性 `minio-init` 服务等待 MinIO healthy 后，使用同一固定版本镜像中的 `mc`，按 `MINIO_BUCKET` 幂等创建桶（`mc mb --ignore-existing`）；桶已存在时也成功退出。API 等待初始化成功退出后才启动，Worker 仍只等待 MinIO healthy。初始化失败时检查 `.env` 中的 MinIO 凭据和桶名后重新启动服务；初始化命令不输出凭据。API 启动和 readiness 探针都不创建桶。
 

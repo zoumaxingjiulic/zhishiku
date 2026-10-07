@@ -98,8 +98,9 @@ def test_agent_catalog_never_returns_enterprise_assistant_even_if_repository_doe
     class Repository:
         def list_agents(self, user):
             return [
-                {"id": 1, "code": "ENTERPRISE_ASSISTANT", "name": "企业总助手"},
-                {"id": 2, "code": "HR_AGENT", "name": "人资助手"},
+                {"id": 1, "code": "ENTERPRISE_ASSISTANT", "name": "企业总助手", "launch_mode": "chat"},
+                {"id": 2, "code": "HR_AGENT", "name": "人资助手", "launch_mode": "chat"},
+                {"id": 3, "code": "OLD_FLOW", "name": "旧流程", "launch_mode": "workflow"},
             ]
 
     rows = AgentService(Uow(), Repository()).list_agents(
@@ -135,12 +136,14 @@ def test_studio_catalog_never_returns_enterprise_assistant():
 
     class Repository:
         def list_agent_ids(self):
-            return [1, 2]
+            return [1, 2, 3]
 
         def snapshot(self, agent_id):
             if agent_id == 1:
-                return {"id": 1, "code": "ENTERPRISE_ASSISTANT", "retrieval": {"mode": "hybrid"}}
-            return {"id": 2, "code": "HR_AGENT", "retrieval": {"mode": "hybrid"}}
+                return {"id": 1, "code": "ENTERPRISE_ASSISTANT", "launch_mode": "chat", "retrieval": {"mode": "hybrid"}}
+            if agent_id == 2:
+                return {"id": 2, "code": "HR_AGENT", "launch_mode": "chat", "retrieval": {"mode": "hybrid"}}
+            return {"id": 3, "code": "OLD_FLOW", "launch_mode": "workflow", "retrieval": {"mode": "hybrid"}}
 
     rows = AgentService(Uow(), Repository()).list_managed_agents(
         {"id": 1, "is_platform_admin": True}

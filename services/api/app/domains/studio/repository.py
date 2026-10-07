@@ -1,4 +1,4 @@
-"""SQL persistence for evaluation, workflow, and processing configuration."""
+"""SQL persistence for evaluation and knowledge processing configuration."""
 
 import json
 from typing import Any
@@ -101,108 +101,6 @@ class StudioRepository:
             "finished_at=NOW(3) WHERE id=%s AND status='running'",
             (error_code, dumps(results), run_id),
         )
-
-    def count_active_workflows(self, user_id: int) -> int:
-        self.cursor.execute(
-            "SELECT COUNT(*) n FROM workflow_run WHERE user_id=%s "
-            "AND status IN ('queued','running','waiting')", (user_id,),
-        )
-        return int(self.cursor.fetchone()["n"])
-
-    def insert_workflow_run(self, run_id: str, agent_id: int, user_id: int,
-                            config: dict, input_value: dict, state: dict) -> None:
-        self.cursor.execute(
-            "INSERT INTO workflow_run(id,agent_id,user_id,config_json,input_json,state_json) "
-            "VALUES(%s,%s,%s,%s,%s,%s)",
-            (run_id, agent_id, user_id, dumps(config), dumps(input_value), dumps(state)),
-        )
-
-    def list_workflows(self, agent_id: int, user_id: int, limit: int = 20) -> list[dict]:
-        self.cursor.execute(
-            "SELECT id,status,state_json,error_code,created_at,started_at,finished_at "
-            "FROM workflow_run WHERE agent_id=%s AND user_id=%s "
-            "ORDER BY created_at DESC,id DESC LIMIT %s", (agent_id, user_id, limit),
-        )
-        rows = list(self.cursor.fetchall())
-        for row in rows:
-            row["state"] = parse_json(row.pop("state_json"), {})
-        return rows
-
-    def lock_workflow(self, run_id: str, user_id: int) -> dict | None:
-        self.cursor.execute(
-            "SELECT id,agent_id,user_id,status,state_json FROM workflow_run "
-            "WHERE id=%s AND user_id=%s FOR UPDATE", (run_id, user_id),
-        )
-        row = self.cursor.fetchone()
-        if row:
-            row["state"] = parse_json(row.pop("state_json"), {})
-        return row
-
-    def approve_workflow(self, run_id: str, state: dict) -> None:
-        self.cursor.execute(
-            "UPDATE workflow_run SET status='queued',state_json=%s WHERE id=%s AND status='waiting'",
-            (dumps(state), run_id),
-        )
-
-    def cancel_workflow(self, run_id: str) -> bool:
-        self.cursor.execute(
-            "UPDATE workflow_run SET status='cancelled',finished_at=NOW(3) "
-            "WHERE id=%s AND status IN ('queued','running','waiting')", (run_id,),
-        )
-        return self.cursor.rowcount > 0
-
-    def workflow_snapshot(self, run_id: str) -> dict | None:
-        self.cursor.execute(
-            "SELECT id,agent_id,user_id,status,config_json,input_json,state_json "
-            "FROM workflow_run WHERE id=%s", (run_id,),
-        )
-        row = self.cursor.fetchone()
-        if not row:
-            return None
-        return {**row, "config": parse_json(row.pop("config_json"), {}),
-                "input": parse_json(row.pop("input_json"), {}),
-                "state": parse_json(row.pop("state_json"), {})}
-
-    def workflow_status(self, run_id: str) -> str | None:
-        self.cursor.execute("SELECT status FROM workflow_run WHERE id=%s", (run_id,))
-        row = self.cursor.fetchone()
-        return row["status"] if row else None
-
-    def save_workflow_state(self, run_id: str, state: dict) -> bool:
-        self.cursor.execute(
-            "UPDATE workflow_run SET state_json=%s WHERE id=%s AND status='running'",
-            (dumps(state), run_id),
-        )
-        return self.cursor.rowcount > 0
-
-    def mark_workflow_waiting(self, run_id: str, state: dict) -> bool:
-        self.cursor.execute(
-            "UPDATE workflow_run SET status='waiting',state_json=%s "
-            "WHERE id=%s AND status='running'", (dumps(state), run_id),
-        )
-        return self.cursor.rowcount > 0
-
-    def mark_workflow_succeeded(self, run_id: str) -> bool:
-        self.cursor.execute(
-            "UPDATE workflow_run SET status='succeeded',finished_at=NOW(3) "
-            "WHERE id=%s AND status='running'", (run_id,),
-        )
-        return self.cursor.rowcount > 0
-
-    def mark_workflow_failed(self, run_id: str, error_code: str,
-                             state: dict | None = None) -> bool:
-        if state is None:
-            self.cursor.execute(
-                "UPDATE workflow_run SET status='failed',error_code=%s,finished_at=NOW(3) "
-                "WHERE id=%s AND status='running'", (error_code, run_id),
-            )
-        else:
-            self.cursor.execute(
-                "UPDATE workflow_run SET status='failed',error_code=%s,state_json=%s,"
-                "finished_at=NOW(3) WHERE id=%s AND status='running'",
-                (error_code, dumps(state), run_id),
-            )
-        return self.cursor.rowcount > 0
 
     def get_processing(self, knowledge_base_id: int, for_update: bool = False) -> dict | None:
         self.cursor.execute(

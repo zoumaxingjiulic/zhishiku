@@ -9,7 +9,6 @@ sys.path.insert(0,str(Path(__file__).resolve().parents[1]/'services/api'))
 from app.quality import RetrievalPolicy, score_retrieval, retrieval_query
 from app.domains.agents.schemas import AgentWrite
 from app.domains.studio.schemas import Processing
-from app.runtime.workflows import resolve_arguments
 from app import quality, agent_runtime
 
 
@@ -86,13 +85,6 @@ def test_metrics_unique_documents_and_negative_cases():
 def test_contextual_query_does_not_invent_identifiers():
     assert retrieval_query('怎么申请',[{'role':'user','content':'年假'}],True)==('年假\n追问：怎么申请','contextual')
     assert retrieval_query('查0001',[],True)==('查0001','direct')
-
-
-def test_workflow_references_only_known_data():
-    assert resolve_arguments({'code':'$input.question','nested':['$steps.lookup.id']},{'question':'0001'},{'lookup':{'id':5}})=={'code':'0001','nested':[5]}
-    with pytest.raises(ValueError):
-        resolve_arguments('$steps.future.result',{}, {})
-    assert resolve_arguments('__import__(os)',{}, {})=='__import__(os)'
 
 
 def test_parallel_retrieval_degrades_visibly(monkeypatch):

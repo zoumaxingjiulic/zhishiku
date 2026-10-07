@@ -51,7 +51,7 @@ class AgentRepository:
             )
             access_parameters.append(int(user["id"]))
         self.cursor.execute(
-            "SELECT a.id,a.code,a.name,a.description,a.agent_type,a.launch_mode,a.icon,a.category,"
+            "SELECT a.id,a.code,a.name,a.description,a.launch_mode,a.icon,a.category,"
             "a.llm_gateway_profile_id,a.status,"
             "GROUP_CONCAT(DISTINCT k.name ORDER BY k.id SEPARATOR ', ') knowledge_bases,"
             "GROUP_CONCAT(DISTINCT k.id ORDER BY k.id SEPARATOR ',') knowledge_base_ids,"
@@ -70,7 +70,7 @@ class AgentRepository:
     def get_agent(self, agent_id: int, for_update: bool = False) -> dict | None:
         lock = " FOR UPDATE" if for_update else ""
         self.cursor.execute(
-            "SELECT id,code,name,description,system_prompt,llm_model,llm_gateway_profile_id,agent_type,"
+            "SELECT id,code,name,description,system_prompt,llm_gateway_profile_id,"
             "launch_mode,status,settings_json,config_version FROM agent WHERE id=%s" + lock,
             (agent_id,),
         )
@@ -102,8 +102,6 @@ class AgentRepository:
         result = dict(row)
         config = parse_json(result.pop("settings_json", None), {})
         result["retrieval"] = config.get("retrieval", {})
-        result["inputs"] = config.get("inputs", ["question"])
-        result["steps"] = config.get("steps", [])
         for table, field, output in (
             ("user_agent_acl", "user_id", "user_ids"),
             ("agent_knowledge_base", "knowledge_base_id", "knowledge_base_ids"),
@@ -168,10 +166,10 @@ class AgentRepository:
 
     def update_agent(self, agent_id: int, payload: Any, settings: dict, version: int) -> None:
         self.cursor.execute(
-            "UPDATE agent SET name=%s,description=%s,system_prompt=%s,launch_mode=%s,agent_type=%s,status=%s,"
+            "UPDATE agent SET name=%s,description=%s,system_prompt=%s,launch_mode=%s,status=%s,"
             "llm_gateway_profile_id=%s,settings_json=%s,config_version=%s WHERE id=%s",
             (payload.name, payload.description, payload.system_prompt, payload.launch_mode,
-             "workflow" if payload.launch_mode == "workflow" else "rag", payload.status,
+             payload.status,
              payload.llm_gateway_profile_id, json.dumps(settings, ensure_ascii=False), version, agent_id),
         )
 
@@ -376,19 +374,10 @@ class AgentRepository:
             row["annotations"] = parse_json(row.pop("annotations_json", None), {})
         return rows
 
-    def retrieval_sources(self, agent_id: int, knowledge_base_ids: list[int]) -> tuple[dict, list[dict]]:
+    def retrieval_settings(self, agent_id: int) -> dict:
         self.cursor.execute("SELECT settings_json FROM agent WHERE id=%s", (agent_id,))
         row = self.cursor.fetchone()
-        settings = parse_json(row.get("settings_json") if row else None, {})
-        if not knowledge_base_ids:
-            return settings, []
-        placeholders = ",".join(["%s"] * len(knowledge_base_ids))
-        self.cursor.execute(
-            "SELECT retrieval_config_json FROM agent_knowledge_base WHERE agent_id=%s "
-            f"AND knowledge_base_id IN ({placeholders})",
-            [agent_id, *knowledge_base_ids],
-        )
-        return settings, list(self.cursor.fetchall())
+        return parse_json(row.get("settings_json") if row else None, {})
 
     def model_gateway(self, profile_id: int) -> dict | None:
         self.cursor.execute(
@@ -612,7 +601,7 @@ class AgentRepository:
         return row["role"] if row else None
 
     def claim_task(self, table: str) -> dict | None:
-        if table not in {"chat_task", "evaluation_run", "workflow_run"}:
+        if table not in {"chat_task", "evaluation_run"}:
             raise ValueError("Unknown queue")
         self.cursor.execute(
             f"SELECT * FROM {table} WHERE status='queued' ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED"

@@ -40,44 +40,22 @@ describe("StudioPage launch modes", () => {
     vi.clearAllMocks();
   });
 
+  it("does not offer retired workflow agents in the studio", async () => {
+    render(StudioPage);
+
+    expect(await screen.findByText("暂无智能体")).toBeInTheDocument();
+    expect(screen.queryByText("历史工作流")).not.toBeInTheDocument();
+  });
+
   it("only offers chat mode when creating an agent", async () => {
     render(StudioPage);
 
-    await screen.findByText("历史工作流");
-    await fireEvent.click(screen.getByRole("button", { name: "新建智能体" }));
+    await screen.findByText("暂无智能体");
+    await fireEvent.click(screen.getAllByRole("button", { name: "新建智能体" })[0]);
 
     const launchMode = screen.getByLabelText("运行方式") as HTMLSelectElement;
     expect(launchMode.value).toBe("chat");
     expect(screen.queryByRole("option", { name: "步骤式工作流" })).not.toBeInTheDocument();
-  });
-
-  it("shows existing workflow agents as read-only compatibility records", async () => {
-    render(StudioPage);
-
-    expect(await screen.findByText("历史兼容模式，不能新建或扩展")).toBeInTheDocument();
-    const launchMode = screen.getByLabelText("运行方式") as HTMLSelectElement;
-    expect(launchMode.value).toBe("workflow");
-    expect(launchMode).toBeDisabled();
-    expect(screen.getByRole("option", { name: "兼容模式" })).toBeInTheDocument();
-  });
-
-  it("keeps a workflow record read-only after loading a chat history snapshot", async () => {
-    render(StudioPage);
-
-    await screen.findByText("历史兼容模式，不能新建或扩展");
-    await fireEvent.click(screen.getByRole("button", { name: "历史版本" }));
-    await fireEvent.click(await screen.findByRole("button", { name: "载入此版本" }));
-
-    const publish = screen.getByRole("button", { name: "发布配置" });
-    const form = publish.closest("form");
-    expect(form).not.toBeNull();
-    await fireEvent.submit(form!);
-
-    expect(publish).toBeDisabled();
-    expect(apiMock).not.toHaveBeenCalledWith(
-      "/api/v1/studio/agents/7",
-      expect.objectContaining({ method: "PUT" }),
-    );
   });
 
   it("shows an explicit empty state while keeping chat creation available", async () => {
@@ -153,5 +131,7 @@ describe("StudioPage launch modes", () => {
 
     await waitFor(() => expect(savedBody?.user_ids).toEqual([8]));
     expect(savedBody).not.toHaveProperty("department_ids");
+    expect(savedBody).not.toHaveProperty("steps");
+    expect(savedBody).not.toHaveProperty("inputs");
   });
 });

@@ -1,4 +1,4 @@
-"""Retrieval capabilities shared by chat, workflow, and studio orchestration."""
+"""Retrieval capabilities shared by chat, evaluation, and studio orchestration."""
 
 import time
 

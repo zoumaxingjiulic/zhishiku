@@ -220,24 +220,10 @@ def checked_executor(
     return execute
 
 
-def retrieval_config(agent_id: int, knowledge_base_ids: list[int]) -> dict:
-    config = RetrievalPolicy().model_dump()
+def retrieval_config(agent_id: int) -> dict:
     with UnitOfWork() as uow:
-        saved, rows = AgentRepository(uow.cursor).retrieval_sources(agent_id, knowledge_base_ids)
-    if saved.get("retrieval"):
-        return RetrievalPolicy(**saved["retrieval"]).model_dump()
-    for row in rows:
-        candidate = parse_json(row.get("retrieval_config_json"), {})
-        for key in config:
-            if key in candidate:
-                config[key] = candidate[key]
-    config["candidate_k"] = max(5, min(100, int(config["candidate_k"])))
-    config["top_k"] = max(1, min(20, int(config["top_k"])))
-    config["context_max_chars"] = max(2000, min(40000, int(config["context_max_chars"])))
-    config["history_messages"] = max(0, min(30, int(config["history_messages"])))
-    if config["score_threshold"] is not None:
-        config["score_threshold"] = max(0.0, min(1.0, float(config["score_threshold"])))
-    return RetrievalPolicy(**config).model_dump()
+        saved = AgentRepository(uow.cursor).retrieval_settings(agent_id)
+    return RetrievalPolicy(**(saved.get("retrieval") or {})).model_dump()
 
 
 def sanitize_model_gateway_row(row: dict, decryptor=decrypt_credential, outbound_validator=None) -> dict:
@@ -391,7 +377,7 @@ def persist_successful_chat(
 
 
 def execute_chat(agent_id: int, payload, user: dict, *, ip_address: str,
-                 task: dict | None = None, emit=None, deprecated_sync: bool = False) -> dict:
+                 task: dict | None = None, emit=None) -> dict:
     with UnitOfWork() as uow:
         repository = AgentRepository(uow.cursor)
         agent = AgentService(uow, repository).authorize_agent(user, agent_id)
@@ -404,7 +390,7 @@ def execute_chat(agent_id: int, payload, user: dict, *, ip_address: str,
                 raise NotFoundError("会话不存在")
         else:
             repository.create_session(session_id, agent_id, user["id"], payload.question[:120])
-        config = retrieval_config(agent_id, knowledge_base_ids)
+        config = retrieval_config(agent_id)
         before_id = task["user_message_id"] if task else 9223372036854775807
         history = repository.list_messages(session_id, before_id, config["history_messages"]) if config["history_messages"] else []
         if not task:
@@ -414,9 +400,6 @@ def execute_chat(agent_id: int, payload, user: dict, *, ip_address: str,
         repository.insert_agent_run(
             run_id, session_id, agent_id, user["id"], hashlib.sha256(payload.question.encode()).hexdigest()
         )
-        if deprecated_sync:
-            repository.write_audit(user["id"], "agent.chat.sync_deprecated", "agent", agent_id,
-                                   {"session_id": session_id, "trace_id": run_id}, ip_address)
         uow.commit()
 
     tools = bound_agent_tools(agent_id)
@@ -474,7 +457,7 @@ def execute_chat(agent_id: int, payload, user: dict, *, ip_address: str,
                     user, agent_id, [gateway.get("api_key", "")] if gateway else [],
                     progress_callback=emit, task=task,
                 ),
-                agent.get("llm_model"), gateway,
+                None, gateway,
                 config["context_max_chars"], emit=emit,
                 max_tool_rounds=config["max_tool_rounds"], max_tool_calls=config["max_tool_calls"],
             )
@@ -501,9 +484,7 @@ def execute_chat(agent_id: int, payload, user: dict, *, ip_address: str,
             "candidate_counts": counts,
             "timings": timings,
         }
-        model_name = gateway_model_name if gateway_model_name else (
-            agent.get("llm_model") or settings.llm_model or answer_method
-        )
+        model_name = gateway_model_name or settings.llm_model or answer_method
         with UnitOfWork() as final_uow:
             final_repository = AgentRepository(final_uow.cursor)
             persist_successful_chat(

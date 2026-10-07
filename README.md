@@ -68,7 +68,7 @@ Worker：从 MySQL ingestion_job 领取任务，执行解析/OCR、切片、向�
 
 Skill 是管理员维护、带版本的声明式业务能力包，包含说明、触发示例、系统指令、输入 JSON Schema 以及知识库和只读工具依赖。总助手只展示依赖均在用户永久权限内、且不绑定专业智能体的 Skill。Skill 不能执行 Shell、原始 SQL、任意 URL 或未授权代码；复杂算法与长任务由经过测试并单独分发给用户的专业智能体承担。
 
-低代码建设已冻结：工作室不再提供新建工作流智能体的入口，也未引入画布、节点市场或新的工作流执行引擎。已有 `workflow_run`、历史数据、读取/API 和顺序执行代码继续作为兼容层保留；增量迁移不会删除这些内容。
+低代码工作流已退役：平台只发布问答型专业智能体，不提供工作流创建、运行或审批 API。旧表与重复字段在经过备份、权限和检索策略核对的迁移 016 中删除；历史迁移文件保留以便已有库按顺序升级。
 
 ## 问答链路
 
@@ -89,7 +89,7 @@ Skill 是管理员维护、带版本的声明式业务能力包，包含说明�
 - BAAI/bge-m3 输出 1024 维向量。
 - 权限和范围过滤在检索、rerank、LLM 调用之前执行；跨部门资料不得进入候选集。
 - 未配置模型 rerank 时系统会降级为本地词项重排序；当前已使用模型 rerank。
-- `agent_knowledge_base.retrieval_config_json` 可配置 `candidate_k`、`top_k`、`score_threshold`、`context_max_chars` 和 `history_messages`。
+- 每个智能体的检索参数统一保存于 `agent.settings_json.retrieval`，包括 `candidate_k`、`top_k`、`score_threshold`、`context_max_chars` 和 `history_messages`。原知识库绑定上的旧参数由迁移 015 对账搬迁。
 - MCP 工具必须在服务端明确声明 `readOnlyHint=true`。企业总助手只使用账号直授工具；专业智能体只使用自身绑定工具，两者都在执行时重新校验当前授权。
 
 ## MCP 企业系统连接
@@ -170,10 +170,12 @@ Skill 是管理员维护、带版本的声明式业务能力包，包含说明�
 deploy/
   docker-compose.yml              基础服务 Compose
   docker-compose.models.yml       本地模型覆盖文件（服务器创建）
-  verify-platform-v11.py          平台 1.1 集成与权限隔离验收
+  verify-platform.py              平台集成与权限隔离验收
   apply-mysql-migration.sh        单个迁移执行器
+  backup-legacy-schema.sh         旧结构退役前整库备份及恢复演练
+  retire-legacy-schema.sh         经预检后执行旧结构物理清理
   queue-reindex.py                既有文档重建索引任务
-database/mysql/                   001~014 MySQL 初始化与增量迁移
+database/mysql/                   001~016 MySQL 初始化与增量迁移
 services/api/                     FastAPI 管理、检索、问答、审计
   app/application.py              应用工厂、生命周期、异常处理和路由装配
   app/core/                       配置、事务、安全、审计和出站策略
@@ -453,7 +455,7 @@ bash deploy/apply-mysql-migration.sh database/mysql/013_enterprise_assistant.sql
 ~~~bash
 docker compose --env-file .env -f deploy/docker-compose.yml exec -T mysql sh -c \
   'exec mysql -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" -e \
-  "SHOW TABLES LIKE '\''assistant_%'\''; SELECT id,code,status FROM agent WHERE code='\''ENTERPRISE_ASSISTANT'\''; SELECT COUNT(*) AS workflow_runs FROM workflow_run;"'
+  "SHOW TABLES LIKE '\''assistant_%'\''; SELECT id,code,status FROM agent WHERE code='\''ENTERPRISE_ASSISTANT'\'';"'
 ~~~
 
 ### 2. 构建并使用双 Compose 文件启动
@@ -548,10 +550,10 @@ bash deploy/apply-mysql-migration.sh database/mysql/014_user_scoped_capabilities
 docker compose --env-file .env \
   -f deploy/docker-compose.yml \
   -f deploy/docker-compose.models.yml \
-  exec -T api python - < deploy/verify-platform-v11.py
+  exec -T api python - < deploy/verify-platform.py
 ~~~
 
-它验证部门与文档权限、上传和父子切片、双路索引、混合检索与 rerank、配置版本、评测、持久化对话与幂等、模型回答与引用、反馈所有权、任务取消和工作流审批。脚本清理本次创建的资料与智能体，停用临时账号和部门、归档临时知识库并保留审计记录；覆盖边界见 [平台 1.1 验收记录](docs/verification-v11.md)。MCP 连接发现与工具授权另在系统连接页面验证，验收时不要调用会产生业务副作用的工具。
+它验证部门与文档权限、上传和父子切片、双路索引、混合检索与 rerank、配置版本、评测、持久化对话与幂等、模型回答与引用、反馈所有权、任务取消，以及旧工作流 API 已不可用。脚本清理本次创建的资料与智能体，停用临时账号和部门、归档临时知识库并保留审计记录；既有历史验收记录见 [平台 1.1 验收记录](docs/verification-v11.md)。MCP 连接发现与工具授权另在系统连接页面验证，验收时不要调用会产生业务副作用的工具。
 
 本地质量门禁与容器构建检查见 [部署说明](deploy/README.md#本地质量门禁与镜像构建)。API 与 chat-runner 复用 `enterprise-kb-api:${APP_IMAGE_TAG:-local}` 镜像，更新时一起重建、重建容器以保持版本一致。
 

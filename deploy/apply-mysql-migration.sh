@@ -15,6 +15,10 @@ if [[ ! -f "$MIGRATION_FILE" ]]; then
   echo "迁移文件不存在: $MIGRATION_FILE" >&2
   exit 2
 fi
+if [[ "$(basename "$MIGRATION_FILE")" == 016_* ]]; then
+  echo "016 是破坏性清理：已有库必须使用 deploy/retire-legacy-schema.sh；bootstrap 文件仅供新库初始化" >&2
+  exit 2
+fi
 
 cd "$PROJECT_DIR"
 docker compose --env-file .env -f deploy/docker-compose.yml exec -T mysql \

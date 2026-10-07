@@ -141,29 +141,6 @@ def test_task_cancellation_is_audited_for_the_owning_user():
     assert repository.audit[4] == {"task_id": "my-task", "agent_id": 7, "session_id": "mine"}
 
 
-def test_synchronous_chat_marks_the_legacy_path_for_runtime_audit():
-    """Catches the compatibility endpoint executing without its deprecation observation signal."""
-    from app.domains.agents.schemas import ChatRequest
-    from app.domains.agents.service import AgentService
-
-    calls = []
-
-    def executor(agent_id, payload, user, **kwargs):
-        calls.append(kwargs)
-        return {"answer": "ok"}
-
-    service = AgentService(FakeUow(), repository=AuthorizationRepository(), chat_executor=executor)
-    result = service.synchronous_chat(
-        {"id": 8, "department_ids": [2], "is_platform_admin": False},
-        7,
-        ChatRequest(question="你好"),
-        "127.0.0.1",
-    )
-
-    assert result == {"answer": "ok"}
-    assert calls == [{"ip_address": "127.0.0.1", "deprecated_sync": True}]
-
-
 class SubmissionRepository(AuthorizationRepository):
     def __init__(self):
         super().__init__(configured=(2,), accessible=(2,), department_grant=True, strict=True)

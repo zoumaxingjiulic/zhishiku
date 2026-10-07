@@ -3,10 +3,8 @@ from fastapi import APIRouter, Depends, Request
 from ...core.database import UnitOfWork
 from ...core.dependencies import get_uow
 from ..auth.router import current_user, platform_admin
-from ...runtime.chat import execute_chat
 from .schemas import (
     AgentWrite,
-    ChatRequest,
     ChatSessionCreated,
     ChatSessionDetail,
     ChatSessionSummary,
@@ -19,7 +17,7 @@ router = APIRouter()
 
 
 def get_agent_service(uow: UnitOfWork = Depends(get_uow)) -> AgentService:
-    return AgentService(uow, chat_executor=execute_chat)
+    return AgentService(uow)
 
 
 def get_chat_task_service(uow: UnitOfWork = Depends(get_uow)) -> ChatTaskService:
@@ -94,13 +92,6 @@ def delete_agent_chat_session(agent_id: int, session_id: str, request: Request,
                               user: dict = Depends(current_user),
                               service: AgentService = Depends(get_agent_service)) -> dict:
     return service.delete_conversation(user, agent_id, session_id, _ip(request))
-
-
-@router.post("/api/v1/agents/{agent_id}/chat", tags=["agents"], deprecated=True,
-             operation_id="chat_agent_api_v1_agents__agent_id__chat_post")
-def chat_agent(agent_id: int, payload: ChatRequest, request: Request, user: dict = Depends(current_user),
-               service: AgentService = Depends(get_agent_service)) -> dict:
-    return service.synchronous_chat(user, agent_id, payload, _ip(request))
 
 
 @router.post("/api/v1/agents/{agent_id}/runs", status_code=202,

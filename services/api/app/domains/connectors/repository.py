@@ -128,7 +128,7 @@ class ConnectorRepository:
         )
 
     def binding_catalog(self) -> tuple[list[dict], list[dict], dict[str, list[int]]]:
-        self.cursor.execute("SELECT id,code,name,agent_type,launch_mode FROM agent WHERE status='active' ORDER BY id")
+        self.cursor.execute("SELECT id,code,name,launch_mode FROM agent WHERE status='active' ORDER BY id")
         agents = list(self.cursor.fetchall())
         self.cursor.execute(
             "SELECT ct.id,ct.connector_id,ct.tool_name,ct.title,ct.description,ct.annotations_json,"

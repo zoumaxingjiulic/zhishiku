@@ -107,7 +107,7 @@ class ProductionIntentModel:
         try:
             base = gateway['base_url'] if gateway else settings.llm_base_url
             key = gateway['api_key'] if gateway else settings.llm_api_key
-            model = gateway['model_name'] if gateway else (agent.get('llm_model') or settings.llm_model)
+            model = gateway['model_name'] if gateway else settings.llm_model
             if not base or not model:
                 raise ValueError('Intent model not configured')
             reply = agent_runtime._chat(base, key, {
@@ -454,7 +454,7 @@ class ProductionAdapters:
         try:
             answer, _, events, cited = agent_runtime.generate_agent_answer(
                 prompt, question, units or [], self.history, tools or [], bounded_executor,
-                (agent or {}).get('llm_model'), gateway, emit=progress, budget=self.budget,
+                None, gateway, emit=progress, budget=self.budget,
             )
         finally:
             if gateway:

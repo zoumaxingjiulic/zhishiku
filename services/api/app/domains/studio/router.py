@@ -1,12 +1,10 @@
-from typing import Literal
-
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from ...core.database import UnitOfWork
 from ..auth.repository import AuthRepository
 from ..auth.router import _request_token, current_user, platform_admin
 from ..auth.service import AuthService
-from .schemas import EvaluationCase, Processing, TestQuery, WorkflowInput
+from .schemas import EvaluationCase, Processing, TestQuery
 from .service import StudioService
 
 
@@ -26,10 +24,6 @@ def studio_admin_identity(request: Request) -> dict:
     if not user.get("is_platform_admin"):
         raise HTTPException(403, "仅平台管理员可以执行此操作")
     return user
-
-
-def _ip(request: Request) -> str:
-    return request.client.host if request.client else "unknown"
 
 
 @router.post("/api/v1/studio/agents/{agent_id}/test",
@@ -86,26 +80,3 @@ def get_processing(kb_id: int, user: dict = Depends(current_user),
 def processing(kb_id: int, payload: Processing, user: dict = Depends(current_user),
                service: StudioService = Depends(get_studio_service)) -> dict:
     return service.update_processing(user, kb_id, payload)
-
-
-@router.post("/api/v1/agents/{agent_id}/workflow-runs", status_code=202,
-             operation_id="start_flow_api_v1_agents__agent_id__workflow_runs_post")
-def start_flow(agent_id: int, payload: WorkflowInput, request: Request,
-               user: dict = Depends(current_user),
-               service: StudioService = Depends(get_studio_service)) -> dict:
-    return service.start_workflow(user, agent_id, payload, _ip(request))
-
-
-@router.get("/api/v1/agents/{agent_id}/workflow-runs",
-            operation_id="flows_api_v1_agents__agent_id__workflow_runs_get")
-def flows(agent_id: int, user: dict = Depends(current_user),
-          service: StudioService = Depends(get_studio_service)) -> list[dict]:
-    return service.list_workflows(user, agent_id)
-
-
-@router.post("/api/v1/workflow-runs/{run_id}/{action}",
-             operation_id="control_flow_api_v1_workflow_runs__run_id___action__post")
-def control_flow(run_id: str, action: Literal["approve", "cancel"], request: Request,
-                 user: dict = Depends(current_user),
-                 service: StudioService = Depends(get_studio_service)) -> dict:
-    return service.control_workflow(user, run_id, action, _ip(request))
